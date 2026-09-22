@@ -119,3 +119,95 @@ def format_report(metrics: dict[str, float]) -> str:
         "Recall               {recall:.3f}\n"
         "F1                   {f1:.3f}"
     ).format(**metrics)
+
+
+def compare_tiers(
+    combined: pd.DataFrame,
+    labels: pd.DataFrame,
+) -> pd.DataFrame:
+    """How each tier performs alone, and what their overlap looks like.
+
+    The honest question this answers: is the model earning its place? On a
+    population whose anomalies were designed as rule violations, the answer is
+    "partly" - and saying so is worth more than quietly reporting the combined
+    number.
+    """
+    truth = set(labels.loc[labels["is_anomaly"], "entry_id"])
+    total_anomalies = len(truth)
+
+    rows = []
+    for name, mask in (
+        ("rules only", combined["rule_flag"] & ~combined["model_flag"]),
+        ("model only", ~combined["rule_flag"] & combined["model_flag"]),
+        ("both", combined["rule_flag"] & combined["model_flag"]),
+        ("neither", ~combined["rule_flag"] & ~combined["model_flag"]),
+    ):
+        group = combined[mask]
+        ids = set(group["entry_id"])
+        hits = len(ids & truth)
+        rows.append({
+            "segment": name,
+            "entries": len(group),
+            "true_anomalies": hits,
+            "precision": round(_safe_div(hits, len(group)), 4),
+            "share_of_all_anomalies": round(_safe_div(hits, total_anomalies), 4),
+        })
+    return pd.DataFrame(rows)
+
+
+def model_lift(
+    model_scores: pd.Series,
+    labels: pd.DataFrame,
+    tops=(25, 50, 100, 200),
+) -> pd.DataFrame:
+    """Precision among the top-N entries the model considers most unusual.
+
+    Compared against the base rate, this is the clearest statement of whether
+    the model is better than opening entries at random.
+    """
+    truth = set(labels.loc[labels["is_anomaly"], "entry_id"])
+    base_rate = _safe_div(len(truth), len(model_scores))
+    ordered = model_scores.sort_values(ascending=False)
+
+    rows = []
+    for n in tops:
+        if n > len(ordered):
+            continue
+        top = set(ordered.head(n).index)
+        hits = len(top & truth)
+        precision = _safe_div(hits, n)
+        rows.append({
+            "top_n": n,
+            "true_anomalies": hits,
+            "precision": round(precision, 4),
+            "base_rate": round(base_rate, 4),
+            "lift_vs_random": round(_safe_div(precision, base_rate), 1),
+        })
+    return pd.DataFrame(rows)
+
+
+def score_by_archetype(model_scores: pd.Series, labels: pd.DataFrame) -> pd.DataFrame:
+    """Mean model score per anomaly type, against the normal baseline.
+
+    Shows which patterns the unsupervised tier can actually perceive. Entry-level
+    features cannot see a duplicate - that only exists by comparison with another
+    entry - so a low score there is a design consequence, not a failure.
+    """
+    anomalies = labels[labels["is_anomaly"]]
+    normal_ids = labels.loc[~labels["is_anomaly"], "entry_id"]
+    baseline = model_scores[model_scores.index.isin(set(normal_ids))].mean()
+
+    rows = []
+    for archetype, group in anomalies.groupby("anomaly_type"):
+        ids = [i for i in group["entry_id"] if i in model_scores.index]
+        if not ids:
+            continue
+        mean_score = float(model_scores.loc[ids].mean())
+        rows.append({
+            "anomaly_type": archetype,
+            "n": len(ids),
+            "mean_model_score": round(mean_score, 4),
+            "vs_normal": round(mean_score - float(baseline), 4),
+        })
+    out = pd.DataFrame(rows).sort_values("mean_model_score", ascending=False)
+    return out.reset_index(drop=True)

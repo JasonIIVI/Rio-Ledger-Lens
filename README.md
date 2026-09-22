@@ -21,10 +21,13 @@ performance in this README can be reproduced with one command. That is the whole
 the generator exists: without ground truth, "it flagged some things" is not a result.
 
 ```
-ledger CSV ──▶ ingest/validate ──▶ 12 journal-entry tests ──▶ risk-scored exceptions
-                     │                      │
-                     └──▶ Benford analysis ─┘
+                        ┌──▶ 12 journal-entry tests ──┐
+ledger CSV ──▶ ingest ──┼──▶ Benford analysis ────────┼──▶ exception queue ──▶ Excel workpaper
+  or QuickBooks         └──▶ Isolation Forest ────────┘      (Streamlit)
 ```
+
+The two detection tiers are scored **separately and never blended**. They answer different
+questions, and where they disagree is the most informative output the tool produces.
 
 ## Quickstart
 
@@ -35,8 +38,12 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
 ledgerlens generate                                   # writes data/ledger.csv + labels.csv
-ledgerlens test data/ledger.csv --labels data/labels.csv
+ledgerlens test data/ledger.csv --labels data/labels.csv      # rule tier
+ledgerlens score data/ledger.csv --labels data/labels.csv     # both tiers, compared
 ledgerlens benford data/ledger.csv --by account_code
+ledgerlens report data/ledger.csv --out out/workpaper.xlsx    # Excel workpaper
+
+pip install -e ".[app]" && streamlit run app.py               # review dashboard
 ```
 
 ## The tests
@@ -118,6 +125,57 @@ large population because its power grows with sample size, which is precisely wh
 Nigrini's MAD bands are the standard in audit practice and why LedgerLens reports both.
 Quoting only the chi-square here would produce a confident, wrong conclusion.
 
+## The second tier, and what it is actually worth
+
+Week 2 added an Isolation Forest over 16 engineered per-entry features. No feature encodes a
+rule's answer - day-of-week is cyclical rather than a weekend flag - so the two tiers stay
+genuinely independent. Two features (`n_lines`, `posting_lag_days`) are constant in the current
+generator and are dropped automatically at fit time.
+
+Putting both tiers side by side on the default ledger:
+
+| Segment | Entries | Truly anomalous | Precision |
+|---|---:|---:|---:|
+| **both tiers agree** | 30 | 29 | **0.967** |
+| rules only | 59 | 46 | 0.780 |
+| model only | 72 | 1 | 0.014 |
+| neither | 4,924 | 1 | 0.000 |
+
+**The model is a strong re-ranker and a weak independent detector** - and that is worth saying
+plainly rather than hiding behind a combined number. By rank it is far better than chance:
+
+| Top N by model score | Anomalies found | Precision | Lift vs random |
+|---:|---:|---:|---:|
+| 25 | 16 | 0.64 | **42x** |
+| 50 | 22 | 0.44 | 29x |
+| 100 | 30 | 0.30 | 20x |
+
+But almost everything it ranks highly, the rules had already caught. The "model only" segment is
+essentially the base rate.
+
+The reason is the same circularity described above: these anomalies were *defined* as rule
+violations, so a model forbidden from encoding those rules has little left to find. Breaking
+that is the explicit goal of the next milestone - injecting archetypes no rule describes, and
+re-measuring both tiers against them.
+
+What the model *can* perceive is visible per archetype:
+
+| Archetype | Mean model score | vs normal baseline |
+|---|---:|---:|
+| round_amount | 0.915 | +0.63 |
+| unbalanced_entry | 0.765 | +0.48 |
+| benford_drift | 0.724 | +0.44 |
+| weekend_entry | 0.364 | +0.08 |
+| duplicate_entry | 0.330 | +0.04 |
+
+Duplicates are near-invisible, correctly: a duplicate only exists by comparison with another
+entry, and these are per-entry features. That is a design consequence, not a failure, and there
+is a test asserting it stays true.
+
+One honest false-positive pattern: the model repeatedly flags system-posted depreciation entries,
+because `system` is a rare `created_by` value. Structurally unusual, operationally boring - the
+kind of flag a reviewer dismisses in seconds, and the reason `precision_by_test` exists.
+
 ## Design decisions
 
 - **Deterministic tier first.** Rules are cheap, explainable, and survive a reviewer
@@ -137,8 +195,8 @@ Quoting only the chi-square here would produce a confident, wrong conclusion.
 
 - [x] **Week 1** — synthetic generator, ingest/validation, 12 journal-entry tests,
       Benford analysis, evaluation harness, CLI, 61 tests, CI
-- [ ] **Week 2** — Isolation Forest anomaly score, Streamlit review dashboard,
-      Excel workpaper export
+- [x] **Week 2** — Isolation Forest anomaly score, Streamlit review dashboard,
+      Excel workpaper export, tier-comparison analysis
 - [ ] **Week 3** — LLM-written exception narratives (structured JSON, with an eval
       set), reviewer queue with approve / dismiss / escalate, MCP server
 - [ ] **Week 4** — QuickBooks Online connector (sandbox), scheduled re-run via
@@ -149,7 +207,9 @@ Quoting only the chi-square here would produce a confident, wrong conclusion.
 - Synthetic data cannot capture adaptive behaviour: real fraud adjusts to the controls
   looking for it.
 - Two-line journal entries only; multi-line allocations are generated but not yet
-  modelled with realistic complexity.
+  modelled with realistic complexity. This also keeps two model features constant.
+- The unsupervised tier cannot see cross-entry patterns such as duplicates, because its
+  features are computed per entry.
 - Thresholds are tuned against this generator. Against a real ledger they are a
   starting point, not a configuration.
 - Nothing here constitutes an audit procedure or professional advice. It is a
@@ -158,8 +218,8 @@ Quoting only the chi-square here would produce a confident, wrong conclusion.
 ## Development
 
 ```bash
-pytest -q                    # 61 tests
-pytest --cov=ledgerlens      # coverage (currently 97%)
+pytest -q                    # 91 tests
+pytest --cov=ledgerlens      # coverage (currently 96%)
 ruff check src tests         # lint
 ```
 

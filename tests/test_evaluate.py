@@ -80,3 +80,81 @@ def test_format_report_is_readable():
     }
     text = evaluate.format_report(m)
     assert "Precision" in text and "Recall" in text
+
+
+# --- two-tier comparison ----------------------------------------------------
+
+
+def test_compare_tiers_partitions_the_population(ledger, labels):
+    from ledgerlens.model import combine, score_ledger
+
+    flags = jets.run_all(ledger)
+    scored = jets.score_entries(ledger, flags)
+    scores, _ = score_ledger(ledger)
+    combined = combine(scored, scores)
+
+    table = evaluate.compare_tiers(combined, labels)
+    assert set(table["segment"]) == {"rules only", "model only", "both", "neither"}
+    # every entry lands in exactly one segment
+    assert table["entries"].sum() == len(combined)
+
+
+def test_agreement_segment_is_the_most_precise(ledger, labels):
+    """When both tiers agree, the flag should be far more trustworthy."""
+    from ledgerlens.model import combine, score_ledger
+
+    flags = jets.run_all(ledger)
+    scored = jets.score_entries(ledger, flags)
+    scores, _ = score_ledger(ledger)
+    combined = combine(scored, scores)
+
+    table = evaluate.compare_tiers(combined, labels).set_index("segment")
+    assert table.loc["both", "precision"] > table.loc["model only", "precision"]
+    assert table.loc["both", "precision"] > table.loc["neither", "precision"]
+
+
+def test_model_lift_beats_random(ledger, labels):
+    from ledgerlens.model import score_ledger
+
+    scores, _ = score_ledger(ledger)
+    table = evaluate.model_lift(scores, labels)
+    assert not table.empty
+    assert (table["lift_vs_random"] > 1).all()
+    assert table["precision"].is_monotonic_decreasing
+
+
+def test_model_lift_skips_oversized_n():
+    import pandas as pd
+
+    scores = pd.Series([0.9, 0.5, 0.1], index=["A", "B", "C"])
+    labels = pd.DataFrame({
+        "entry_id": ["A", "B", "C"],
+        "is_anomaly": [True, False, False],
+        "anomaly_type": ["round_amount", "", ""],
+    })
+    table = evaluate.model_lift(scores, labels, tops=(2, 100))
+    assert list(table["top_n"]) == [2]
+
+
+def test_score_by_archetype_covers_every_type(ledger, labels):
+    from ledgerlens.model import score_ledger
+
+    scores, _ = score_ledger(ledger)
+    table = evaluate.score_by_archetype(scores, labels)
+    injected = set(labels.loc[labels["is_anomaly"], "anomaly_type"])
+    assert set(table["anomaly_type"]) == injected
+    assert table["mean_model_score"].is_monotonic_decreasing
+
+
+def test_duplicates_are_invisible_to_entry_level_features(ledger, labels):
+    """A duplicate only exists by comparison, so per-entry features cannot see it.
+
+    This asserts a known design limitation rather than a capability - if it ever
+    starts failing, the feature set has gained cross-entry context and the
+    README's claims need revisiting.
+    """
+    from ledgerlens.model import score_ledger
+
+    scores, _ = score_ledger(ledger)
+    table = evaluate.score_by_archetype(scores, labels).set_index("anomaly_type")
+    assert table.loc["duplicate_entry", "vs_normal"] < table.loc["round_amount", "vs_normal"]
