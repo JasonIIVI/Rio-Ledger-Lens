@@ -19,10 +19,13 @@ classifiers = [
 dependencies = [
   "pandas>=1.5",
   "numpy>=1.23",
+  "scikit-learn>=1.0",
+  "openpyxl>=3.1",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "pytest-cov>=4.0", "ruff>=0.4"]
+app = ["streamlit>=1.30"]
 
 [project.scripts]
 ledgerlens = "ledgerlens.cli:main"

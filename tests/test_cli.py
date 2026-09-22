@@ -48,3 +48,46 @@ def test_bad_date_is_rejected():
         assert exc.code != 0
     else:  # pragma: no cover
         raise AssertionError("expected SystemExit")
+
+
+def test_score_command_reports_tier_agreement(tmp_path, capsys):
+    main(["generate", "--start", "2024-01-01", "--end", "2024-12-31",
+          "--out-dir", str(tmp_path)])
+    capsys.readouterr()
+    code = main(["score", str(tmp_path / "ledger.csv"),
+                 "--labels", str(tmp_path / "labels.csv")])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "Tier agreement" in out
+    assert "Isolation Forest" in out
+    assert "lift_vs_random" in out
+
+
+def test_score_command_writes_csv(tmp_path, capsys):
+    main(["generate", "--start", "2024-01-01", "--end", "2024-06-30",
+          "--out-dir", str(tmp_path)])
+    capsys.readouterr()
+    out_csv = tmp_path / "combined.csv"
+    main(["score", str(tmp_path / "ledger.csv"), "--out", str(out_csv)])
+    assert out_csv.exists()
+
+
+def test_report_command_writes_workpaper(tmp_path, capsys):
+    main(["generate", "--start", "2024-01-01", "--end", "2024-12-31",
+          "--out-dir", str(tmp_path)])
+    capsys.readouterr()
+    xlsx = tmp_path / "wp.xlsx"
+    code = main(["report", str(tmp_path / "ledger.csv"),
+                 "--labels", str(tmp_path / "labels.csv"), "--out", str(xlsx)])
+    assert code == 0
+    assert xlsx.exists()
+    assert "Workpaper written" in capsys.readouterr().out
+
+
+def test_report_command_can_skip_the_model(tmp_path, capsys):
+    main(["generate", "--start", "2024-01-01", "--end", "2024-06-30",
+          "--out-dir", str(tmp_path)])
+    capsys.readouterr()
+    xlsx = tmp_path / "rules_only.xlsx"
+    main(["report", str(tmp_path / "ledger.csv"), "--no-model", "--out", str(xlsx)])
+    assert xlsx.exists()

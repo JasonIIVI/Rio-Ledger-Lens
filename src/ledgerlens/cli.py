@@ -22,6 +22,8 @@ from . import evaluate, jets
 from .benford import benford_test, segmented_benford
 from .generate import generate_ledger
 from .ingest import load_csv, load_labels
+from .model import combine, score_ledger
+from .report import build_workpaper
 
 
 def _parse_date(text: str) -> date:
@@ -121,6 +123,68 @@ def cmd_benford(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_score(args: argparse.Namespace) -> int:
+    """Run both tiers and show how they agree."""
+    df = load_csv(args.ledger)
+    flags = jets.run_all(df)
+    scored = jets.score_entries(df, flags)
+    model_scores, report = score_ledger(df, contamination=args.contamination)
+    combined = combine(scored, model_scores, model_top_pct=args.model_top_pct)
+
+    print(report.describe())
+    print()
+    print(f"Tier agreement across {len(combined):,} entries:")
+    print(combined["agreement"].value_counts().to_string())
+
+    if args.out:
+        Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+        combined.to_csv(args.out, index=False)
+        print(f"\nCombined scores written to {args.out}")
+
+    interesting = combined[combined["agreement"] == "model only"].head(args.top)
+    if not interesting.empty:
+        print(f"\nUnusual to the model but matching no rule (top {len(interesting)}):")
+        for r in interesting.itertuples():
+            print(f"  {r.entry_id}  model {r.model_score:.3f}  ${r.entry_amount:,.2f}  {r.description}")
+
+    if args.labels:
+        labels = load_labels(args.labels)
+        print("\n--- tier comparison ---")
+        print(evaluate.compare_tiers(combined, labels).to_string(index=False))
+        print("\n--- model lift over random selection ---")
+        print(evaluate.model_lift(model_scores, labels).to_string(index=False))
+        print("\n--- which archetypes the model can perceive ---")
+        print(evaluate.score_by_archetype(model_scores, labels).to_string(index=False))
+    return 0
+
+
+def cmd_report(args: argparse.Namespace) -> int:
+    """Write the Excel workpaper."""
+    df = load_csv(args.ledger)
+    flags = jets.run_all(df)
+    scored = jets.score_entries(df, flags)
+
+    model_report = None
+    if not args.no_model:
+        model_scores, report = score_ledger(df)
+        scored = combine(scored, model_scores)
+        model_report = report.describe()
+
+    metrics = None
+    if args.labels:
+        metrics = evaluate.evaluate(flags, load_labels(args.labels), df["entry_id"].unique())
+
+    path = build_workpaper(
+        scored, flags, args.out,
+        benford=segmented_benford(df, by="account_code"),
+        metrics=metrics, model_report=model_report, top_n=args.top,
+    )
+    print(f"Workpaper written to {path}")
+    print("  {:,} entries in population, {:,} flagged".format(
+        len(scored), int((scored["risk_score"] > 0).sum())))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ledgerlens",
@@ -150,6 +214,24 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--by", help="segment column, e.g. account_code or created_by")
     b.add_argument("--min-n", type=int, default=300)
     b.set_defaults(func=cmd_benford)
+
+    sc = sub.add_parser("score", help="run both tiers and compare them")
+    sc.add_argument("ledger", help="path to a GL csv")
+    sc.add_argument("--labels", help="ground-truth csv, enables tier comparison")
+    sc.add_argument("--contamination", type=float, default=0.02)
+    sc.add_argument("--model-top-pct", type=float, default=0.02,
+                    help="proportion of the population the model may flag")
+    sc.add_argument("--out", help="write combined scores to this csv")
+    sc.add_argument("--top", type=int, default=10)
+    sc.set_defaults(func=cmd_score)
+
+    rp = sub.add_parser("report", help="write the Excel workpaper")
+    rp.add_argument("ledger", help="path to a GL csv")
+    rp.add_argument("--labels", help="ground-truth csv, adds measured quality to the summary")
+    rp.add_argument("--out", default="out/workpaper.xlsx")
+    rp.add_argument("--top", type=int, default=250, help="exceptions to include")
+    rp.add_argument("--no-model", action="store_true", help="rule tier only")
+    rp.set_defaults(func=cmd_report)
 
     return parser
 
