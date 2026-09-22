@@ -3,7 +3,7 @@
 Audit analytics over general ledger data: journal-entry tests, Benford's Law digit
 analysis, and risk-scored exceptions with plain-English reasons a reviewer can act on.
 
-[![CI](https://github.com/JasonIIVI/ledgerlens/actions/workflows/ci.yml/badge.svg)](https://github.com/JasonIIVI/ledgerlens/actions/workflows/ci.yml)
+[![CI](https://github.com/JasonIIVI/Rio-Ledgens-Lens/actions/workflows/ci.yml/badge.svg)](https://github.com/JasonIIVI/Rio-Ledgens-Lens/actions/workflows/ci.yml)
 ![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
@@ -29,8 +29,8 @@ ledger CSV ──▶ ingest/validate ──▶ 12 journal-entry tests ──▶ 
 ## Quickstart
 
 ```bash
-git clone https://github.com/JasonIIVI/ledgerlens.git
-cd ledgerlens
+git clone https://github.com/JasonIIVI/Rio-Ledgens-Lens.git
+cd Rio-Ledgens-Lens
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
