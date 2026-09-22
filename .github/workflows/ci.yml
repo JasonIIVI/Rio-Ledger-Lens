@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Lint
+        run: ruff check src tests
+
+      - name: Test
+        run: pytest -q --cov=ledgerlens --cov-report=term-missing
+
+  # Proves the documented numbers in the README are reproducible from a clean
+  # checkout. If a change quietly degrades detection, this fails rather than
+  # the README silently going stale.
+  detection-quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Generate ledger and evaluate
+        run: |
+          ledgerlens generate --out-dir data
+          ledgerlens test data/ledger.csv --labels data/labels.csv
+
+      - name: Assert detection has not regressed
+        run: |
+          python - <<'PY'
+          import sys
+          from ledgerlens import evaluate, jets
+          from ledgerlens.ingest import load_csv, load_labels
+
+          df = load_csv("data/ledger.csv")
+          labels = load_labels("data/labels.csv")
+          flags = jets.run_all(df)
+          m = evaluate.evaluate(flags, labels, df["entry_id"].unique())
+
+          print(evaluate.format_report(m))
+
+          floors = {"precision": 0.80, "recall": 0.90}
+          failed = [k for k, floor in floors.items() if m[k] < floor]
+          if failed:
+              for k in failed:
+                  print(f"::error::{k} {m[k]:.3f} fell below floor {floors[k]:.2f}")
+              sys.exit(1)
+          print("detection quality within expected bounds")
+          PY

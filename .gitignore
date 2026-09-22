@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Tooling
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Generated data & outputs — never commit ledgers
+data/*.csv
+data/*.parquet
+data/*.sqlite
+data/*.xlsx
+out/
+*.xlsx
+
+# Secrets — QuickBooks tokens, API keys
+.env
+.env.*
+!.env.example
+secrets/
+
+# OS
+.DS_Store
