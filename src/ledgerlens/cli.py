@@ -20,6 +20,7 @@ import pandas as pd
 
 from . import evaluate, jets
 from .benford import benford_test, segmented_benford
+from .env import load_dotenv
 from .generate import generate_ledger
 from .ingest import load_csv, load_labels
 from .model import combine, score_ledger
@@ -237,6 +238,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    load_dotenv()
     parser = build_parser()
     args = parser.parse_args(argv)
     pd.set_option("display.width", 120)

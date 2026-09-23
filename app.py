@@ -15,9 +15,11 @@ import streamlit as st
 
 from ledgerlens import evaluate, jets
 from ledgerlens.benford import benford_test
+from ledgerlens.env import load_dotenv
 from ledgerlens.ingest import load_csv, load_labels
 from ledgerlens.model import combine, score_ledger
 
+load_dotenv()
 st.set_page_config(page_title="LedgerLens", layout="wide")
 
 DATA = Path("data")
