@@ -512,6 +512,7 @@ class Narrator:
         """
         skip = skip or set()
         self.usage = Usage()
+        _ = self.client  # a missing key should fail once, here, not once per entry
         # Explicit, total ordering: the caller's frame may arrive in any order,
         # and "top N" must mean the same entries every run.
         order = [c for c in ("risk_score", "model_score", "entry_amount") if c in scored.columns]

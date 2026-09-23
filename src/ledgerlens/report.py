@@ -17,6 +17,8 @@ import pandas as pd
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
+from .review import ReviewStore
+
 HEADER_FILL = PatternFill("solid", fgColor="1F3864")
 HEADER_FONT = Font(color="FFFFFF", bold=True, size=10)
 TITLE_FONT = Font(bold=True, size=13, color="1F3864")
@@ -58,6 +60,21 @@ def _write_table(ws, df: pd.DataFrame, start_row: int = 1) -> None:
     ws.freeze_panes = ws.cell(row=start_row + 1, column=1)
 
 
+def _attach_review(exceptions: pd.DataFrame, store: ReviewStore) -> pd.DataFrame:
+    """Add what the human loop knows: the narrative summary and the latest decision.
+
+    Left merges, so an entry nobody has looked at simply has blank cells - the
+    workpaper then doubles as the list of what is still outstanding.
+    """
+    narratives = store.narratives_frame()[["entry_id", "summary", "confidence"]].rename(
+        columns={"summary": "narrative", "confidence": "narrative_confidence"}
+    )
+    decisions = store.current()[["entry_id", "decision", "reviewer", "note", "decided_at"]]
+    return exceptions.merge(narratives, on="entry_id", how="left").merge(
+        decisions, on="entry_id", how="left"
+    )
+
+
 def build_workpaper(
     scored: pd.DataFrame,
     flags: pd.DataFrame,
@@ -66,6 +83,7 @@ def build_workpaper(
     metrics: dict | None = None,
     model_report: str | None = None,
     top_n: int = 250,
+    store: ReviewStore | None = None,
 ) -> Path:
     """Write the exception workpaper and return the path written."""
     out_path = Path(out_path)
@@ -84,6 +102,8 @@ def build_workpaper(
         "tests_fired", "reasons",
     ) if c in exceptions.columns]
     exceptions = exceptions[keep]
+    if store is not None:
+        exceptions = _attach_review(exceptions, store)
     for col in ("posting_date", "entered_at"):
         if col in exceptions.columns:
             exceptions[col] = pd.to_datetime(exceptions[col]).dt.tz_localize(None)
@@ -122,6 +142,11 @@ def build_workpaper(
                 ("False positives", metrics.get("false_positives")),
                 ("False negatives", metrics.get("false_negatives")),
             ]
+        if store is not None:
+            summary = store.summary()
+            rows += [("", ""), ("Decisions recorded", int(summary["entries"].sum()))]
+            rows += [(f"  {r.decision}", int(r.entries)) for r in summary.itertuples()]
+            rows += [("Narratives cached", int(len(store.narrative_ids())))]
         for i, (label, value) in enumerate(rows, start=3):
             ws.cell(row=i, column=1, value=label).font = LABEL_FONT
             ws.cell(row=i, column=2, value=value)

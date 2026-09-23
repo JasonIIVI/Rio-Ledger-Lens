@@ -97,6 +97,8 @@ class ReviewStore:
             )
         if not decision.reviewer.strip():
             raise ValueError("a decision must be attributable to a named reviewer")
+        if not str(decision.entry_id).strip():
+            raise ValueError("a decision must name an entry")
 
         with closing(self._connect()) as conn:
             cur = conn.execute(
@@ -184,6 +186,11 @@ class ReviewStore:
             line for line in (data.get("evidence_to_request") or "").split("\n") if line
         ]
         return data
+
+    def narratives_frame(self) -> pd.DataFrame:
+        """Every cached narrative, one row per entry, for the workpaper and the MCP server."""
+        with closing(self._connect()) as conn:
+            return pd.read_sql_query("SELECT * FROM narratives ORDER BY entry_id", conn)
 
     def narrative_ids(self) -> set:
         with closing(self._connect()) as conn:

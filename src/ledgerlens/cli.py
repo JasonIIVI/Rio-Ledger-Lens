@@ -1,12 +1,11 @@
 """Command line entry point.
 
-Three verbs for now:
-
     ledgerlens generate  - build a labelled synthetic ledger
     ledgerlens test      - run the journal-entry tests over a ledger
     ledgerlens benford   - run digit analysis, optionally segmented
-
-Week 2 adds ``score`` (ML layer) and ``report`` (Excel workpaper).
+    ledgerlens score     - run both tiers and compare them
+    ledgerlens report    - write the Excel workpaper
+    ledgerlens narrate   - write Claude narratives for the riskiest entries
 """
 
 from __future__ import annotations
@@ -24,7 +23,9 @@ from .env import load_dotenv
 from .generate import generate_ledger
 from .ingest import load_csv, load_labels
 from .model import combine, score_ledger
+from .narrate import DEFAULT_EFFORT, DEFAULT_MAX_TOKENS, DEFAULT_MODEL, NarrativeError, Narrator
 from .report import build_workpaper
+from .review import ReviewStore
 
 
 def _parse_date(text: str) -> date:
@@ -175,15 +176,54 @@ def cmd_report(args: argparse.Namespace) -> int:
     if args.labels:
         metrics = evaluate.evaluate(flags, load_labels(args.labels), df["entry_id"].unique())
 
+    # Only an existing store is attached: a report must never create an empty
+    # review database as a side effect.
+    store = ReviewStore(args.db) if args.db and Path(args.db).exists() else None
+    if args.db and store is None:
+        print(f"No review database at {args.db}; workpaper written without review columns")
+
     path = build_workpaper(
         scored, flags, args.out,
         benford=segmented_benford(df, by="account_code"),
-        metrics=metrics, model_report=model_report, top_n=args.top,
+        metrics=metrics, model_report=model_report, top_n=args.top, store=store,
     )
     print(f"Workpaper written to {path}")
     print("  {:,} entries in population, {:,} flagged".format(
         len(scored), int((scored["risk_score"] > 0).sum())))
     return 0
+
+
+def cmd_narrate(args: argparse.Namespace) -> int:
+    """Write Claude narratives for the riskiest entries and cache them in the review store."""
+    df = load_csv(args.ledger)
+    flags = jets.run_all(df)
+    scored = jets.score_entries(df, flags)
+    if not args.no_model:
+        model_scores, _ = score_ledger(df)
+        scored = combine(scored, model_scores)
+
+    store = ReviewStore(args.db)
+    skip = set() if args.force else store.narrative_ids()
+    narrator = Narrator(model=args.model, max_tokens=args.max_tokens, effort=args.effort)
+    try:
+        result = narrator.narrate(scored, flags, df, top_n=args.top, skip=skip)
+    except NarrativeError as exc:
+        print(f"error: {exc}")
+        return 1
+
+    for entry_id, narrative in result.narratives.items():
+        store.save_narrative(entry_id, narrative, model=result.model)
+
+    print(result.describe())
+    if skip:
+        print(f"Skipped {len(skip)} entries already narrated in {args.db} (--force redoes them)")
+    for entry_id, why in result.failures.items():
+        print(f"  FAILED {entry_id}: {why}")
+    if result.narratives:
+        print(f"\n{len(result.narratives)} narrative(s) saved to {args.db}")
+    elif result.entries_requested == 0:
+        print("Nothing to narrate: every flagged entry in range already has a narrative")
+    return 0 if result.narratives or result.entries_requested == 0 else 1
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -232,7 +272,19 @@ def build_parser() -> argparse.ArgumentParser:
     rp.add_argument("--out", default="out/workpaper.xlsx")
     rp.add_argument("--top", type=int, default=250, help="exceptions to include")
     rp.add_argument("--no-model", action="store_true", help="rule tier only")
+    rp.add_argument("--db", help="review database; adds narrative and decision columns")
     rp.set_defaults(func=cmd_report)
+
+    n = sub.add_parser("narrate", help="write Claude narratives for the riskiest entries")
+    n.add_argument("ledger", help="path to a GL csv")
+    n.add_argument("--top", type=int, default=25, help="entries to narrate, highest risk first")
+    n.add_argument("--db", default="data/review.sqlite", help="review database to cache into")
+    n.add_argument("--model", default=DEFAULT_MODEL)
+    n.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS)
+    n.add_argument("--effort", choices=("low", "medium", "high"), default=DEFAULT_EFFORT)
+    n.add_argument("--no-model", action="store_true", help="rank by the rule tier only")
+    n.add_argument("--force", action="store_true", help="re-narrate entries already cached")
+    n.set_defaults(func=cmd_narrate)
 
     return parser
 
