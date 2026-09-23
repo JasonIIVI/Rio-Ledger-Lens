@@ -10,7 +10,8 @@ trusting a note:
                           (the amount, the accounts, the tests that fired)
 - ``no_assertions``       it never asserts an error, an intent or an irregularity
 - ``evidence_specific``   at least one evidence item names a figure, an account or a date
-- ``no_invented_numbers`` every number in the note appears in the prompt
+- ``no_invented_numbers`` every number in the note was shown to the model, in the
+                          entry or in the system prompt (AU-C 240 is a citation, not an invention)
 - ``confidence_in_band``  confidence lands where a reviewer would put it
 
 Why a rubric and not a reference narrative: the reference would itself be
@@ -33,7 +34,15 @@ from pathlib import Path
 
 import pandas as pd
 
-from .narrate import NarrativeError, Narrator, Usage, build_prompt, entry_context, validate
+from .narrate import (
+    SYSTEM_PROMPT,
+    NarrativeError,
+    Narrator,
+    Usage,
+    build_prompt,
+    entry_context,
+    validate,
+)
 from .schema import AnomalyType
 
 #: Wording that turns a question into a finding. Case-insensitive regexes over
@@ -246,12 +255,15 @@ def grade(narrative: dict | None, case: Case, prompt_text: str) -> dict[str, boo
 
     text = narrative_text(clean)
     forbidden = list(FORBIDDEN_ASSERTIONS) + list(case.must_not_assert)
+    # The model was shown two things: the entry and the system prompt. A number
+    # from either is not invented. (The first real run flagged "AU-C 240".)
+    shown = numbers_in(prompt_text) | numbers_in(SYSTEM_PROMPT)
     metrics = {
         "schema_valid": True,
         "mentions_required": all(re.search(p, text, re.I) for p in case.must_mention),
         "no_assertions": not any(re.search(p, text, re.I) for p in forbidden),
         "evidence_specific": any(_is_specific(i, prompt_text) for i in clean["evidence_to_request"]),
-        "no_invented_numbers": numbers_in(text) <= numbers_in(prompt_text),
+        "no_invented_numbers": numbers_in(text) <= shown,
         "confidence_in_band": clean["confidence"] in case.expected_confidence,
     }
     metrics["passed"] = all(metrics.values())
@@ -307,18 +319,30 @@ def run_eval(
     lines: pd.DataFrame,
     out_dir: str | Path,
     resume: bool = True,
+    regrade: bool = False,
 ) -> list[dict]:
     """Run the real narrator over every case and grade the result.
 
     Rows are written as each case completes, so a crash costs nothing already
     paid for, and a re-run with ``resume`` skips them. API failures go to an
-    ``errors.jsonl`` sidecar rather than into the score.
+    ``errors.jsonl`` sidecar rather than into the score. ``regrade`` re-scores
+    the stored narratives with the current grader without calling the API,
+    which is how a grader fix is applied to a run already paid for.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     results_path, errors_path = out_dir / "results.jsonl", out_dir / "errors.jsonl"
     done = {r["entry_id"]: r for r in _read_jsonl(results_path)} if resume else {}
-    _ = narrator.client  # a missing key fails here, once, not once per case as "invalid"
+    if regrade and done:
+        by_id = {c.entry_id: c for c in cases}
+        for row in done.values():
+            if row["status"] != "error" and row["entry_id"] in by_id:
+                row["metrics"] = grade(row["narrative"], by_id[row["entry_id"]], row["prompt"])
+        results_path.write_text(
+            "".join(json.dumps(r) + "\n" for r in done.values()), encoding="utf-8"
+        )
+    if any(c.entry_id not in done for c in cases):
+        _ = narrator.client  # a missing key fails here, once, not once per case as "invalid"
 
     rows: list[dict] = []
     for case in cases:

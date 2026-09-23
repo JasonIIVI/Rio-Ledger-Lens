@@ -263,6 +263,7 @@ def cmd_eval_narratives(args: argparse.Namespace) -> int:
     try:
         rows = narrative_eval.run_eval(
             cases, narrator, scored, flags, df, args.runs_dir, resume=not args.no_resume,
+            regrade=args.regrade,
         )
     except NarrativeError as exc:
         print(f"error: {exc}")
@@ -351,6 +352,8 @@ def build_parser() -> argparse.ArgumentParser:
     ev.add_argument("--effort", choices=("low", "medium", "high"), default=DEFAULT_EFFORT)
     ev.add_argument("--limit", type=int, help="grade only the first N cases")
     ev.add_argument("--no-resume", action="store_true", help="re-run cases already graded")
+    ev.add_argument("--regrade", action="store_true",
+                    help="re-score stored narratives with the current grader; no API calls")
     ev.add_argument("--select", action="store_true",
                     help="write a case skeleton chosen from --labels instead of running")
     ev.add_argument("--labels", help="ground-truth csv, only used with --select")

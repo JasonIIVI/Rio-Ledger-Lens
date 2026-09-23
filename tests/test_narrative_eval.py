@@ -142,6 +142,33 @@ def test_each_property_fails_on_its_own(sample, damage, failing):
     assert metrics["passed"] is False
 
 
+def test_numbers_from_the_system_prompt_are_not_inventions(sample):
+    """The first real run cited AU-C 240, which the model saw in the system prompt."""
+    case, prompt, entry, lines = sample
+    narrative = oracle(case, entry, lines)
+    narrative["why_flagged"] += " This is the pattern AU-C 240 directs auditors to test."
+    assert grade(narrative, case, prompt)["no_invented_numbers"] is True
+    narrative["why_flagged"] += " The related invoice was for $123,456.78."
+    assert grade(narrative, case, prompt)["no_invented_numbers"] is False
+
+
+def test_regrade_rescores_stored_rows_without_calling_the_api(sample, scored, ledger, llm,
+                                                              tmp_path):
+    case, prompt, entry, lines = sample
+    combined, flags = scored
+    first = llm.client([llm.response(oracle(case, entry, lines))])
+    run_eval([case], Narrator(client=first), combined, flags, ledger, tmp_path)
+
+    stricter = Case(**{**case.__dict__, "expected_confidence": ["high"]})  # oracle says medium
+    second = llm.client()
+    rows = run_eval([stricter], Narrator(client=second), combined, flags, ledger, tmp_path,
+                    regrade=True)
+    assert second.calls == []
+    assert rows[0]["metrics"]["confidence_in_band"] is False
+    stored = json.loads((tmp_path / "results.jsonl").read_text().splitlines()[0])
+    assert stored["metrics"]["confidence_in_band"] is False
+
+
 def test_numbers_normalise_formatting_and_ignore_small_tokens():
     assert numbers_in("$9,900.00 and 9,900 and 9900") == {"9900"}
     assert numbers_in("JET-05, line 2, posted 2025-09-30") == {"2025"}

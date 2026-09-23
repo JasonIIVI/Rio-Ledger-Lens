@@ -219,6 +219,13 @@ the detection numbers: it measures whether a note is grounded, specific and non-
 whether it is insightful. A rubric was chosen over similarity to a reference narrative because
 the reference would itself be model-written.
 
+The first real run scored 88% on all checks. One of the two misses was the grader's fault - it
+counted a citation of AU-C 240 as an invented number - so the grader now treats the system prompt
+as text the model was shown, and the stored run was re-scored offline (`--regrade`, no API calls)
+to 94%. The remaining miss is a real disagreement: the model rated a $359 last-day cash receipt
+to revenue as low confidence where the case file says a High cut-off test should keep it at
+medium. The expectation was written before the run and stays as written.
+
 ## Ask the ledger from Claude Desktop
 
 The scored ledger is exposed as an MCP server with six read-only tools: summary, top exceptions
