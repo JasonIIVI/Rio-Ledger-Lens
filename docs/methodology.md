@@ -25,6 +25,19 @@ The two tiers disagreeing is informative. An entry flagged by rules but not by t
 model is probably a known pattern; an entry the model dislikes that no rule caught is
 the interesting case.
 
+**Tier 3 — narratives** (week 3). Claude writes the note a reviewer would write before
+opening an entry: what it is, why it surfaced, what evidence resolves it, which control it
+touches, and how likely it warrants investigation. The note is advisory text in a strict JSON
+contract. The model never sees the labels, never changes a score, and never decides.
+
+## The human loop
+
+A flag on its own is noise; a flag that somebody looked at, judged, and signed their name to
+is evidence. Decisions (accept / dismiss / escalate) are recorded by a named reviewer in an
+append-only store: changing your mind adds a decision rather than editing one, because an audit
+trail that can be silently edited is not an audit trail. The workpaper carries the note and the
+latest decision per exception, and the MCP server exposes all of it read-only.
+
 ## Scoring
 
 The composite score is a severity-weighted count of distinct tests that fired:
@@ -70,3 +83,12 @@ pairs) score 0.75 and 0.86 respectively, and are the honest measure of the rule 
   Fraud Detection* — MAD conformity bands
 - *Using Benford's Law to reveal journal entry irregularities*, Journal of Accountancy,
   September 2022
+
+## Measuring the narratives
+
+Sixteen entries chosen deterministically from the default ledger, with expectations written by
+hand from each entry's own data before any run: facts the note must mention, wording it must
+not use, and the confidence band a careful reviewer would choose. The grader checks properties,
+not similarity to a reference narrative, because a reference would itself be model-written and
+scoring similarity to it rewards imitation. The properties are floors: a note can satisfy all
+of them and still be unhelpful. Results live in `docs/narrative-eval.md`.

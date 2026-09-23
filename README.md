@@ -22,8 +22,9 @@ the generator exists: without ground truth, "it flagged some things" is not a re
 
 ```
                         ┌──▶ 12 journal-entry tests ──┐
-ledger CSV ──▶ ingest ──┼──▶ Benford analysis ────────┼──▶ exception queue ──▶ Excel workpaper
-  or QuickBooks         └──▶ Isolation Forest ────────┘      (Streamlit)
+ledger CSV ──▶ ingest ──┼──▶ Benford analysis ────────┼──▶ exception queue ──▶ Claude note ──▶ reviewer ──▶ Excel workpaper
+  or QuickBooks         └──▶ Isolation Forest ────────┘     (Streamlit)      (advisory JSON)  (append-only)
+                                                                  └───▶ MCP server (read-only) ───▶ Claude Desktop
 ```
 
 The two detection tiers are scored **separately and never blended**. They answer different
@@ -44,6 +45,10 @@ ledgerlens benford data/ledger.csv --by account_code
 ledgerlens report data/ledger.csv --out out/workpaper.xlsx    # Excel workpaper
 
 pip install -e ".[app]" && streamlit run app.py               # review dashboard
+
+cp .env.example .env                                          # add ANTHROPIC_API_KEY
+pip install -e ".[llm]" && ledgerlens narrate data/ledger.csv # Claude-written reviewer notes
+ledgerlens eval-narratives data/ledger.csv                    # grade them (docs/narrative-eval.md)
 ```
 
 ## The tests
@@ -176,6 +181,80 @@ One honest false-positive pattern: the model repeatedly flags system-posted depr
 because `system` is a rare `created_by` value. Structurally unusual, operationally boring - the
 kind of flag a reviewer dismisses in seconds, and the reason `precision_by_test` exists.
 
+## The narrative layer and the human loop
+
+Week 3 adds the part 2026 audit recruiters actually screen for: reading and questioning
+AI-flagged exceptions. Claude writes the note a reviewer would otherwise write before opening
+an entry, and a named reviewer records what they decided.
+
+**What the model writes.** For each flagged entry it receives the entry's lines and every test
+that fired, with the reason, and returns strict JSON:
+
+```json
+{"summary": "...", "why_flagged": "...", "evidence_to_request": ["..."],
+ "suggested_control": "...", "confidence": "high | medium | low"}
+```
+
+The contract is enforced twice: the API is asked for that schema (structured outputs), and
+`narrate.validate` checks the result again before it is stored. The system prompt carries the
+audit meaning of all twelve tests, which is what makes the notes specific - and, as a side
+effect, what makes the prompt long enough for the API to cache; `ledgerlens narrate` prints the
+cache-read share so that claim is checked on every run rather than assumed.
+
+**What the model never does.** It does not decide whether an entry is a finding, it does not
+touch a score or a record, and it never sees the labels. Every note is advisory text attached
+to an entry. A named human records every accept / dismiss / escalate in an append-only SQLite
+store: changing your mind adds a decision, it never edits one. The dashboard shows the note
+beside the entry, takes the decision, and shows the history; the workpaper carries the note
+and the latest decision per exception.
+
+**Measuring the notes.** `evals/narratives/cases.json` holds sixteen entries chosen
+deterministically from the default ledger - one per injected archetype, three multi-flag
+patterns, and two ordinary entries that only the access-list test caught - each with
+expectations written by hand from the entry's own data: facts the note must mention, wording it
+must not use, and the confidence band a careful reviewer would choose. `ledgerlens
+eval-narratives` runs the real narrator over them and reports pass rates per property in
+[docs/narrative-eval.md](docs/narrative-eval.md). Read that file with the same scepticism as
+the detection numbers: it measures whether a note is grounded, specific and non-assertive, not
+whether it is insightful. A rubric was chosen over similarity to a reference narrative because
+the reference would itself be model-written.
+
+## Ask the ledger from Claude Desktop
+
+The scored ledger is exposed as an MCP server with six read-only tools: summary, top exceptions
+(filterable by fiscal year, period and tier agreement), one entry in full, search, Benford, and
+review status. "What are the ten riskiest entries in Q4 2025 and why" becomes one tool call
+that returns every reason, both scores, and the reviewer's note and decision where they exist.
+
+No tool records a decision. That is deliberate: the model explains and suggests, a person
+decides, and the API surface says so.
+
+The MCP SDK needs Python 3.10+, so use an interpreter that new enough for this part:
+
+```bash
+python3.12 -m venv ~/.venvs/ledgerlens-mcp && source ~/.venvs/ledgerlens-mcp/bin/activate
+pip install -e ".[mcp]"
+ledgerlens-mcp --ledger data/ledger.csv          # waits silently on stdin: that is correct
+```
+
+Then add the server to `~/Library/Application Support/Claude/claude_desktop_config.json`
+(absolute paths, because Claude Desktop launches it with a bare environment) and fully quit
+and reopen Claude Desktop:
+
+```json
+{
+  "mcpServers": {
+    "ledgerlens": {
+      "command": "/Users/you/.venvs/ledgerlens-mcp/bin/ledgerlens-mcp",
+      "env": {
+        "LEDGERLENS_LEDGER": "/absolute/path/to/data/ledger.csv",
+        "LEDGERLENS_REVIEW_DB": "/absolute/path/to/data/review.sqlite"
+      }
+    }
+  }
+}
+```
+
 ## Design decisions
 
 - **Deterministic tier first.** Rules are cheap, explainable, and survive a reviewer
@@ -189,7 +268,9 @@ kind of flag a reviewer dismisses in seconds, and the reason `precision_by_test`
 - **Severity is assigned per test, not per finding**, and the composite score is a
   severity-weighted count a reviewer can reconstruct by hand.
 - **A flag is a question, not a finding.** Every `reason` string is worded that way
-  on purpose.
+  on purpose, and so is every narrative.
+- **The LLM never decides anything.** It explains flags and suggests evidence; a named human
+  records every decision, and decisions are append-only.
 
 ## Roadmap
 
@@ -197,8 +278,9 @@ kind of flag a reviewer dismisses in seconds, and the reason `precision_by_test`
       Benford analysis, evaluation harness, CLI, 61 tests, CI
 - [x] **Week 2** — Isolation Forest anomaly score, Streamlit review dashboard,
       Excel workpaper export, tier-comparison analysis
-- [ ] **Week 3** — LLM-written exception narratives (structured JSON, with an eval
-      set), reviewer queue with approve / dismiss / escalate, MCP server
+- [x] **Week 3** — Claude-written exception narratives (structured JSON, with a
+      hand-reviewed eval set), reviewer loop with accept / dismiss / escalate, MCP server,
+      `@claude` PR review
 - [ ] **Week 4** — QuickBooks Online connector (sandbox), scheduled re-run via
       GitHub Actions
 
@@ -212,16 +294,23 @@ kind of flag a reviewer dismisses in seconds, and the reason `precision_by_test`
   features are computed per entry.
 - Thresholds are tuned against this generator. Against a real ledger they are a
   starting point, not a configuration.
+- The narrative eval grades properties (grounded, specific, non-assertive), not insight. A
+  note can pass every check and still be unhelpful.
 - Nothing here constitutes an audit procedure or professional advice. It is a
   demonstration of technique.
 
 ## Development
 
 ```bash
-pytest -q                    # 91 tests
-pytest --cov=ledgerlens      # coverage (currently 96%)
-ruff check src tests         # lint
+pip install -e ".[dev,llm,mcp,app]"
+pytest -q                    # the MCP tests skip below Python 3.10
+pytest --cov=ledgerlens      # coverage
+ruff check src tests app.py  # lint
 ```
+
+CI runs the suite on Python 3.9, 3.11 and 3.12 plus a detection-quality gate. Nothing in
+`narrate.py` or the eval needs a key to be tested: the API is replaced by a fake that returns
+responses shaped like the real ones.
 
 ## License
 
