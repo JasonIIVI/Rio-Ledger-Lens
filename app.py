@@ -41,12 +41,17 @@ def load(ledger_path: str, labels_path: str):
     return df, flags, combined, scores, report, labels
 
 
+def md(text: str) -> str:
+    """Escape dollar signs: Streamlit renders ``$7,428.45 ... $7,284.88`` as LaTeX otherwise."""
+    return str(text).replace("$", r"\$")
+
+
 def render_narrative(narrative: dict) -> None:
-    st.markdown(f"**{narrative['summary']}**")
-    st.write(narrative["why_flagged"])
+    st.markdown(f"**{md(narrative['summary'])}**")
+    st.markdown(md(narrative["why_flagged"]))
     st.markdown("Evidence to request:")
     for item in narrative["evidence_to_request"]:
-        st.markdown(f"- {item}")
+        st.markdown(f"- {md(item)}")
     st.caption(
         "Control: {control} · Confidence: {confidence} · Written by {model} at {when}".format(
             control=narrative["suggested_control"], confidence=narrative["confidence"],
@@ -148,7 +153,7 @@ with tab_queue:
 
         st.markdown("**Why it was flagged**")
         for f in flags[flags["entry_id"] == picked].itertuples():
-            st.markdown(f"- `{f.test_id}` **{f.test_name}** ({f.severity}) - {f.reason}")
+            st.markdown(f"- `{f.test_id}` **{f.test_name}** ({f.severity}) - {md(f.reason)}")
 
         st.markdown("**Journal entry lines**")
         st.dataframe(
