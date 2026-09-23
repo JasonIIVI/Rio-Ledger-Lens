@@ -58,3 +58,31 @@ def test_methodology_records_the_model_fit(ledger, labels, tmp_path):
     )
     assert "Isolation Forest" in text
     assert "not an audit procedure" in text
+
+
+def test_review_columns_appear_when_a_store_is_supplied(ledger, labels, tmp_path):
+    from ledgerlens.review import Decision, ReviewStore
+
+    store = ReviewStore(tmp_path / "review.sqlite")
+    flags = jets.run_all(ledger)
+    top = jets.score_entries(ledger, flags).iloc[0]["entry_id"]
+    store.save_narrative(top, {
+        "summary": "A round-thousand manual entry.", "why_flagged": "w",
+        "evidence_to_request": ["x"], "suggested_control": "c", "confidence": "medium",
+    }, model="claude-test")
+    store.record(Decision(top, "escalate", "ana", "needs a senior"))
+
+    path, _ = _workpaper(ledger, labels, tmp_path, store=store)
+    wb = openpyxl.load_workbook(path)
+    ws = wb["Exceptions"]
+    header = [c.value for c in ws[1]]
+    for col in ("narrative", "narrative_confidence", "decision", "reviewer", "note"):
+        assert col in header
+    rows = {r[header.index("entry_id")]: r for r in ws.iter_rows(min_row=2, values_only=True)}
+    assert rows[top][header.index("decision")] == "escalate"
+    assert rows[top][header.index("narrative")] == "A round-thousand manual entry."
+    undecided = next(r for eid, r in rows.items() if eid != top)
+    assert undecided[header.index("decision")] is None
+
+    summary = " ".join(str(c.value) for row in wb["Summary"].iter_rows() for c in row if c.value)
+    assert "Decisions recorded" in summary

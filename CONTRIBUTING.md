@@ -6,9 +6,12 @@ This is a personal portfolio project, but the workflow is deliberately real.
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+pip install -e ".[dev,llm,mcp,app]"
 pytest -q
 ```
+
+The MCP extra needs Python 3.10+; on 3.9 it is skipped and so are its tests. No test calls the
+Claude API: the `llm` fixture in `tests/conftest.py` stands in for it.
 
 ## Before opening a pull request
 
@@ -35,4 +38,9 @@ regenerates the ledger and fails if precision drops below 0.80 or recall below 0
 - Every flag carries a written `reason`. A score with no explanation just moves the
   work to the reviewer.
 - A flag is a question, not a finding. Word reasons accordingly.
-- Never let detection code see the label file.
+- Never let detection code see the label file. The one label reader outside `evaluate` is
+  `narrative_eval.select_cases`, and it only chooses which entries to test.
+- The model never decides. Tools and CLI verbs that touch the review store record decisions
+  only under a reviewer's name; nothing the model calls can write one.
+- Eval expectations are written by hand from the entry's data, before a run, and are never
+  tuned to a model's output.

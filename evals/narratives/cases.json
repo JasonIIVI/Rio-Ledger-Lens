@@ -1,0 +1,170 @@
+{
+  "about": "Narrative eval cases. Entries are selected deterministically from the default synthetic ledger by ledgerlens.narrative_eval.select_cases; the expectations below were written by hand from each entry's own lines and flags, never from a model's output. Regexes are case-insensitive and are matched over the whole note. Confidence bands say where a careful reviewer would put the entry; the note is graded on properties, not on similarity to any reference text.",
+  "generator": {
+    "ledger": "generate_ledger() defaults: 2024-01-01 to 2025-12-31, 10 entries/day, anomaly_rate 0.015, seed 20260922",
+    "selected_by": "ledgerlens.narrative_eval.select_cases(scored, flags, labels)",
+    "reviewed": "2026-09-23"
+  },
+  "cases": [
+    {
+      "entry_id": "JE-2024-004999",
+      "archetype": "round_amount",
+      "tests_fired": "JET-01, JET-11",
+      "why_chosen": "highest-risk flagged entry injected as round_amount",
+      "must_mention": ["25,?000", "Miscellaneous Expense", "JET-01", "JET-11"],
+      "must_not_assert": [],
+      "expected_confidence": ["high", "medium"],
+      "notes": "$25,000 exactly, from cash into Miscellaneous Expense, 'adjustment per management', keyed by an approver. A round management adjustment to a catch-all account is worth a document; the note should ask for the basis, not assume one."
+    },
+    {
+      "entry_id": "JE-2025-005011",
+      "archetype": "weekend_entry",
+      "tests_fired": "JET-02, JET-05, JET-12",
+      "why_chosen": "highest-risk flagged entry injected as weekend_entry",
+      "must_mention": ["359\\.08", "Service Revenue", "JET-02", "JET-05", "JET-12"],
+      "must_not_assert": [],
+      "expected_confidence": ["high", "medium"],
+      "notes": "Three tests but $359.08: a Saturday manual revenue credit at month end by a non-approver. Cut-off is the question; the small amount argues for medium, the High test for high. Either is defensible; low is not."
+    },
+    {
+      "entry_id": "JE-2024-005020",
+      "archetype": "after_hours_entry",
+      "tests_fired": "JET-03, JET-12",
+      "why_chosen": "highest-risk flagged entry injected as after_hours_entry",
+      "must_mention": ["1,?587\\.22", "Accounts Payable", "JET-03", "JET-12"],
+      "must_not_assert": [],
+      "expected_confidence": ["medium", "low"],
+      "notes": "23:02 posting clearing payables to cash by a non-approver. Unusual hour, ordinary accounts. The note should ask about the user's working pattern, not treat the hour as evidence of anything."
+    },
+    {
+      "entry_id": "JE-2024-005029",
+      "archetype": "holiday_entry",
+      "tests_fired": "JET-04",
+      "why_chosen": "highest-risk flagged entry injected as holiday_entry",
+      "must_mention": ["231\\.34", "JET-04", "holiday"],
+      "must_not_assert": [],
+      "expected_confidence": ["medium", "low"],
+      "notes": "Labor Day receipt of $231.34 keyed by the controller. One Medium test, an approver, a trivial amount."
+    },
+    {
+      "entry_id": "JE-2024-005034",
+      "archetype": "period_end_manual_revenue",
+      "tests_fired": "JET-02, JET-05",
+      "why_chosen": "highest-risk flagged entry injected as period_end_manual_revenue",
+      "must_mention": ["2,?116\\.72", "Sales Revenue", "JET-02", "JET-05", "cut[- ]?off"],
+      "must_not_assert": [],
+      "expected_confidence": ["high", "medium"],
+      "notes": "The AU-C 240 pattern: a manual revenue accrual on the last Saturday of the period. The note must ask for cut-off support. Accruals are routine, which is why medium is also acceptable."
+    },
+    {
+      "entry_id": "JE-2024-005043",
+      "archetype": "just_under_threshold",
+      "tests_fired": "JET-06, JET-12",
+      "why_chosen": "highest-risk flagged entry injected as just_under_threshold",
+      "must_mention": ["9,?950\\.44", "10,?000", "Professional Fees", "JET-06", "JET-12"],
+      "must_not_assert": [],
+      "expected_confidence": ["high", "medium"],
+      "notes": "$9,950.44 of consulting fees, 0.5% under the $10,000 approval limit, keyed by a non-approver. The note should name the threshold and ask for related invoices from the same vendor."
+    },
+    {
+      "entry_id": "JE-2025-005058",
+      "archetype": "duplicate_entry",
+      "tests_fired": "JET-02, JET-07",
+      "why_chosen": "highest-risk flagged entry injected as duplicate_entry",
+      "must_mention": ["955\\.94", "JE-2025-005057", "JET-02", "JET-07"],
+      "must_not_assert": [],
+      "expected_confidence": ["high", "medium"],
+      "notes": "Same amount, accounts and description as JE-2025-005057 three days earlier, and posted on a Saturday from the AP subledger. The earlier entry's id is the fact that makes the evidence request specific."
+    },
+    {
+      "entry_id": "JE-2024-005069",
+      "archetype": "rare_account_pair",
+      "tests_fired": "JET-08, JET-12",
+      "why_chosen": "highest-risk flagged entry injected as rare_account_pair",
+      "must_mention": ["2,?490\\.42", "Owner'?s Equity", "JET-08", "JET-12"],
+      "must_not_assert": [],
+      "expected_confidence": ["high", "medium"],
+      "notes": "A debit to Owner's Equity against cash, described as a reclassification, by a non-approver: the only such pairing in two years. Equity movements need an authorising document."
+    },
+    {
+      "entry_id": "JE-2025-005078",
+      "archetype": "dormant_account",
+      "tests_fired": "JET-08, JET-12",
+      "why_chosen": "highest-risk flagged entry injected as dormant_account",
+      "must_mention": ["1,?697\\.10", "Sales Returns", "JET-08", "JET-12"],
+      "must_not_assert": [],
+      "expected_confidence": ["medium", "low"],
+      "notes": "A cash refund booked to Sales Returns, a pairing seen once in the population. A credit note or refund authorisation settles it."
+    },
+    {
+      "entry_id": "JE-2025-005080",
+      "archetype": "benford_drift",
+      "tests_fired": "JET-12",
+      "why_chosen": "highest-risk flagged entry injected as benford_drift",
+      "must_mention": ["6,?319\\.49", "JET-12", "dsilva"],
+      "must_not_assert": [],
+      "expected_confidence": ["low", "medium"],
+      "notes": "Injected as Benford drift, which no per-entry test can see; only the access-list test fired. To a reviewer this is an ordinary contractor repair keyed by someone off the approver list. The note should say so."
+    },
+    {
+      "entry_id": "JE-2024-005084",
+      "archetype": "unbalanced_entry",
+      "tests_fired": "JET-09, JET-10, JET-12",
+      "why_chosen": "highest-risk flagged entry injected as unbalanced_entry",
+      "must_mention": ["7,?428\\.45", "7,?284\\.88", "143\\.57", "JET-09", "JET-10", "JET-12"],
+      "must_not_assert": [],
+      "expected_confidence": ["high", "medium"],
+      "notes": "Debits and credits differ by $143.57 on a suspense clearing into a dormant catch-all account by a non-approver. Either a control failed or the extract is wrong; the note should say the extract is the first thing to confirm."
+    },
+    {
+      "entry_id": "JE-2025-005007",
+      "archetype": "multi_flag",
+      "tests_fired": "JET-01, JET-09",
+      "why_chosen": "several tests fired on one entry; the note has to weigh them",
+      "must_mention": ["10,?000", "Miscellaneous Expense", "JET-01", "JET-09"],
+      "must_not_assert": [],
+      "expected_confidence": ["high", "medium"],
+      "notes": "$10,000 exactly, to an account dormant for 305 days, 'adjustment per management', by the controller. Two Medium tests that reinforce each other."
+    },
+    {
+      "entry_id": "JE-2025-005085",
+      "archetype": "multi_flag",
+      "tests_fired": "JET-10, JET-12",
+      "why_chosen": "several tests fired on one entry; the note has to weigh them",
+      "must_mention": ["70\\.86", "65\\.06", "JET-10", "JET-12"],
+      "must_not_assert": [],
+      "expected_confidence": ["high", "medium"],
+      "notes": "An unbalanced entry for $70.86 against $65.06. Tiny, but an out-of-balance posting is structural: it should not be possible, whatever the size. The note should not let the amount talk it down to low."
+    },
+    {
+      "entry_id": "JE-2024-005012",
+      "archetype": "multi_flag",
+      "tests_fired": "JET-02, JET-12",
+      "why_chosen": "several tests fired on one entry; the note has to weigh them",
+      "must_mention": ["425\\.64", "Marketing", "JET-02", "JET-12"],
+      "must_not_assert": [],
+      "expected_confidence": ["medium", "low"],
+      "notes": "A Saturday marketing payment by a non-approver. Two weak signals; a single enquiry to the user resolves it."
+    },
+    {
+      "entry_id": "JE-2024-000115",
+      "archetype": "benign",
+      "tests_fired": "JET-12",
+      "why_chosen": "an ordinary entry only the access-list test caught; the note should say the innocent reading is more likely",
+      "must_mention": ["147\\.75", "JET-12", "7061"],
+      "must_not_assert": [],
+      "expected_confidence": ["low"],
+      "notes": "A cost-of-sales posting for invoice 7061. Nothing about the entry is unusual; the only question is why this user keys manual entries at all, and that is an access question, not an entry question."
+    },
+    {
+      "entry_id": "JE-2024-000648",
+      "archetype": "benign",
+      "tests_fired": "JET-12",
+      "why_chosen": "an ordinary entry only the access-list test caught; the note should say the innocent reading is more likely",
+      "must_mention": ["1,?809\\.30", "JET-12", "9952"],
+      "must_not_assert": [],
+      "expected_confidence": ["low"],
+      "notes": "Same shape as JE-2024-000115 with a different user and amount. Rule 5 in the system prompt exists for exactly these: an auditor's time is the scarce resource."
+    }
+  ]
+}

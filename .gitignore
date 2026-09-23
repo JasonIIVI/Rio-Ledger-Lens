@@ -29,5 +29,8 @@ out/
 !.env.example
 secrets/
 
+# Local tooling
+.claude/
+
 # OS
 .DS_Store

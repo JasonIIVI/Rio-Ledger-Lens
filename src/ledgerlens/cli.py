@@ -1,12 +1,12 @@
 """Command line entry point.
 
-Three verbs for now:
-
     ledgerlens generate  - build a labelled synthetic ledger
     ledgerlens test      - run the journal-entry tests over a ledger
     ledgerlens benford   - run digit analysis, optionally segmented
-
-Week 2 adds ``score`` (ML layer) and ``report`` (Excel workpaper).
+    ledgerlens score     - run both tiers and compare them
+    ledgerlens report    - write the Excel workpaper
+    ledgerlens narrate   - write Claude narratives for the riskiest entries
+    ledgerlens eval-narratives - grade the narrative layer against the case set
 """
 
 from __future__ import annotations
@@ -18,12 +18,15 @@ from pathlib import Path
 
 import pandas as pd
 
-from . import evaluate, jets
+from . import evaluate, jets, narrative_eval
 from .benford import benford_test, segmented_benford
+from .env import load_dotenv
 from .generate import generate_ledger
 from .ingest import load_csv, load_labels
 from .model import combine, score_ledger
+from .narrate import DEFAULT_EFFORT, DEFAULT_MAX_TOKENS, DEFAULT_MODEL, NarrativeError, Narrator
 from .report import build_workpaper
+from .review import ReviewStore
 
 
 def _parse_date(text: str) -> date:
@@ -174,15 +177,109 @@ def cmd_report(args: argparse.Namespace) -> int:
     if args.labels:
         metrics = evaluate.evaluate(flags, load_labels(args.labels), df["entry_id"].unique())
 
+    # Only an existing store is attached: a report must never create an empty
+    # review database as a side effect.
+    store = ReviewStore(args.db) if args.db and Path(args.db).exists() else None
+    if args.db and store is None:
+        print(f"No review database at {args.db}; workpaper written without review columns")
+
     path = build_workpaper(
         scored, flags, args.out,
         benford=segmented_benford(df, by="account_code"),
-        metrics=metrics, model_report=model_report, top_n=args.top,
+        metrics=metrics, model_report=model_report, top_n=args.top, store=store,
     )
     print(f"Workpaper written to {path}")
     print("  {:,} entries in population, {:,} flagged".format(
         len(scored), int((scored["risk_score"] > 0).sum())))
     return 0
+
+
+def cmd_narrate(args: argparse.Namespace) -> int:
+    """Write Claude narratives for the riskiest entries and cache them in the review store."""
+    df = load_csv(args.ledger)
+    flags = jets.run_all(df)
+    scored = jets.score_entries(df, flags)
+    if not args.no_model:
+        model_scores, _ = score_ledger(df)
+        scored = combine(scored, model_scores)
+
+    store = ReviewStore(args.db)
+    skip = set() if args.force else store.narrative_ids()
+    narrator = Narrator(model=args.model, max_tokens=args.max_tokens, effort=args.effort)
+    try:
+        result = narrator.narrate(scored, flags, df, top_n=args.top, skip=skip)
+    except NarrativeError as exc:
+        print(f"error: {exc}")
+        return 1
+
+    for entry_id, narrative in result.narratives.items():
+        store.save_narrative(entry_id, narrative, model=result.model)
+
+    print(result.describe())
+    if skip:
+        print(f"Skipped {len(skip)} entries already narrated in {args.db} (--force redoes them)")
+    for entry_id, why in result.failures.items():
+        print(f"  FAILED {entry_id}: {why}")
+    if result.narratives:
+        print(f"\n{len(result.narratives)} narrative(s) saved to {args.db}")
+    elif result.entries_requested == 0:
+        print("Nothing to narrate: every flagged entry in range already has a narrative")
+    return 0 if result.narratives or result.entries_requested == 0 else 1
+
+
+def cmd_eval_narratives(args: argparse.Namespace) -> int:
+    """Run the narrative eval and write the report, or select a fresh case skeleton."""
+    df = load_csv(args.ledger)
+    flags = jets.run_all(df)
+    scored = jets.score_entries(df, flags)
+    model_scores, _ = score_ledger(df)
+    scored = combine(scored, model_scores)
+
+    if args.select:
+        if not args.labels:
+            print("--select needs --labels: the label file decides which entries to test")
+            return 2
+        if Path(args.cases).exists() and not args.overwrite:
+            print(f"{args.cases} exists; --overwrite replaces it (hand-written expectations "
+                  "would be lost)")
+            return 2
+        cases = narrative_eval.select_cases(scored, flags, load_labels(args.labels))
+        path = narrative_eval.save_cases(cases, args.cases, generator={"ledger": args.ledger})
+        print(f"Wrote {len(cases)} case skeleton(s) to {path}. Add must_mention and "
+              "expected_confidence by hand before running.")
+        return 0
+
+    cases = narrative_eval.load_cases(args.cases)
+    problems = narrative_eval.check_cases(cases, scored)
+    if problems:
+        print("The case set is stale for this ledger:")
+        for problem in problems:
+            print("  " + problem)
+        return 2
+    if args.limit:
+        cases = cases[:args.limit]
+
+    narrator = Narrator(model=args.model, max_tokens=args.max_tokens, effort=args.effort)
+    try:
+        rows = narrative_eval.run_eval(
+            cases, narrator, scored, flags, df, args.runs_dir, resume=not args.no_resume,
+            regrade=args.regrade,
+        )
+    except NarrativeError as exc:
+        print(f"error: {exc}")
+        return 1
+
+    summary = narrative_eval.aggregate(rows)
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(narrative_eval.render_markdown(rows, summary), encoding="utf-8")
+
+    print("Graded {graded}/{cases} cases ({invalid} invalid, {errors} errors kept out of the "
+          "score)".format(**summary))
+    for metric, rate in summary["rates"].items():
+        print(f"  {metric:22s} {rate:.0%}")
+    print(f"Report written to {out}; per-case rows in {args.runs_dir}")
+    return 0 if summary["graded"] and not summary["errors"] else 1
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -231,12 +328,43 @@ def build_parser() -> argparse.ArgumentParser:
     rp.add_argument("--out", default="out/workpaper.xlsx")
     rp.add_argument("--top", type=int, default=250, help="exceptions to include")
     rp.add_argument("--no-model", action="store_true", help="rule tier only")
+    rp.add_argument("--db", help="review database; adds narrative and decision columns")
     rp.set_defaults(func=cmd_report)
+
+    n = sub.add_parser("narrate", help="write Claude narratives for the riskiest entries")
+    n.add_argument("ledger", help="path to a GL csv")
+    n.add_argument("--top", type=int, default=25, help="entries to narrate, highest risk first")
+    n.add_argument("--db", default="data/review.sqlite", help="review database to cache into")
+    n.add_argument("--model", default=DEFAULT_MODEL)
+    n.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS)
+    n.add_argument("--effort", choices=("low", "medium", "high"), default=DEFAULT_EFFORT)
+    n.add_argument("--no-model", action="store_true", help="rank by the rule tier only")
+    n.add_argument("--force", action="store_true", help="re-narrate entries already cached")
+    n.set_defaults(func=cmd_narrate)
+
+    ev = sub.add_parser("eval-narratives", help="grade the narrative layer against the case set")
+    ev.add_argument("ledger", help="path to the GL csv the cases were selected from")
+    ev.add_argument("--cases", default="evals/narratives/cases.json")
+    ev.add_argument("--out", default="docs/narrative-eval.md", help="markdown report")
+    ev.add_argument("--runs-dir", default="out/narrative-eval", help="per-case jsonl rows")
+    ev.add_argument("--model", default=DEFAULT_MODEL)
+    ev.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS)
+    ev.add_argument("--effort", choices=("low", "medium", "high"), default=DEFAULT_EFFORT)
+    ev.add_argument("--limit", type=int, help="grade only the first N cases")
+    ev.add_argument("--no-resume", action="store_true", help="re-run cases already graded")
+    ev.add_argument("--regrade", action="store_true",
+                    help="re-score stored narratives with the current grader; no API calls")
+    ev.add_argument("--select", action="store_true",
+                    help="write a case skeleton chosen from --labels instead of running")
+    ev.add_argument("--labels", help="ground-truth csv, only used with --select")
+    ev.add_argument("--overwrite", action="store_true", help="let --select replace an existing file")
+    ev.set_defaults(func=cmd_eval_narratives)
 
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
+    load_dotenv()
     parser = build_parser()
     args = parser.parse_args(argv)
     pd.set_option("display.width", 120)
