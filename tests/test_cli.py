@@ -1,3 +1,5 @@
+import json
+
 from ledgerlens.cli import build_parser, main
 
 
@@ -155,3 +157,45 @@ def test_report_attaches_an_existing_review_db_only(tmp_path, capsys):
     code = main(["report", str(tmp_path / "ledger.csv"), "--no-model", "--db", str(db),
                  "--out", str(tmp_path / "b.xlsx")])
     assert code == 0
+
+
+def test_eval_narratives_select_writes_a_skeleton_and_will_not_clobber_it(tmp_path, capsys):
+    main(["generate", "--start", "2024-01-01", "--end", "2024-06-30",
+          "--out-dir", str(tmp_path)])
+    capsys.readouterr()
+    ledger, labels = str(tmp_path / "ledger.csv"), str(tmp_path / "labels.csv")
+    cases = tmp_path / "cases.json"
+
+    assert main(["eval-narratives", ledger, "--select", "--cases", str(cases)]) == 2  # no labels
+    assert main(["eval-narratives", ledger, "--select", "--labels", labels,
+                 "--cases", str(cases)]) == 0
+    payload = json.loads(cases.read_text())
+    assert payload["cases"] and all("must_mention" in c for c in payload["cases"])
+    assert main(["eval-narratives", ledger, "--select", "--labels", labels,
+                 "--cases", str(cases)]) == 2  # exists, no --overwrite
+
+
+def test_eval_narratives_grades_the_cases_and_writes_the_report(tmp_path, capsys, monkeypatch,
+                                                                 llm):
+    from ledgerlens import cli
+    from ledgerlens.narrate import Narrator
+
+    monkeypatch.chdir(tmp_path)
+    main(["generate", "--start", "2024-01-01", "--end", "2024-06-30",
+          "--out-dir", str(tmp_path)])
+    ledger, labels = str(tmp_path / "ledger.csv"), str(tmp_path / "labels.csv")
+    cases = tmp_path / "cases.json"
+    main(["eval-narratives", ledger, "--select", "--labels", labels, "--cases", str(cases)])
+    capsys.readouterr()
+    client = llm.client()
+    monkeypatch.setattr(cli, "Narrator", lambda **kw: Narrator(client=client, **kw))
+
+    code = main(["eval-narratives", ledger, "--cases", str(cases), "--out",
+                 str(tmp_path / "report.md"), "--runs-dir", str(tmp_path / "runs"),
+                 "--limit", "3"])
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "Graded 3/3" in out
+    assert (tmp_path / "report.md").read_text().startswith("# Narrative eval")
+    assert len((tmp_path / "runs" / "results.jsonl").read_text().splitlines()) == 3
+    assert len(client.calls) == 3
