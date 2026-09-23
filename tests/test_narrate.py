@@ -154,7 +154,17 @@ def test_missing_api_key_is_a_clear_error(monkeypatch):
 def test_real_client_is_constructed_from_the_environment(monkeypatch):
     anthropic = pytest.importorskip("anthropic")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-not-a-real-key")
-    assert isinstance(Narrator().client, anthropic.Anthropic)  # no request is made
+    monkeypatch.delenv("ANTHROPIC_WORKSPACE_ID", raising=False)
+    client = Narrator().client
+    assert isinstance(client, anthropic.Anthropic)  # no request is made
+    assert "anthropic-workspace-id" not in client.default_headers
+
+
+def test_workspace_id_becomes_a_header_when_set(monkeypatch):
+    pytest.importorskip("anthropic")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-not-a-real-key")
+    monkeypatch.setenv("ANTHROPIC_WORKSPACE_ID", "wrkspc_test")
+    assert Narrator().client.default_headers["anthropic-workspace-id"] == "wrkspc_test"
 
 
 # --- parsing and validation ---------------------------------------------------

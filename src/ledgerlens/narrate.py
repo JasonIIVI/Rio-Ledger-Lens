@@ -461,7 +461,11 @@ class Narrator:
                 raise NarrativeError(
                     "the 'anthropic' package is required: pip install -e '.[llm]'"
                 ) from exc
-            self._client = anthropic.Anthropic(api_key=api_key)
+            # An organisation-level key must name a workspace on every request;
+            # a workspace-scoped key needs nothing extra.
+            workspace = os.environ.get("ANTHROPIC_WORKSPACE_ID", "").strip()
+            headers = {"anthropic-workspace-id": workspace} if workspace else None
+            self._client = anthropic.Anthropic(api_key=api_key, default_headers=headers)
         return self._client
 
     def request_params(self, prompt: str) -> dict:
