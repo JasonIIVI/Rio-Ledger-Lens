@@ -25,6 +25,7 @@ entries to test. The narrator never sees a label.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import time
@@ -76,6 +77,24 @@ METRICS = (
 #: output) and is graded as a failure; ``error`` is plumbing (a network or
 #: API failure) and is kept out of the score entirely.
 STATUSES = ("ok", "invalid", "error")
+
+#: What ``cases_sha256`` reads on rows graded before the hash was stored.
+UNRECORDED = "unrecorded"
+
+
+class CasesChangedError(ValueError):
+    """A re-grade met rows graded under a different case file than the one given."""
+
+
+def cases_digest(path: str | Path) -> str:
+    """sha256 of the case file's bytes: the provenance every graded row carries.
+
+    A grade only means something relative to the expectations it was made
+    against. Recording which file that was is what lets a reader tell a
+    re-grade under the same expectations from one under edited ones - the
+    difference between applying a grader fix and moving the goalposts.
+    """
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
 @dataclass
@@ -285,6 +304,7 @@ def aggregate(rows: list[dict]) -> dict:
     for r in rows:
         if r.get("usage"):
             usage.add(_UsageView(r["usage"]))
+    crossed = [r for r in rows if r.get("previous_cases_sha256")]
     return {
         "cases": len(rows),
         "graded": n,
@@ -292,6 +312,12 @@ def aggregate(rows: list[dict]) -> dict:
         "invalid": sum(1 for r in rows if r["status"] == "invalid"),
         "rates": rates,
         "usage": asdict(usage),
+        "provenance": {
+            "cases_sha256": sorted({r.get("cases_sha256") or UNRECORDED for r in rows}),
+            "regraded_at": max((r.get("regraded_at") or "" for r in rows), default="") or None,
+            "rows_regraded_across_cases": len(crossed),
+            "previous_cases_sha256": sorted({r["previous_cases_sha256"] for r in crossed}),
+        },
     }
 
 
@@ -311,6 +337,33 @@ def _read_jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
 
 
+def _regrade(
+    done: dict[str, dict], cases: list[Case], cases_sha256: str | None, allow_cases_change: bool,
+) -> None:
+    """Re-score stored rows in place, refusing to cross a case-file change quietly."""
+    by_id = {c.entry_id: c for c in cases}
+    rows = [r for r in done.values() if r["status"] != "error" and r["entry_id"] in by_id]
+    current = cases_sha256 or UNRECORDED
+    crossed = {r["entry_id"]: r.get("cases_sha256") or UNRECORDED for r in rows
+               if (r.get("cases_sha256") or UNRECORDED) != current}
+    if crossed and not allow_cases_change:
+        previous = ", ".join(sorted({h[:12] for h in crossed.values()}))
+        raise CasesChangedError(
+            f"{len(crossed)} row(s) were graded under a different case file ({previous}) than "
+            f"the current one ({current[:12]}), so re-scoring them would compare against "
+            "expectations that may have moved. Pass --allow-cases-change to do it anyway; the "
+            "report will say so."
+        )
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    for row in rows:
+        row["metrics"] = grade(row["narrative"], by_id[row["entry_id"]], row["prompt"])
+        row["regraded_at"] = now
+        if row["entry_id"] in crossed:
+            # Keep the earliest known origin: a second crossing must not erase the first.
+            row.setdefault("previous_cases_sha256", crossed[row["entry_id"]])
+            row["cases_sha256"] = cases_sha256
+
+
 def run_eval(
     cases: list[Case],
     narrator: Narrator,
@@ -320,6 +373,8 @@ def run_eval(
     out_dir: str | Path,
     resume: bool = True,
     regrade: bool = False,
+    cases_sha256: str | None = None,
+    allow_cases_change: bool = False,
 ) -> list[dict]:
     """Run the real narrator over every case and grade the result.
 
@@ -328,16 +383,19 @@ def run_eval(
     ``errors.jsonl`` sidecar rather than into the score. ``regrade`` re-scores
     the stored narratives with the current grader without calling the API,
     which is how a grader fix is applied to a run already paid for.
+
+    Every row records ``cases_sha256``, the case file it was graded against.
+    A re-grade under a different file is refused unless ``allow_cases_change``
+    says otherwise, and then the row keeps the hash it was first graded under
+    so the report can disclose it. Applying a grader fix leaves no such mark;
+    editing expectations after seeing the output cannot avoid one.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     results_path, errors_path = out_dir / "results.jsonl", out_dir / "errors.jsonl"
     done = {r["entry_id"]: r for r in _read_jsonl(results_path)} if resume else {}
     if regrade and done:
-        by_id = {c.entry_id: c for c in cases}
-        for row in done.values():
-            if row["status"] != "error" and row["entry_id"] in by_id:
-                row["metrics"] = grade(row["narrative"], by_id[row["entry_id"]], row["prompt"])
+        _regrade(done, cases, cases_sha256, allow_cases_change)
         results_path.write_text(
             "".join(json.dumps(r) + "\n" for r in done.values()), encoding="utf-8"
         )
@@ -373,6 +431,7 @@ def run_eval(
             "metrics": grade(narrative, case, prompt) if status != "error" else None,
             "prompt": prompt,
             "graded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "cases_sha256": cases_sha256,
         }
         target = errors_path if status == "error" else results_path
         with target.open("a", encoding="utf-8") as handle:
@@ -381,7 +440,38 @@ def run_eval(
     return rows
 
 
-def render_markdown(rows: list[dict], summary: dict) -> str:
+def _provenance_lines(summary: dict, runs_dir: str | Path | None) -> list[str]:
+    """Which case file graded these rows, where the rows are, and any crossing."""
+    provenance = summary.get("provenance") or {}
+    hashes = provenance.get("cases_sha256") or []
+    parts = ["Case file sha256: " + (
+        " / ".join(f"`{h}`" for h in hashes) if hashes else UNRECORDED)]
+    if runs_dir:
+        parts.append(f"rows: `{Path(runs_dir).as_posix()}/results.jsonl`")
+    if provenance.get("regraded_at"):
+        parts.append(f"re-graded {provenance['regraded_at']} by the grader in this commit, "
+                     "no API calls")
+    lines = [" · ".join(parts)]
+    crossed = provenance.get("rows_regraded_across_cases") or 0
+    if crossed:
+        previous = provenance.get("previous_cases_sha256") or []
+        origins = " / ".join(
+            "one whose hash was not recorded (the rows predate provenance tracking)"
+            if h == UNRECORDED else f"`{h}`" for h in previous
+        )
+        lines += [
+            "",
+            f"**Provenance note:** {crossed} row(s) were first graded under a different case "
+            f"file - {origins} - and re-graded under the one above. If the expectations differ "
+            "between the two files, the re-graded score is not the original run's score; "
+            "compare the files before reading it as one.",
+        ]
+    return lines
+
+
+def render_markdown(
+    rows: list[dict], summary: dict, runs_dir: str | Path | None = None,
+) -> str:
     """The report that goes in docs/: what was measured, the numbers, every miss."""
     model = next((r["model"] for r in rows if r.get("model")), "unknown")
     when = max((r["graded_at"] for r in rows), default="")
@@ -392,6 +482,8 @@ def render_markdown(rows: list[dict], summary: dict) -> str:
         f"Run: {when} · model: `{model}` · cases: {summary['cases']} · graded: "
         f"{summary['graded']} · invalid: {summary['invalid']} · errors (not scored): "
         f"{summary['errors']}",
+        "",
+        *_provenance_lines(summary, runs_dir),
         "",
         "## What this measures",
         "",

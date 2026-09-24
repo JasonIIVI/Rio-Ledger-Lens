@@ -1,5 +1,6 @@
 """The narrative eval: selection, grading, running and reporting - no API key needed."""
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -11,8 +12,11 @@ from ledgerlens.model import combine, score_ledger
 from ledgerlens.narrate import NarrativeError, Narrator, build_prompt, entry_context
 from ledgerlens.narrative_eval import (
     METRICS,
+    UNRECORDED,
     Case,
+    CasesChangedError,
     aggregate,
+    cases_digest,
     check_cases,
     grade,
     load_cases,
@@ -167,6 +171,84 @@ def test_regrade_rescores_stored_rows_without_calling_the_api(sample, scored, le
     assert rows[0]["metrics"]["confidence_in_band"] is False
     stored = json.loads((tmp_path / "results.jsonl").read_text().splitlines()[0])
     assert stored["metrics"]["confidence_in_band"] is False
+
+
+def test_cases_digest_is_the_sha256_of_the_file_bytes(tmp_path):
+    path = tmp_path / "cases.json"
+    path.write_text('{"cases": []}')
+    assert cases_digest(path) == hashlib.sha256(b'{"cases": []}').hexdigest()
+
+
+def test_rows_carry_the_case_file_hash_and_a_regrade_will_not_cross_a_change_quietly(
+        sample, scored, ledger, llm, tmp_path):
+    case, prompt, entry, lines = sample
+    combined, flags = scored
+    same, edited = "a" * 64, "b" * 64
+    results = tmp_path / "results.jsonl"
+
+    first = llm.client([llm.response(oracle(case, entry, lines))])
+    rows = run_eval([case], Narrator(client=first), combined, flags, ledger, tmp_path,
+                    cases_sha256=same)
+    assert rows[0]["cases_sha256"] == same
+    assert json.loads(results.read_text().splitlines()[0])["cases_sha256"] == same
+
+    # A grader fix under the same file re-grades freely and leaves no mark.
+    quiet = llm.client()
+    rows = run_eval([case], Narrator(client=quiet), combined, flags, ledger, tmp_path,
+                    regrade=True, cases_sha256=same)
+    assert quiet.calls == []
+    assert rows[0]["regraded_at"]
+    assert "previous_cases_sha256" not in rows[0]
+    assert aggregate(rows)["provenance"]["rows_regraded_across_cases"] == 0
+
+    # Edited expectations: refused outright, nothing rewritten, still no API call.
+    stricter = Case(**{**case.__dict__, "expected_confidence": ["high"]})  # oracle says medium
+    before = results.read_text()
+    with pytest.raises(CasesChangedError, match="allow-cases-change"):
+        run_eval([stricter], Narrator(client=quiet), combined, flags, ledger, tmp_path,
+                 regrade=True, cases_sha256=edited)
+    assert results.read_text() == before
+    assert quiet.calls == []
+
+    # Allowed explicitly: re-graded, and the row remembers where it came from.
+    rows = run_eval([stricter], Narrator(client=quiet), combined, flags, ledger, tmp_path,
+                    regrade=True, cases_sha256=edited, allow_cases_change=True)
+    assert rows[0]["metrics"]["confidence_in_band"] is False
+    assert rows[0]["cases_sha256"] == edited
+    assert rows[0]["previous_cases_sha256"] == same
+    summary = aggregate(rows)
+    assert summary["provenance"]["cases_sha256"] == [edited]
+    assert summary["provenance"]["rows_regraded_across_cases"] == 1
+    assert summary["provenance"]["previous_cases_sha256"] == [same]
+    report = render_markdown(rows, summary, runs_dir=tmp_path)
+    assert edited in report and same in report
+    assert "Provenance note" in report and "results.jsonl" in report
+
+    # A second crossing keeps the earliest origin rather than the last.
+    rows = run_eval([stricter], Narrator(client=quiet), combined, flags, ledger, tmp_path,
+                    regrade=True, cases_sha256="c" * 64, allow_cases_change=True)
+    assert rows[0]["previous_cases_sha256"] == same
+
+
+def test_rows_graded_before_provenance_existed_count_as_unrecorded(sample, scored, ledger, llm,
+                                                                    tmp_path):
+    case, prompt, entry, lines = sample
+    combined, flags = scored
+    results = tmp_path / "results.jsonl"
+    run_eval([case], Narrator(client=llm.client([llm.response(oracle(case, entry, lines))])),
+             combined, flags, ledger, tmp_path, cases_sha256="a" * 64)
+    stored = json.loads(results.read_text())
+    del stored["cases_sha256"]  # what a row from before this field looks like
+    results.write_text(json.dumps(stored) + "\n")
+
+    with pytest.raises(CasesChangedError, match=UNRECORDED):
+        run_eval([case], Narrator(client=llm.client()), combined, flags, ledger, tmp_path,
+                 regrade=True, cases_sha256="a" * 64)
+    rows = run_eval([case], Narrator(client=llm.client()), combined, flags, ledger, tmp_path,
+                    regrade=True, cases_sha256="a" * 64, allow_cases_change=True)
+    assert rows[0]["previous_cases_sha256"] == UNRECORDED
+    report = render_markdown(rows, aggregate(rows))
+    assert "hash was not recorded" in report
 
 
 def test_numbers_normalise_formatting_and_ignore_small_tokens():

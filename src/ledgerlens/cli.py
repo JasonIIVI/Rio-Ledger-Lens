@@ -258,13 +258,18 @@ def cmd_eval_narratives(args: argparse.Namespace) -> int:
         return 2
     if args.limit:
         cases = cases[:args.limit]
+    cases_sha256 = narrative_eval.cases_digest(args.cases)
 
     narrator = Narrator(model=args.model, max_tokens=args.max_tokens, effort=args.effort)
     try:
         rows = narrative_eval.run_eval(
             cases, narrator, scored, flags, df, args.runs_dir, resume=not args.no_resume,
-            regrade=args.regrade,
+            regrade=args.regrade, cases_sha256=cases_sha256,
+            allow_cases_change=args.allow_cases_change,
         )
+    except narrative_eval.CasesChangedError as exc:
+        print(f"refused: {exc}")
+        return 2
     except NarrativeError as exc:
         print(f"error: {exc}")
         return 1
@@ -272,12 +277,14 @@ def cmd_eval_narratives(args: argparse.Namespace) -> int:
     summary = narrative_eval.aggregate(rows)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(narrative_eval.render_markdown(rows, summary), encoding="utf-8")
+    out.write_text(narrative_eval.render_markdown(rows, summary, runs_dir=args.runs_dir),
+                   encoding="utf-8")
 
     print("Graded {graded}/{cases} cases ({invalid} invalid, {errors} errors kept out of the "
           "score)".format(**summary))
     for metric, rate in summary["rates"].items():
         print(f"  {metric:22s} {rate:.0%}")
+    print(f"Case file sha256 {cases_sha256}")
     print(f"Report written to {out}; per-case rows in {args.runs_dir}")
     return 0 if summary["graded"] and not summary["errors"] else 1
 
@@ -354,6 +361,9 @@ def build_parser() -> argparse.ArgumentParser:
     ev.add_argument("--no-resume", action="store_true", help="re-run cases already graded")
     ev.add_argument("--regrade", action="store_true",
                     help="re-score stored narratives with the current grader; no API calls")
+    ev.add_argument("--allow-cases-change", action="store_true",
+                    help="with --regrade: re-score rows graded under a different case file "
+                         "(the report discloses it)")
     ev.add_argument("--select", action="store_true",
                     help="write a case skeleton chosen from --labels instead of running")
     ev.add_argument("--labels", help="ground-truth csv, only used with --select")

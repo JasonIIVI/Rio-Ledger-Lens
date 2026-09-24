@@ -1,3 +1,4 @@
+import hashlib
 import json
 
 from ledgerlens.cli import build_parser, main
@@ -190,12 +191,31 @@ def test_eval_narratives_grades_the_cases_and_writes_the_report(tmp_path, capsys
     client = llm.client()
     monkeypatch.setattr(cli, "Narrator", lambda **kw: Narrator(client=client, **kw))
 
-    code = main(["eval-narratives", ledger, "--cases", str(cases), "--out",
-                 str(tmp_path / "report.md"), "--runs-dir", str(tmp_path / "runs"),
-                 "--limit", "3"])
+    report, runs = tmp_path / "report.md", tmp_path / "runs"
+    argv = ["eval-narratives", ledger, "--cases", str(cases), "--out", str(report),
+            "--runs-dir", str(runs), "--limit", "3"]
+    code = main(argv)
     out = capsys.readouterr().out
     assert code == 0, out
     assert "Graded 3/3" in out
-    assert (tmp_path / "report.md").read_text().startswith("# Narrative eval")
-    assert len((tmp_path / "runs" / "results.jsonl").read_text().splitlines()) == 3
+    assert report.read_text().startswith("# Narrative eval")
+    rows = [json.loads(line) for line in (runs / "results.jsonl").read_text().splitlines()]
+    assert len(rows) == 3
     assert len(client.calls) == 3
+
+    # Every row and the report say which case file graded them.
+    digest = hashlib.sha256(cases.read_bytes()).hexdigest()
+    assert all(r["cases_sha256"] == digest for r in rows)
+    assert digest in report.read_text()
+
+    # Editing a band after the run: a plain re-grade is refused, an explicit one is disclosed.
+    payload = json.loads(cases.read_text())
+    payload["cases"][0]["expected_confidence"] = ["low"]
+    cases.write_text(json.dumps(payload))
+    assert main(argv + ["--regrade"]) == 2
+    assert "allow-cases-change" in capsys.readouterr().out
+    assert main(argv + ["--regrade", "--allow-cases-change"]) == 0
+    assert len(client.calls) == 3  # neither re-grade called the API
+    text = report.read_text()
+    assert "Provenance note" in text and digest in text
+    assert hashlib.sha256(cases.read_bytes()).hexdigest() in text
