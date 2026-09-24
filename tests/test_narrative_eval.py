@@ -9,8 +9,15 @@ import pytest
 
 from ledgerlens import jets
 from ledgerlens.model import combine, score_ledger
-from ledgerlens.narrate import NarrativeError, Narrator, build_prompt, entry_context
+from ledgerlens.narrate import (
+    SYSTEM_PROMPT,
+    NarrativeError,
+    Narrator,
+    build_prompt,
+    entry_context,
+)
 from ledgerlens.narrative_eval import (
+    CITATION_NUMBERS,
     METRICS,
     UNRECORDED,
     Case,
@@ -146,14 +153,30 @@ def test_each_property_fails_on_its_own(sample, damage, failing):
     assert metrics["passed"] is False
 
 
-def test_numbers_from_the_system_prompt_are_not_inventions(sample):
-    """The first real run cited AU-C 240, which the model saw in the system prompt."""
+def test_only_cited_standards_are_admitted_beyond_the_entry(sample):
+    """AU-C 240 is a citation; the system prompt's style-example figures are not.
+
+    The first real run cited AU-C 240 and was marked as inventing a number.
+    The first fix admitted every number in the system prompt, which also let
+    through the style example's $9,912 and account 4000 - a note copying the
+    example onto an entry with neither would have passed. Only the citation is
+    admitted now, and every admitted citation must be something the model saw.
+    """
     case, prompt, entry, lines = sample
-    narrative = oracle(case, entry, lines)
-    narrative["why_flagged"] += " This is the pattern AU-C 240 directs auditors to test."
-    assert grade(narrative, case, prompt)["no_invented_numbers"] is True
-    narrative["why_flagged"] += " The related invoice was for $123,456.78."
-    assert grade(narrative, case, prompt)["no_invented_numbers"] is False
+    assert CITATION_NUMBERS <= numbers_in(SYSTEM_PROMPT)
+    assert "9912" not in numbers_in(prompt)  # the sample entry is not the example
+
+    cited = oracle(case, entry, lines)
+    cited["why_flagged"] += " This is the pattern AU-C 240 directs auditors to test."
+    assert grade(cited, case, prompt)["no_invented_numbers"] is True
+
+    copied = oracle(case, entry, lines)
+    copied["evidence_to_request"].append("Obtain the signed approval for this $9,912 payment")
+    assert grade(copied, case, prompt)["no_invented_numbers"] is False
+
+    invented = oracle(case, entry, lines)
+    invented["why_flagged"] += " The related invoice was for $123,456.78."
+    assert grade(invented, case, prompt)["no_invented_numbers"] is False
 
 
 def test_regrade_rescores_stored_rows_without_calling_the_api(sample, scored, ledger, llm,
@@ -301,6 +324,7 @@ def test_run_eval_records_resumes_and_keeps_plumbing_out_of_the_score(sample, sc
     assert all(r["entry_id"] in report for r in rerun)
     assert "Misses" in report
     assert "max_tokens" in report
+    assert "(or a cited standard)" in report  # the label says what the check now measures
 
 
 def test_run_eval_fails_once_without_a_key(sample, scored, ledger, monkeypatch, tmp_path):

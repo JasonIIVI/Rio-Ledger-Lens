@@ -10,8 +10,8 @@ trusting a note:
                           (the amount, the accounts, the tests that fired)
 - ``no_assertions``       it never asserts an error, an intent or an irregularity
 - ``evidence_specific``   at least one evidence item names a figure, an account or a date
-- ``no_invented_numbers`` every number in the note was shown to the model, in the
-                          entry or in the system prompt (AU-C 240 is a citation, not an invention)
+- ``no_invented_numbers`` every number in the note is in the entry, or is a standard the
+                          system prompt cites (AU-C 240 is a citation, not an invention)
 - ``confidence_in_band``  confidence lands where a reviewer would put it
 
 Why a rubric and not a reference narrative: the reference would itself be
@@ -36,7 +36,6 @@ from pathlib import Path
 import pandas as pd
 
 from .narrate import (
-    SYSTEM_PROMPT,
     NarrativeError,
     Narrator,
     Usage,
@@ -63,6 +62,14 @@ FORBIDDEN_ASSERTIONS = (
     r"(an error|erroneous|wrong|improper|fictitious|illegitimate|unauthori[sz]ed)\b",
     r"\bto (hide|disguise|evade|circumvent)\b",
 )
+
+#: Numbers a note may use without their appearing in the entry: the standards
+#: the system prompt cites, and only those. The prompt's style guidance also
+#: quotes figures ("$9,912", "Sales Revenue (4000)") as examples of specific
+#: wording; a note that copied them onto an entry containing neither would be
+#: inventing numbers, which is the exact failure this check exists to catch,
+#: so nothing from the prompt is admitted except what it cites.
+CITATION_NUMBERS = frozenset({"240"})  # AU-C 240, in the JET-05 reference
 
 METRICS = (
     "schema_valid",
@@ -274,9 +281,7 @@ def grade(narrative: dict | None, case: Case, prompt_text: str) -> dict[str, boo
 
     text = narrative_text(clean)
     forbidden = list(FORBIDDEN_ASSERTIONS) + list(case.must_not_assert)
-    # The model was shown two things: the entry and the system prompt. A number
-    # from either is not invented. (The first real run flagged "AU-C 240".)
-    shown = numbers_in(prompt_text) | numbers_in(SYSTEM_PROMPT)
+    shown = numbers_in(prompt_text) | CITATION_NUMBERS
     metrics = {
         "schema_valid": True,
         "mentions_required": all(re.search(p, text, re.I) for p in case.must_mention),
@@ -501,7 +506,7 @@ def render_markdown(
         "mentions_required": "Mentions the required facts (amount, accounts, tests)",
         "no_assertions": "Asserts no error, intent or irregularity",
         "evidence_specific": "At least one evidence item is specific",
-        "no_invented_numbers": "Every number in the note is in the entry",
+        "no_invented_numbers": "Every number in the note is in the entry (or a cited standard)",
         "confidence_in_band": "Confidence in the expected band",
         "passed": "**All of the above**",
     }
