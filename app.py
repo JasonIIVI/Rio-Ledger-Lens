@@ -169,6 +169,14 @@ with tab_queue:
         # ---- narrative: advisory text, never a decision ----
         st.markdown("**Reviewer note** (written by Claude, advisory only)")
         narrative = store.get_narrative(picked)
+        # The note the reviewer actually read is the one rendered on the
+        # *previous* run of this script: a submit reruns everything, and a
+        # version written in between (a rewrite, another reviewer) would
+        # otherwise be recorded as the one they saw. So the id on screen is
+        # remembered per entry, and read back before it is overwritten.
+        shown_key = f"shown-{picked}"
+        seen_id = st.session_state.get(shown_key)
+        st.session_state[shown_key] = narrative["id"] if narrative else None
         if narrative:
             render_narrative(narrative)
         else:
@@ -202,11 +210,22 @@ with tab_queue:
         if not reviewer:
             st.caption("Enter your name in the sidebar to record a decision.")
         if submitted:
+            latest_id = narrative["id"] if narrative else None
             # A form submits once per click, and this guard absorbs a double click:
             # an append-only log should not carry an accidental duplicate.
             signature = (picked, choice, note.strip())
             if st.session_state.get("last_decision") == signature:
                 st.warning("That decision was just recorded.")
+            elif seen_id != latest_id:
+                # The note changed between the render the reviewer read and
+                # this submit. Recording the new id would claim they read it;
+                # recording the old one would attach advice that is no longer
+                # on screen. Neither is true, so nothing is recorded.
+                st.warning(
+                    "The reviewer note changed while you were reading it (now note "
+                    f"#{latest_id if latest_id is not None else 'none'}). Read the note "
+                    "shown above and record the decision again."
+                )
             else:
                 # The decision records the note that was on screen, so the
                 # workpaper can show what the reviewer read even if the note
@@ -214,7 +233,7 @@ with tab_queue:
                 store.record(Decision(
                     entry_id=picked, decision=choice, reviewer=reviewer, note=note.strip(),
                     risk_score=float(row["risk_score"]), model_score=float(row["model_score"]),
-                    narrative_id=narrative["id"] if narrative else None,
+                    narrative_id=seen_id,
                 ))
                 st.session_state["last_decision"] = signature
                 st.session_state["flash"] = f"Recorded: {choice} by {reviewer}."

@@ -46,6 +46,57 @@ def test_dashboard_renders_the_queue_and_the_review_loop(data_dir, tmp_path):
     assert any("Record decision" in b.label for b in at.button)
 
 
+def _note(summary):
+    return {"summary": summary, "why_flagged": "w", "evidence_to_request": ["x"],
+            "suggested_control": "c", "confidence": "low"}
+
+
+def _submit(at, decision="Accept", note="fine"):
+    at.radio[0].set_value(decision)
+    at.text_area[0].set_value(note)
+    next(b for b in at.button if "Record decision" in b.label).click()
+    at.run()
+    assert not at.exception, at.exception
+
+
+def test_a_decision_records_the_note_the_reviewer_read_not_one_written_meanwhile(data_dir,
+                                                                                   tmp_path):
+    """A submit reruns the script, so the note is fetched again at that moment.
+
+    If a version was written in between, the decision must not claim the
+    reviewer read it; the dashboard refuses and shows the new note instead.
+    """
+    db = tmp_path / "review.sqlite"
+    at = _run(data_dir, db, reviewer="ana")
+    picked = at.selectbox(key="picked").value
+    store = ReviewStore(db)
+    first = store.save_narrative(picked, _note("what ana read"), model="claude-test")
+    at.run()
+    assert any(f"note #{first}" in c.value for c in at.caption)
+
+    second = store.save_narrative(picked, _note("written meanwhile"), model="claude-test")
+    _submit(at)
+    assert store.history(picked).empty
+    assert any("changed while you were reading" in w.value for w in at.warning)
+    assert any(f"note #{second}" in c.value for c in at.caption)  # the rerun shows the new one
+
+    # Read it, decide again: this time the recorded note is the one on screen.
+    _submit(at)
+    history = store.history(picked)
+    assert history["decision"].tolist() == ["accept"]
+    assert history["narrative_id"].tolist() == [second]
+
+
+def test_a_decision_with_no_note_on_screen_records_none(data_dir, tmp_path):
+    db = tmp_path / "review.sqlite"
+    at = _run(data_dir, db, reviewer="ana")
+    picked = at.selectbox(key="picked").value
+    _submit(at, decision="Dismiss", note="routine")
+    history = ReviewStore(db).history(picked)
+    assert history["decision"].tolist() == ["dismiss"]
+    assert history["narrative_id"].isna().all()
+
+
 def test_dashboard_shows_recorded_decisions_and_the_note_they_saw(data_dir, tmp_path):
     db = tmp_path / "review.sqlite"
     first = _run(data_dir, db, reviewer="ana")
