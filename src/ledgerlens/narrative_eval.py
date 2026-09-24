@@ -86,7 +86,9 @@ GRADER_NOTES = (
      "4000, so a note that copied the example onto an entry with neither would have passed. "
      "The union with the prompt was replaced by an explicit citation allowlist (AU-C 240 "
      "only). Re-grading the 2026-09-23 run under it changed no row: no note had used either "
-     "figure, and the score stayed at 94%."),
+     "figure, and the score stayed at 94%. Those rows predate the case-file hash; git records "
+     "the case file as unchanged since commit 1ff36ef (2026-09-23 19:29 UTC), before the run "
+     "was graded (19:57 UTC), which is the ordering the first review asked to have checked."),
 )
 
 METRICS = (

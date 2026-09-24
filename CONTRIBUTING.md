@@ -44,3 +44,8 @@ regenerates the ledger and fails if precision drops below 0.80 or recall below 0
   only under a reviewer's name; nothing the model calls can write one.
 - Eval expectations are written by hand from the entry's data, before a run, and are never
   tuned to a model's output.
+- Decisions and narratives are append-only, and the database enforces it. Rewriting a note adds
+  a version; the decision keeps pointing at the version the reviewer read.
+- Eval run rows under `evals/narratives/runs/` are committed and never hand-edited. A grader
+  change is recorded in `GRADER_NOTES` with what it did to the published score, and the report
+  prints it.
