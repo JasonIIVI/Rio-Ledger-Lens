@@ -186,17 +186,57 @@ def test_regrade_rescores_stored_rows_without_calling_the_api(sample, scored, le
                                                               tmp_path):
     case, prompt, entry, lines = sample
     combined, flags = scored
+    same = "a" * 64
     first = llm.client([llm.response(oracle(case, entry, lines))])
-    run_eval([case], Narrator(client=first), combined, flags, ledger, tmp_path)
+    run_eval([case], Narrator(client=first), combined, flags, ledger, tmp_path, cases_sha256=same)
 
     stricter = Case(**{**case.__dict__, "expected_confidence": ["high"]})  # oracle says medium
     second = llm.client()
     rows = run_eval([stricter], Narrator(client=second), combined, flags, ledger, tmp_path,
-                    regrade=True)
+                    regrade=True, cases_sha256=same)
     assert second.calls == []
     assert rows[0]["metrics"]["confidence_in_band"] is False
     stored = json.loads((tmp_path / "results.jsonl").read_text().splitlines()[0])
     assert stored["metrics"]["confidence_in_band"] is False
+
+
+def test_a_regrade_can_never_reach_the_api(sample, scored, ledger, llm, tmp_path):
+    """A mistyped directory, a new case or --no-resume must not turn into a paid run."""
+    case, prompt, entry, lines = sample
+    combined, flags = scored
+    same = "a" * 64
+    quiet = llm.client()
+    results = tmp_path / "results.jsonl"
+
+    with pytest.raises(FileNotFoundError, match="nothing to re-grade"):
+        run_eval([case], Narrator(client=quiet), combined, flags, ledger, tmp_path / "typo",
+                 regrade=True, cases_sha256=same)
+    assert quiet.calls == []
+    assert not (tmp_path / "typo").exists()
+
+    run_eval([case], Narrator(client=llm.client([llm.response(oracle(case, entry, lines))])),
+             combined, flags, ledger, tmp_path, cases_sha256=same)
+    others = combined[(combined["risk_score"] > 0) & (combined["entry_id"] != case.entry_id)]
+    added = Case(others.iloc[0]["entry_id"], "y", others.iloc[0]["tests_fired"], "w")
+    rows = run_eval([case, added], Narrator(client=quiet), combined, flags, ledger, tmp_path,
+                    regrade=True, cases_sha256=same)
+    assert quiet.calls == []
+    assert [r["status"] for r in rows] == ["ok", "missing"]
+    assert len(results.read_text().splitlines()) == 1  # the placeholder is not stored
+    summary = aggregate(rows)
+    assert (summary["graded"], summary["missing"]) == (1, 1)
+    assert summary["rates"]["passed"] == 1.0  # missing rows are not averaged in
+    report = render_markdown(rows, summary, cases=[case, added])
+    assert "missing (no stored row, not narrated): 1" in report
+    assert f"| {added.entry_id} |" in report and "missing:" in report
+    assert "1/1" in report  # the baseline counts graded cases only
+
+    with pytest.raises(ValueError, match="no-resume"):
+        run_eval([case], Narrator(client=quiet), combined, flags, ledger, tmp_path,
+                 regrade=True, resume=False, cases_sha256=same)
+    with pytest.raises(ValueError, match="cases_sha256"):
+        run_eval([case], Narrator(client=quiet), combined, flags, ledger, tmp_path, regrade=True)
+    assert quiet.calls == []
 
 
 def test_cases_digest_is_the_sha256_of_the_file_bytes(tmp_path):
@@ -364,14 +404,19 @@ def test_run_eval_records_resumes_and_keeps_plumbing_out_of_the_score(sample, sc
     assert "(or a cited standard)" in report  # the label says what the check now measures
 
 
-def test_a_run_that_does_not_resume_starts_its_files_clean(sample, scored, ledger, llm,
-                                                           tmp_path):
+def test_a_run_that_does_not_resume_never_deletes_stored_rows(sample, scored, ledger, llm,
+                                                             tmp_path):
     case, prompt, entry, lines = sample
     combined, flags = scored
-    for _ in range(2):
-        client = llm.client([llm.response(oracle(case, entry, lines))])
-        run_eval([case], Narrator(client=client), combined, flags, ledger, tmp_path, resume=False)
-    assert len((tmp_path / "results.jsonl").read_text().splitlines()) == 1
+    run_eval([case], Narrator(client=llm.client([llm.response(oracle(case, entry, lines))])),
+             combined, flags, ledger, tmp_path, resume=False)
+    before = (tmp_path / "results.jsonl").read_text()
+
+    again = llm.client([llm.response(oracle(case, entry, lines))])
+    with pytest.raises(FileExistsError, match="never deleted"):
+        run_eval([case], Narrator(client=again), combined, flags, ledger, tmp_path, resume=False)
+    assert again.calls == []
+    assert (tmp_path / "results.jsonl").read_text() == before
 
 
 def test_default_runs_dir_dates_new_runs_and_finds_the_newest_to_regrade(tmp_path):

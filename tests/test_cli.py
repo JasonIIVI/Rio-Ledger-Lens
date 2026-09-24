@@ -1,6 +1,8 @@
 import hashlib
 import json
 
+import pytest
+
 from ledgerlens.cli import build_parser, main
 
 
@@ -192,9 +194,15 @@ def test_eval_narratives_defaults_to_a_dated_runs_dir_and_regrades_the_newest(
     monkeypatch.setattr(cli, "Narrator", lambda **kw: Narrator(client=client, **kw))
     argv = ["eval-narratives", ledger, "--cases", str(cases), "--out", str(report), "--limit", "2"]
 
-    # Nothing to re-grade yet is an error that names the flag, not a fresh paid run.
+    # Nothing to re-grade yet is an error that names the flag, not a fresh paid run,
+    # whether the directory is defaulted or mistyped; and a re-grade cannot start over.
     assert main(argv + ["--regrade"]) == 2
     assert "runs-dir" in capsys.readouterr().out
+    assert main(argv + ["--regrade", "--runs-dir", str(tmp_path / "typo")]) == 2
+    assert "nothing to re-grade" in capsys.readouterr().out
+    with pytest.raises(SystemExit) as refused:
+        main(argv + ["--regrade", "--no-resume"])
+    assert refused.value.code == 2
     assert client.calls == []
 
     assert main(argv) == 0
@@ -254,3 +262,8 @@ def test_eval_narratives_grades_the_cases_and_writes_the_report(tmp_path, capsys
     text = report.read_text()
     assert "Provenance note" in text and digest in text
     assert hashlib.sha256(cases.read_bytes()).hexdigest() in text
+
+    # Starting over into a directory that holds rows is refused, not overwritten.
+    assert main(argv + ["--no-resume"]) == 2
+    assert "never deleted" in capsys.readouterr().out
+    assert len(client.calls) == 3

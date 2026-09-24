@@ -276,6 +276,9 @@ def cmd_eval_narratives(args: argparse.Namespace) -> int:
     except narrative_eval.CasesChangedError as exc:
         print(f"refused: {exc}")
         return 2
+    except (FileNotFoundError, FileExistsError, ValueError) as exc:
+        print(f"error: {exc}")
+        return 2
     except NarrativeError as exc:
         print(f"error: {exc}")
         return 1
@@ -292,9 +295,12 @@ def cmd_eval_narratives(args: argparse.Namespace) -> int:
           "score)".format(**summary))
     for metric, rate in summary["rates"].items():
         print(f"  {metric:22s} {rate:.0%}")
+    if summary["missing"]:
+        print(f"{summary['missing']} case(s) have no stored row and were not narrated: a "
+              "re-grade never calls the API. Run without --regrade to narrate them.")
     print(f"Case file sha256 {cases_sha256}")
     print(f"Report written to {out}; per-case rows in {runs_dir}")
-    return 0 if summary["graded"] and not summary["errors"] else 1
+    return 0 if summary["graded"] and not summary["errors"] and not summary["missing"] else 1
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -368,9 +374,13 @@ def build_parser() -> argparse.ArgumentParser:
     ev.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS)
     ev.add_argument("--effort", choices=("low", "medium", "high"), default=DEFAULT_EFFORT)
     ev.add_argument("--limit", type=int, help="grade only the first N cases")
-    ev.add_argument("--no-resume", action="store_true", help="re-run cases already graded")
-    ev.add_argument("--regrade", action="store_true",
-                    help="re-score stored narratives with the current grader; no API calls")
+    mode = ev.add_mutually_exclusive_group()
+    mode.add_argument("--no-resume", action="store_true",
+                      help="re-run every case into a fresh --runs-dir (stored rows are never "
+                           "deleted)")
+    mode.add_argument("--regrade", action="store_true",
+                      help="re-score stored narratives with the current grader; never calls "
+                           "the API")
     ev.add_argument("--allow-cases-change", action="store_true",
                     help="with --regrade: re-score rows graded under a different case file "
                          "(the report discloses it)")

@@ -102,8 +102,9 @@ METRICS = (
 
 #: Statuses a case can end in. ``invalid`` is the model's doing (unusable
 #: output) and is graded as a failure; ``error`` is plumbing (a network or
-#: API failure) and is kept out of the score entirely.
-STATUSES = ("ok", "invalid", "error")
+#: API failure) and is kept out of the score entirely; ``missing`` is a case
+#: a re-grade found no stored row for, reported rather than narrated.
+STATUSES = ("ok", "invalid", "error", "missing")
 
 #: What ``cases_sha256`` reads on rows graded before the hash was stored.
 UNRECORDED = "unrecorded"
@@ -370,6 +371,7 @@ def aggregate(rows: list[dict]) -> dict:
         "graded": n,
         "errors": sum(1 for r in rows if r["status"] == "error"),
         "invalid": sum(1 for r in rows if r["status"] == "invalid"),
+        "missing": sum(1 for r in rows if r["status"] == "missing"),
         "rates": rates,
         "usage": asdict(usage),
         "provenance": {
@@ -424,6 +426,37 @@ def _regrade(
             row["cases_sha256"] = cases_sha256
 
 
+def _missing_row(case: Case, cases_sha256: str | None) -> dict:
+    """The row for a case a re-grade found nothing stored for. Never written to disk."""
+    return {
+        "entry_id": case.entry_id, "archetype": case.archetype, "tests_fired": case.tests_fired,
+        "status": "missing",
+        "error": "no stored row for this case; a re-grade never narrates (run without --regrade)",
+        "model": None, "usage": None, "latency_s": None, "narrative": None, "metrics": None,
+        "prompt": None, "graded_at": None, "cases_sha256": cases_sha256,
+    }
+
+
+def _regrade_run(
+    cases: list[Case], results_path: Path, cases_sha256: str | None,
+    allow_cases_change: bool, resume: bool,
+) -> list[dict]:
+    """Re-score stored rows and nothing else: no narrator is in reach here."""
+    if not resume:
+        raise ValueError("a re-grade re-scores stored rows; it cannot start over (--no-resume)")
+    if cases_sha256 is None:
+        raise ValueError("a re-grade needs cases_sha256, so the rows can say what graded them")
+    done = {r["entry_id"]: r for r in _read_jsonl(results_path)}
+    if not done:
+        raise FileNotFoundError(f"nothing to re-grade: {results_path} has no rows")
+    _regrade(done, cases, cases_sha256, allow_cases_change)
+    results_path.write_text(
+        "".join(json.dumps(r) + "\n" for r in done.values()), encoding="utf-8"
+    )
+    return [done[c.entry_id] if c.entry_id in done else _missing_row(c, cases_sha256)
+            for c in cases]
+
+
 def run_eval(
     cases: list[Case],
     narrator: Narrator,
@@ -441,31 +474,34 @@ def run_eval(
     Rows are written as each case completes, so a crash costs nothing already
     paid for, and a re-run with ``resume`` skips them. API failures go to an
     ``errors.jsonl`` sidecar rather than into the score. ``regrade`` re-scores
-    the stored narratives with the current grader without calling the API,
-    which is how a grader fix is applied to a run already paid for.
+    the stored narratives with the current grader, which is how a grader fix
+    is applied to a run already paid for; it never calls the API, so a case
+    with no stored row comes back as ``missing`` rather than narrated, and a
+    directory with nothing stored is an error rather than a paid run.
 
     Every row records ``cases_sha256``, the case file it was graded against.
     A re-grade under a different file is refused unless ``allow_cases_change``
     says otherwise, and then the row keeps the hash it was first graded under
     so the report can disclose it. Applying a grader fix leaves no such mark;
     editing expectations after seeing the output cannot avoid one.
+
+    Stored rows are never deleted: a run that does not resume into a
+    directory that already holds rows is refused, so a worse result cannot
+    be quietly replaced by a better one.
     """
     out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
     results_path, errors_path = out_dir / "results.jsonl", out_dir / "errors.jsonl"
+    if regrade:
+        return _regrade_run(cases, results_path, cases_sha256, allow_cases_change, resume)
+    out_dir.mkdir(parents=True, exist_ok=True)
     if not resume:
-        # Rows are appended as they complete, so a run that does not resume has
-        # to start the files clean or the directory would hold two rows per
-        # case and the later one would win silently on the next read.
         for path in (results_path, errors_path):
             if path.exists():
-                path.unlink()
+                raise FileExistsError(
+                    f"{path} already holds rows; a run that does not resume needs a fresh "
+                    "--runs-dir (stored rows are never deleted)"
+                )
     done = {r["entry_id"]: r for r in _read_jsonl(results_path)} if resume else {}
-    if regrade and done:
-        _regrade(done, cases, cases_sha256, allow_cases_change)
-        results_path.write_text(
-            "".join(json.dumps(r) + "\n" for r in done.values()), encoding="utf-8"
-        )
     if any(c.entry_id not in done for c in cases):
         _ = narrator.client  # a missing key fails here, once, not once per case as "invalid"
 
@@ -538,7 +574,7 @@ def _provenance_lines(summary: dict, runs_dir: str | Path | None) -> list[str]:
 
 def _baseline_lines(cases: list[Case] | None, rows: list[dict]) -> list[str]:
     """The constant-answer baseline for the confidence check, for the cases graded."""
-    graded = {r["entry_id"] for r in rows}
+    graded = {r["entry_id"] for r in rows if r["status"] in ("ok", "invalid")}
     cases = [c for c in (cases or []) if c.entry_id in graded]
     if not cases:
         return []
@@ -564,14 +600,16 @@ def render_markdown(
     """The report that goes in docs/: what was measured, the numbers, every miss,
     the grader's own history, and the baseline the confidence check should be read against."""
     model = next((r["model"] for r in rows if r.get("model")), "unknown")
-    when = max((r["graded_at"] for r in rows), default="")
+    when = max((r["graded_at"] for r in rows if r.get("graded_at")), default="")
     usage = summary["usage"]
+    missing = summary.get("missing") or 0
     lines = [
         "# Narrative eval",
         "",
         f"Run: {when} · model: `{model}` · cases: {summary['cases']} · graded: "
         f"{summary['graded']} · invalid: {summary['invalid']} · errors (not scored): "
-        f"{summary['errors']}",
+        f"{summary['errors']}"
+        + (f" · missing (no stored row, not narrated): {missing}" if missing else ""),
         "",
         *_provenance_lines(summary, runs_dir),
         "",
@@ -605,12 +643,14 @@ def render_markdown(
         "| Entry | Archetype | Tests | Confidence | Failed checks |",
         "|---|---|---|---|---|",
     ]
+    unscored = ("error", "missing")
     for r in rows:
         conf = (r.get("narrative") or {}).get("confidence", "-")
-        failed = ", ".join(failed_checks(r)) if r["status"] != "error" else f"error: {r['error']}"
+        failed = (", ".join(failed_checks(r)) if r["status"] not in unscored
+                  else f"{r['status']}: {r['error']}")
         lines.append(f"| {r['entry_id']} | {r['archetype']} | {r['tests_fired']} | {conf} | "
                      f"{failed or '-'} |")
-    misses = [r for r in rows if r["status"] != "error" and failed_checks(r)]
+    misses = [r for r in rows if r["status"] not in unscored and failed_checks(r)]
     if misses:
         lines += ["", "## Misses, with the text that failed", ""]
         for r in misses:
