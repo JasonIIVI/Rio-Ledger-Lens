@@ -229,5 +229,49 @@ def test_a_database_from_before_versioning_is_migrated_on_open(tmp_path):
     assert ("trigger", "decisions_no_update") in objects  # the migrated file gets the guards too
 
 
+def test_a_read_only_store_reads_everything_and_writes_nothing(tmp_path):
+    path = tmp_path / "review.sqlite"
+    writer = ReviewStore(path)
+    seen = writer.save_narrative("JE-1", narrative())
+    writer.record(Decision("JE-1", "dismiss", "ana", narrative_id=seen))
+
+    reader = ReviewStore.read_only(path)
+    assert reader.is_read_only
+    assert reader.get_narrative("JE-1")["id"] == seen
+    assert reader.current()["decision"].tolist() == ["dismiss"]
+    assert reader.history("JE-1")["narrative_id"].tolist() == [seen]
+    assert reader.narrative_ids() == {"JE-1"}
+
+    # SQLite refuses the write; nothing in this module has to remember to.
+    with pytest.raises(sqlite3.OperationalError, match="readonly"):
+        reader.record(Decision("JE-1", "accept", "ana"))
+    with pytest.raises(sqlite3.OperationalError, match="readonly"):
+        reader.save_narrative("JE-1", narrative("again"))
+    assert writer.history("JE-1")["decision"].tolist() == ["dismiss"]
+    assert len(writer.narrative_history("JE-1")) == 1
+
+
+def test_a_read_only_store_never_creates_migrates_or_touches_a_file(tmp_path):
+    absent = tmp_path / "absent.sqlite"
+    with pytest.raises(FileNotFoundError):
+        ReviewStore.read_only(absent)
+    assert not absent.exists()
+
+    # A zero-byte file would have had the schema written into it by a
+    # read-write open; a reader reports it instead.
+    empty = tmp_path / "empty.sqlite"
+    empty.touch()
+    with pytest.raises(RuntimeError, match="ledgerlens narrate"):
+        ReviewStore.read_only(empty)
+    assert empty.stat().st_size == 0
+
+    old = tmp_path / "old.sqlite"
+    make_v030_database(old)
+    before = old.read_bytes()
+    with pytest.raises(RuntimeError, match="older schema"):
+        ReviewStore.read_only(old)
+    assert old.read_bytes() == before
+
+
 def test_the_only_decisions_are_the_documented_ones():
     assert DECISIONS == ("accept", "dismiss", "escalate")

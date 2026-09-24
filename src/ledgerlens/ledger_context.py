@@ -6,7 +6,8 @@ and is tested on every Python the project supports (the SDK needs 3.10+).
 It is also read-only on purpose. Every method answers a question about the
 ledger; none records a decision. That is rule 8 - the model explains and
 suggests, a named human decides - expressed as an API surface rather than as a
-policy somebody has to remember.
+policy somebody has to remember. The review database is opened with a
+read-only SQLite connection, so the database enforces the same thing.
 """
 
 from __future__ import annotations
@@ -73,8 +74,8 @@ class LedgerContext:
     """A ledger, scored by both tiers once, answering questions many times.
 
     ``ledger`` is a CSV path or an already-prepared DataFrame (tests). The
-    review database is optional and is only ever *opened*: ReviewStore creates
-    the file on construction, and a read-only server must not leave one behind.
+    review database is optional and is only ever opened read-only: a server
+    must neither leave a file behind nor be able to write into one.
     """
 
     def __init__(
@@ -117,7 +118,7 @@ class LedgerContext:
 
     def _store(self) -> ReviewStore | None:
         if self.review_db is not None and self.review_db.exists():
-            return ReviewStore(self.review_db)
+            return ReviewStore.read_only(self.review_db)
         return None
 
     def _attach_review(self, rows: list[dict]) -> list[dict]:

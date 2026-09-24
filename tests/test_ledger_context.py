@@ -1,6 +1,7 @@
 """The read-only query layer, on every supported Python (no MCP import)."""
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -96,6 +97,26 @@ def test_review_data_is_read_but_a_database_is_never_created(small_ledger, tmp_p
     top = context.top_exceptions(limit=1)["entries"][0]
     assert top["decision"] == "dismiss"
     assert top["narrative_summary"] == "s"
+
+
+def test_the_review_database_is_opened_read_only(small_ledger, tmp_path):
+    ledger, _ = small_ledger
+    db = tmp_path / "review.sqlite"
+    ReviewStore(db).record(Decision("JE-2024-000001", "dismiss", "ana"))
+    context = LedgerContext(ledger, review_db=db).load()
+
+    store = context._store()
+    assert store.is_read_only
+    with pytest.raises(sqlite3.OperationalError, match="readonly"):
+        store.record(Decision("JE-2024-000002", "accept", "ana"))
+    assert ReviewStore(db).decided_ids() == {"JE-2024-000001"}
+
+    # An empty file is reported, not given a schema.
+    empty = tmp_path / "empty.sqlite"
+    empty.touch()
+    with pytest.raises(RuntimeError, match="ledgerlens narrate"):
+        LedgerContext(ledger, review_db=empty).load().review_status()
+    assert empty.stat().st_size == 0
 
 
 def test_search_entries_filters(context):

@@ -4,6 +4,9 @@ Skipped where the SDK cannot be installed (Python 3.9); the analytics behind
 the tools are covered on every Python by tests/test_ledger_context.py.
 """
 
+import sqlite3
+from types import SimpleNamespace
+
 import pytest
 
 pytest.importorskip("mcp")
@@ -12,6 +15,7 @@ from mcp import Client  # noqa: E402
 
 from ledgerlens import mcp_server  # noqa: E402
 from ledgerlens.ledger_context import LedgerContext  # noqa: E402
+from ledgerlens.review import Decision, ReviewStore  # noqa: E402
 
 TOOLS = {
     "ledgerlens_summary", "ledgerlens_top_exceptions", "ledgerlens_explain_entry",
@@ -25,7 +29,30 @@ def anyio_backend():
 
 
 @pytest.fixture
-async def client(small_ledger):
+def review_db(small_ledger, tmp_path):
+    """A real store with the riskiest entry narrated and decided."""
+    ledger, _ = small_ledger
+    top = LedgerContext(ledger).load().top_exceptions(limit=1)["entries"][0]["entry_id"]
+    store = ReviewStore(tmp_path / "review.sqlite")
+    seen = store.save_narrative(top, {
+        "summary": "A note.", "why_flagged": "w", "evidence_to_request": ["x"],
+        "suggested_control": "c", "confidence": "low",
+    }, model="claude-test")
+    store.record(Decision(top, "escalate", "ana", "needs a senior", narrative_id=seen))
+    return SimpleNamespace(path=store.path, entry_id=top, narrative_id=seen)
+
+
+@pytest.fixture
+async def client(small_ledger, review_db):
+    ledger, _ = small_ledger
+    mcp_server.use_context(LedgerContext(ledger, review_db=review_db.path))
+    async with Client(mcp_server.mcp, raise_exceptions=True) as c:
+        yield c
+
+
+@pytest.fixture
+async def bare_client(small_ledger):
+    """The server with no review database at all."""
     ledger, _ = small_ledger
     mcp_server.use_context(LedgerContext(ledger))
     async with Client(mcp_server.mcp, raise_exceptions=True) as c:
@@ -65,8 +92,37 @@ async def test_arguments_are_validated_before_the_tool_runs(client):
 
 
 @pytest.mark.anyio
-async def test_review_status_without_a_database_is_zeros_not_an_error(client):
-    result = await client.call_tool("ledgerlens_review_status", {})
+async def test_review_status_without_a_database_is_zeros_not_an_error(bare_client):
+    result = await bare_client.call_tool("ledgerlens_review_status", {})
     assert not result.is_error
     assert result.structured_content["exists"] is False
     assert result.structured_content["decided"] == 0
+
+
+@pytest.mark.anyio
+async def test_explain_entry_returns_the_note_and_the_decision_from_the_store(client, review_db):
+    result = await client.call_tool("ledgerlens_explain_entry", {"entry_id": review_db.entry_id})
+    assert not result.is_error
+    detail = result.structured_content
+    assert detail["narrative"]["summary"] == "A note."
+    assert detail["narrative"]["id"] == review_db.narrative_id
+    assert detail["decisions"][0]["decision"] == "escalate"
+    assert detail["decisions"][0]["narrative_id"] == review_db.narrative_id
+
+    status = await client.call_tool("ledgerlens_review_status", {})
+    assert status.structured_content["exists"] is True
+    assert status.structured_content["decided"] == 1
+    assert status.structured_content["narratives"] == 1
+
+
+@pytest.mark.anyio
+async def test_the_server_opens_the_review_database_read_only(client, review_db):
+    """Rule 8 at the connection level: the path the tools use cannot write."""
+    await client.call_tool("ledgerlens_summary", {})  # the store has been opened by now
+    store = mcp_server._ctx()._store()
+    assert store.is_read_only
+    with pytest.raises(sqlite3.OperationalError, match="readonly"):
+        store.record(Decision(review_db.entry_id, "accept", "ana"))
+    with pytest.raises(sqlite3.OperationalError, match="readonly"):
+        store.save_narrative(review_db.entry_id, {"summary": "x"})
+    assert ReviewStore(review_db.path).history(review_db.entry_id)["decision"].tolist() == ["escalate"]

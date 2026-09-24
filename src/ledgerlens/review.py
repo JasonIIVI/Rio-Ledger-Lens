@@ -86,6 +86,21 @@ def _columns(conn: sqlite3.Connection, table: str) -> list[str]:
     return [row[1] for row in conn.execute(f"PRAGMA table_info({table})")]
 
 
+def _require_current_schema(conn: sqlite3.Connection, path: Path) -> None:
+    """Refuse to read a file this version cannot read correctly.
+
+    A reader never creates or migrates anything, so a file from before
+    narratives were versioned, or an empty file, is an error with the fix in
+    the message rather than a silent schema write.
+    """
+    if "id" not in _columns(conn, "narratives") or "narrative_id" not in _columns(conn, "decisions"):
+        raise RuntimeError(
+            f"{path} is not a current review database (no tables, or an older schema). "
+            "Open it once with the dashboard or `ledgerlens narrate` to create or migrate it; "
+            "a read-only connection will not."
+        )
+
+
 def _migrate(conn: sqlite3.Connection) -> None:
     """Bring a database written by an earlier version up to this schema.
 
@@ -142,16 +157,40 @@ def _narrative_dict(row: sqlite3.Row) -> dict:
 class ReviewStore:
     """Append-only store of reviewer decisions and generated narratives."""
 
-    def __init__(self, path: str | Path = DEFAULT_DB) -> None:
+    def __init__(self, path: str | Path = DEFAULT_DB, *, _read_only: bool = False) -> None:
         self.path = Path(path)
+        self.is_read_only = _read_only
+        if _read_only:
+            # No mkdir and no DDL: a reader never creates, migrates or touches the file.
+            if not self.path.exists():
+                raise FileNotFoundError(f"no review database at {self.path}")
+            with closing(self._connect()) as conn:
+                _require_current_schema(conn, self.path)
+            return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with closing(self._connect()) as conn:
             _migrate(conn)
             conn.executescript(SCHEMA)
             conn.commit()
 
+    @classmethod
+    def read_only(cls, path: str | Path) -> ReviewStore:
+        """Open an existing database for reading only.
+
+        SQLite itself refuses every write on this connection (URI ``mode=ro``)
+        and no schema statement runs, so the file is never created, migrated
+        or altered by a reader. The MCP server opens the store this way:
+        read-only is then a property of the connection, not of which methods
+        the tools happen to call.
+        """
+        return cls(path, _read_only=True)
+
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.path))
+        if self.is_read_only:
+            # as_uri() escapes the path (spaces, '~') for SQLite's URI parser.
+            conn = sqlite3.connect(f"{self.path.resolve().as_uri()}?mode=ro", uri=True)
+        else:
+            conn = sqlite3.connect(str(self.path))
         conn.row_factory = sqlite3.Row
         return conn
 

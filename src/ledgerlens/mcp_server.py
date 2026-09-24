@@ -2,7 +2,9 @@
 
 Read-only by design. Every tool answers a question about the scored ledger;
 none records a decision, because a decision has to be a named human's (rule 8
-in CLAUDE.md). The analytics live in :mod:`ledgerlens.ledger_context`, which
+in CLAUDE.md), and the review database is opened on a read-only SQLite
+connection so that holds even if a tool were ever given a write path. The
+analytics live in :mod:`ledgerlens.ledger_context`, which
 imports nothing from the MCP SDK and is therefore tested on Python 3.9 too;
 this module is the thin registration layer and needs the SDK's 3.10+.
 
