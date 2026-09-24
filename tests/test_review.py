@@ -131,12 +131,22 @@ def test_a_decision_records_the_narrative_the_reviewer_saw(store):
     "DELETE FROM decisions",
     "UPDATE narratives SET summary = 'edited'",
     "DELETE FROM narratives",
+    # REPLACE deletes the conflicting row without firing delete triggers
+    # (unless recursive_triggers is on, and it is off by default), so it is
+    # caught on the way in instead.
+    "REPLACE INTO decisions (id, entry_id, decision, reviewer, decided_at) "
+    "VALUES (1, 'JE-1', 'accept', 'mallory', '2026-01-01T00:00:00+00:00')",
+    "INSERT OR REPLACE INTO narratives (id, entry_id, summary, generated_at) "
+    "VALUES (1, 'JE-1', 'rewritten', '2026-01-01T00:00:00+00:00')",
+    "INSERT INTO narratives (id, entry_id, summary, generated_at) "
+    "VALUES (1, 'JE-1', 'duplicate id', '2026-01-01T00:00:00+00:00')",
 ])
 def test_the_database_itself_refuses_to_change_history(store, statement):
     """Append-only is enforced by SQLite, not just by this module's API.
 
     Anything that opens the file - a stray script, a DB browser, a future
-    tool with a write method - hits the same wall.
+    tool with a write method - hits the same wall, including the REPLACE
+    route around the delete trigger.
     """
     seen = store.save_narrative("JE-1", narrative())
     store.record(Decision("JE-1", "dismiss", "ana", narrative_id=seen))
@@ -145,7 +155,14 @@ def test_the_database_itself_refuses_to_change_history(store, statement):
         with pytest.raises(sqlite3.IntegrityError, match="append-only"):
             raw.execute(statement)
     assert store.history("JE-1")["decision"].tolist() == ["dismiss"]
+    assert store.history("JE-1")["reviewer"].tolist() == ["ana"]
     assert store.get_narrative("JE-1")["summary"] == "s"
+    # Ordinary appends still work, with or without an explicit new id.
+    assert store.save_narrative("JE-1", narrative("second")) == 2
+    with sqlite3.connect(str(store.path)) as raw:
+        raw.execute("INSERT INTO narratives (id, entry_id, summary, generated_at) "
+                    "VALUES (50, 'JE-1', 'explicit new id', '2026-01-01T00:00:00+00:00')")
+    assert store.get_narrative("JE-1")["id"] == 50
 
 
 def test_decisions_survive_a_restart(tmp_path):
@@ -226,7 +243,9 @@ def test_a_database_from_before_versioning_is_migrated_on_open(tmp_path):
     objects = {(r[0], r[1]) for r in sqlite3.connect(str(path)).execute(
         "SELECT type, name FROM sqlite_master")}
     assert ("table", "narratives_v1") not in objects
-    assert ("trigger", "decisions_no_update") in objects  # the migrated file gets the guards too
+    for name in ("decisions_no_update", "decisions_no_delete", "decisions_no_replace",
+                 "narratives_no_update", "narratives_no_delete", "narratives_no_replace"):
+        assert ("trigger", name) in objects  # the migrated file gets every guard too
 
 
 def test_a_read_only_store_reads_everything_and_writes_nothing(tmp_path):

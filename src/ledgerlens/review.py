@@ -13,8 +13,12 @@ Three design choices worth stating:
    on screen when it was made. An audit trail that can be silently edited is
    not an audit trail, and neither is one whose supporting text can be. The
    database enforces this itself: triggers refuse any UPDATE or DELETE on
-   either table, whatever client issues it, so the rule does not depend on
-   every caller going through this module.
+   either table, and any INSERT that would land on an existing id (which is
+   how ``REPLACE INTO`` overwrites a row without firing a delete trigger), so
+   the rule does not depend on every caller going through this module. This
+   is tamper-resistant, not tamper-evident: a writer who drops the triggers
+   and puts them back leaves no trace, and a hash chain would be the next
+   step if that ever matters.
 2. **The model never writes here.** Narratives are advisory context attached to
    an entry; only a named human sets a decision.
 3. **SQLite, not a CSV.** Concurrent reviewers, transactional writes, and
@@ -78,6 +82,12 @@ BEGIN SELECT RAISE(ABORT, 'decisions are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS narratives_no_update BEFORE UPDATE ON narratives
 BEGIN SELECT RAISE(ABORT, 'narratives are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS narratives_no_delete BEFORE DELETE ON narratives
+BEGIN SELECT RAISE(ABORT, 'narratives are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS decisions_no_replace BEFORE INSERT ON decisions
+WHEN EXISTS (SELECT 1 FROM decisions WHERE id = NEW.id)
+BEGIN SELECT RAISE(ABORT, 'decisions are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS narratives_no_replace BEFORE INSERT ON narratives
+WHEN EXISTS (SELECT 1 FROM narratives WHERE id = NEW.id)
 BEGIN SELECT RAISE(ABORT, 'narratives are append-only'); END;
 """
 
@@ -281,7 +291,7 @@ class ReviewStore:
         Never replaces. A reviewer may already have read the previous version
         and decided against it, and that decision has to keep pointing at the
         text they saw. A rewrite costs a few kilobytes; the advice trail is
-        then as tamper-evident as the decision trail.
+        then as tamper-resistant as the decision trail.
         """
         with closing(self._connect()) as conn:
             cur = conn.execute(
