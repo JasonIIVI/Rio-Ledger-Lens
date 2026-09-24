@@ -36,7 +36,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
-          fetch-depth: 1
+          # Full history: a review can check when a file changed relative to a
+          # run (the first review could not, and asked for this).
+          fetch-depth: 0
 
       - name: Run Claude Code
         id: claude
