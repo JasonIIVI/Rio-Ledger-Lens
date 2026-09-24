@@ -11,7 +11,10 @@ Three design choices worth stating:
    rewriting a narrative creates a new version rather than replacing the one a
    reviewer may already have read. Each decision records which narrative was
    on screen when it was made. An audit trail that can be silently edited is
-   not an audit trail, and neither is one whose supporting text can be.
+   not an audit trail, and neither is one whose supporting text can be. The
+   database enforces this itself: triggers refuse any UPDATE or DELETE on
+   either table, whatever client issues it, so the rule does not depend on
+   every caller going through this module.
 2. **The model never writes here.** Narratives are advisory context attached to
    an entry; only a named human sets a decision.
 3. **SQLite, not a CSV.** Concurrent reviewers, transactional writes, and
@@ -67,7 +70,16 @@ CREATE TABLE IF NOT EXISTS decisions (
 );
 CREATE INDEX IF NOT EXISTS ix_decisions_entry ON decisions(entry_id);
 CREATE INDEX IF NOT EXISTS ix_decisions_time  ON decisions(decided_at);
-""" + NARRATIVES_TABLE
+""" + NARRATIVES_TABLE + """
+CREATE TRIGGER IF NOT EXISTS decisions_no_update BEFORE UPDATE ON decisions
+BEGIN SELECT RAISE(ABORT, 'decisions are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS decisions_no_delete BEFORE DELETE ON decisions
+BEGIN SELECT RAISE(ABORT, 'decisions are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS narratives_no_update BEFORE UPDATE ON narratives
+BEGIN SELECT RAISE(ABORT, 'narratives are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS narratives_no_delete BEFORE DELETE ON narratives
+BEGIN SELECT RAISE(ABORT, 'narratives are append-only'); END;
+"""
 
 
 def _columns(conn: sqlite3.Connection, table: str) -> list[str]:

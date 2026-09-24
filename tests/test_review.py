@@ -126,6 +126,28 @@ def test_a_decision_records_the_narrative_the_reviewer_saw(store):
         store.record(Decision("JE-1", "accept", "ana", narrative_id=9999))
 
 
+@pytest.mark.parametrize("statement", [
+    "UPDATE decisions SET decision = 'accept'",
+    "DELETE FROM decisions",
+    "UPDATE narratives SET summary = 'edited'",
+    "DELETE FROM narratives",
+])
+def test_the_database_itself_refuses_to_change_history(store, statement):
+    """Append-only is enforced by SQLite, not just by this module's API.
+
+    Anything that opens the file - a stray script, a DB browser, a future
+    tool with a write method - hits the same wall.
+    """
+    seen = store.save_narrative("JE-1", narrative())
+    store.record(Decision("JE-1", "dismiss", "ana", narrative_id=seen))
+
+    with sqlite3.connect(str(store.path)) as raw:
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            raw.execute(statement)
+    assert store.history("JE-1")["decision"].tolist() == ["dismiss"]
+    assert store.get_narrative("JE-1")["summary"] == "s"
+
+
 def test_decisions_survive_a_restart(tmp_path):
     path = tmp_path / "review.sqlite"
     ReviewStore(path).record(Decision("JE-1", "escalate", "ana", risk_score=5.0, model_score=0.9))
@@ -201,9 +223,10 @@ def test_a_database_from_before_versioning_is_migrated_on_open(tmp_path):
     again = ReviewStore(path)
     assert again.save_narrative("JE-1", narrative("third")) == 3
     assert again.record(Decision("JE-2", "dismiss", "ben", narrative_id=2)) == 2
-    tables = {r[0] for r in sqlite3.connect(str(path)).execute(
-        "SELECT name FROM sqlite_master WHERE type = 'table'")}
-    assert "narratives_v1" not in tables
+    objects = {(r[0], r[1]) for r in sqlite3.connect(str(path)).execute(
+        "SELECT type, name FROM sqlite_master")}
+    assert ("table", "narratives_v1") not in objects
+    assert ("trigger", "decisions_no_update") in objects  # the migrated file gets the guards too
 
 
 def test_the_only_decisions_are_the_documented_ones():
