@@ -46,6 +46,7 @@ regenerates the ledger and fails if precision drops below 0.80 or recall below 0
   tuned to a model's output.
 - Decisions and narratives are append-only, and the database enforces it. Rewriting a note adds
   a version; the decision keeps pointing at the version the reviewer read.
-- Eval run rows under `evals/narratives/runs/` are committed and never hand-edited. A grader
-  change is recorded in `GRADER_NOTES` with what it did to the published score, and the report
-  prints it.
+- Eval run rows under `evals/narratives/runs/` are committed and never hand-edited (a run that
+  starts over goes to a fresh directory; nothing deletes rows). The rows record the grader's
+  hash and keep the grades a re-grade replaces; a grader change is also recorded in
+  `GRADER_NOTES` with what it did to the published score, and the report prints both.

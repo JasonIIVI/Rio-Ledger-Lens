@@ -648,9 +648,10 @@ def _baseline_lines(cases: list[Case] | None, rows: list[dict]) -> list[str]:
     actual = sum(1 for r in rows if r["status"] in ("ok", "invalid")
                  and (r["metrics"] or {}).get("confidence_in_band"))
     margin = actual - n
-    verdict = (f"beat the best constant answer by {margin} case(s)" if margin > 0
+    cases_word = "case" if abs(margin) == 1 else "cases"
+    verdict = (f"beat the best constant answer by {margin} {cases_word}" if margin > 0
                else "match the best constant answer" if margin == 0
-               else f"fall short of the best constant answer by {-margin} case(s)")
+               else f"fall short of the best constant answer by {-margin} {cases_word}")
     return [
         "",
         f"Confidence baseline: the bands accept more than one level on "

@@ -2,7 +2,9 @@
 
 Run: 2026-09-23T19:59:19+00:00 · model: `claude-opus-5` · cases: 16 · graded: 16 · invalid: 0 · errors (not scored): 0
 
-Case file sha256: `fd49e46f2dd59a6d14c1bfff17186e3eef93172b39803074c0b5c987bade96bb` · rows: `evals/narratives/runs/2026-09-23-claude-opus-5/results.jsonl` · re-graded 2026-09-24T00:48:33+00:00 by the grader in this commit, no API calls
+Case file sha256: `fd49e46f2dd59a6d14c1bfff17186e3eef93172b39803074c0b5c987bade96bb` · grader sha256: `c2754fbc4b442da93242b0b65b4dc2c91d106dc3821bba06b3dc31f9344c980a` · rows: `evals/narratives/runs/2026-09-23-claude-opus-5/results.jsonl` · re-graded 2026-09-24T19:52:52+00:00 offline (no API calls)
+
+Re-grades: 16 row(s) keep their earlier grades, with the grader and case file that produced them, under `metrics_history`; 0 row(s) changed their overall result since first graded. The grader hash is the sha256 of the grading code and its word lists, so a loosened check would show here as a new hash.
 
 **Provenance note:** 16 row(s) were first graded under a different case file - one whose hash was not recorded (the rows predate provenance tracking) - and re-graded under the one above. If the expectations differ between the two files, the re-graded score is not the original run's score; compare the files before reading it as one.
 
@@ -16,11 +18,11 @@ Each case is a flagged entry from the default synthetic ledger. The real narrato
 | Mentions the required facts (amount, accounts, tests) | 100% |
 | Asserts no error, intent or irregularity | 100% |
 | At least one evidence item is specific | 100% |
-| Every number in the note is in the entry (or a cited standard) | 100% |
+| Every number in the note is in the entry (or is AU-C 240, the one standard the prompt cites) | 100% |
 | Confidence in the expected band | 94% |
 | **All of the above** | 94% |
 
-Confidence baseline: the bands accept more than one level on 14 of 16 cases, so a narrator that always answered "medium" would pass the confidence check on 14/16 (88%) of them - always "high" 9/16 (56%), always "medium" 14/16 (88%), always "low" 7/16 (44%). Read the confidence row against that number, not against zero.
+Confidence baseline: the bands accept more than one level on 14 of 16 cases, so a narrator that always answered "medium" would pass the confidence check on 14/16 (88%) of them - always "high" 9/16 (56%), always "medium" 14/16 (88%), always "low" 7/16 (44%). The notes passed it on 15/16, so they beat the best constant answer by 1 case. Read the confidence row against that, not against zero.
 
 ## Per case
 
@@ -58,7 +60,8 @@ Confidence baseline: the bands accept more than one level on 14 of 16 cases, so 
 ## Grader notes
 
 - **2026-09-23** - The first real run scored 88% on all checks. One of the two misses was the grader's: no_invented_numbers counted the citation "AU-C 240" as an invented number. The fix admitted every number in the system prompt as shown to the model, and the run was re-graded offline to 94%.
-- **2026-09-24** - That fix was too broad. The system prompt's style example quotes $9,912 and account 4000, so a note that copied the example onto an entry with neither would have passed. The union with the prompt was replaced by an explicit citation allowlist (AU-C 240 only). Re-grading the 2026-09-23 run under it changed no row: no note had used either figure, and the score stayed at 94%. Those rows predate the case-file hash; git records the case file as unchanged since commit 1ff36ef (2026-09-23 19:29 UTC), before the run was graded (19:57 UTC), which is the ordering the first review asked to have checked.
+- **2026-09-24** - That fix was too broad. The system prompt's style example quotes $9,912 and account 4000, so a note that copied the example onto an entry with neither would have passed. The union with the prompt was replaced by an explicit citation allowlist (AU-C 240 only). Re-grading the 2026-09-23 run under it changed no row: no note had used either figure, and the score stayed at 94%. Those rows predate the case-file hash; git records the case file as unchanged since commit 1ff36ef (2026-09-23 19:29 UTC), before the run was graded (19:57 UTC). That is consistent with the bands having been fixed first, which is as much as a commit history can show.
+- **2026-09-24** - The allowlist admitted any bare "240" ("$240", "240 days"), not the citation. Now the citation "AU-C 240" is removed from the note before its numbers are extracted, and every remaining number must come from the entry. Rows also record the grader's own sha256 and keep replaced grades under metrics_history, so a grader change shows on the rows and not only here. Re-grading the 2026-09-23 run changed no row; the score stayed at 94%.
 
 ## Cost
 
