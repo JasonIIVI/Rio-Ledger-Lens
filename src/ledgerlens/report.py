@@ -60,19 +60,40 @@ def _write_table(ws, df: pd.DataFrame, start_row: int = 1) -> None:
     ws.freeze_panes = ws.cell(row=start_row + 1, column=1)
 
 
+REVIEW_COLUMNS = (
+    "narrative_id", "narrative", "narrative_confidence", "narrative_superseded",
+    "decision", "reviewer", "note", "decided_at",
+)
+
+
 def _attach_review(exceptions: pd.DataFrame, store: ReviewStore) -> pd.DataFrame:
-    """Add what the human loop knows: the narrative summary and the latest decision.
+    """Add what the human loop knows: the narrative the reviewer saw and the latest decision.
 
     Left merges, so an entry nobody has looked at simply has blank cells - the
     workpaper then doubles as the list of what is still outstanding.
+
+    The narrative shown is the version the decision recorded, because that is
+    the text the decision was based on. An entry with no decision, or one
+    decided before narratives were versioned, shows the latest version;
+    ``narrative_superseded`` says when a newer version exists than the one
+    shown, so a reader knows the advice moved on after the reviewer read it.
     """
-    narratives = store.narratives_frame()[["entry_id", "summary", "confidence"]].rename(
-        columns={"summary": "narrative", "confidence": "narrative_confidence"}
+    decisions = store.current()[
+        ["entry_id", "decision", "reviewer", "note", "narrative_id", "decided_at"]
+    ]
+    latest = store.narratives_frame().set_index("entry_id")["id"]
+    versions = store.narratives_frame(latest_only=False).set_index("id")
+
+    out = exceptions.merge(decisions, on="entry_id", how="left")
+    newest = pd.to_numeric(out["entry_id"].map(latest)).astype("Int64")
+    shown = pd.to_numeric(out["narrative_id"]).astype("Int64").fillna(newest)
+    out["narrative_id"] = shown
+    out["narrative"] = shown.map(versions["summary"])
+    out["narrative_confidence"] = shown.map(versions["confidence"])
+    out["narrative_superseded"] = (
+        (shown.notna() & (shown != newest)).fillna(False).astype(bool)
     )
-    decisions = store.current()[["entry_id", "decision", "reviewer", "note", "decided_at"]]
-    return exceptions.merge(narratives, on="entry_id", how="left").merge(
-        decisions, on="entry_id", how="left"
-    )
+    return out[[c for c in out.columns if c not in REVIEW_COLUMNS] + list(REVIEW_COLUMNS)]
 
 
 def build_workpaper(

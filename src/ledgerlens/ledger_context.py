@@ -46,7 +46,7 @@ ENTRY_COLUMNS = (
 LINE_COLUMNS = ("line_no", "account_code", "account_name", "account_type", "description",
                 "debit", "credit")
 FLAG_COLUMNS = ("test_id", "test_name", "severity", "reason")
-DECISION_COLUMNS = ("decided_at", "decision", "reviewer", "note")
+DECISION_COLUMNS = ("decided_at", "decision", "reviewer", "note", "narrative_id")
 
 #: The two tiers relate in one of these ways; see model.combine.
 AGREEMENTS = ("both", "rules only", "model only", "neither")
