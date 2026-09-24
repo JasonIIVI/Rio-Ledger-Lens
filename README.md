@@ -204,9 +204,13 @@ cache-read share so that claim is checked on every run rather than assumed.
 **What the model never does.** It does not decide whether an entry is a finding, it does not
 touch a score or a record, and it never sees the labels. Every note is advisory text attached
 to an entry. A named human records every accept / dismiss / escalate in an append-only SQLite
-store: changing your mind adds a decision, it never edits one. The dashboard shows the note
-beside the entry, takes the decision, and shows the history; the workpaper carries the note
-and the latest decision per exception.
+store: changing your mind adds a decision, it never edits one. Notes are append-only too - a
+rewrite adds a version - and each decision records the version that was on screen, so the
+record of what a reviewer was told cannot change after they decided. Both rules are enforced
+by the database itself (triggers refuse any update or delete), not only by the code. The
+dashboard shows the note beside the entry, takes the decision, and shows the history; the
+workpaper carries the note the reviewer actually saw, the latest decision per exception, and
+a flag when a newer note exists than the one they read.
 
 **Measuring the notes.** `evals/narratives/cases.json` holds sixteen entries chosen
 deterministically from the default ledger - one per injected archetype, three multi-flag
@@ -220,11 +224,23 @@ whether it is insightful. A rubric was chosen over similarity to a reference nar
 the reference would itself be model-written.
 
 The first real run scored 88% on all checks. One of the two misses was the grader's fault - it
-counted a citation of AU-C 240 as an invented number - so the grader now treats the system prompt
-as text the model was shown, and the stored run was re-scored offline (`--regrade`, no API calls)
-to 94%. The remaining miss is a real disagreement: the model rated a $359 last-day cash receipt
-to revenue as low confidence where the case file says a High cut-off test should keep it at
-medium. The expectation was written before the run and stays as written.
+counted a citation of AU-C 240 as an invented number - and the stored run was re-scored offline
+(`--regrade`, no API calls) to 94%. That first fix admitted every number in the system prompt,
+which the repository's own `@claude` review pointed out was too broad: the prompt's style example
+quotes $9,912 and account 4000, so a note copying the example would have passed. The grader now
+admits only cited standards, and re-grading the run under it changed no row - the score is still
+94%. The remaining miss is a real disagreement: the model rated a $359 last-day cash receipt to
+revenue as low confidence where the case file says a High cut-off test should keep it at medium.
+The expectation was written before the run and stays as written.
+
+Three things make that number checkable rather than something to take on trust. Every result
+row and the report carry the sha256 of the case file they were graded against, and `--regrade`
+refuses to re-score rows across a changed case file unless told to, in which case the report
+says so. The report prints the grader's own change history and the baseline the confidence
+check should be read against: the bands accept two levels on 14 of 16 cases, so a narrator that
+always answered "medium" would score 88% on that check. And the run rows - every prompt,
+narrative and per-check result - are committed under `evals/narratives/runs/`, so anyone can
+re-grade them.
 
 ## Ask the ledger from Claude Desktop
 
@@ -234,7 +250,8 @@ review status. "What are the ten riskiest entries in Q4 2025 and why" becomes on
 that returns every reason, both scores, and the reviewer's note and decision where they exist.
 
 No tool records a decision. That is deliberate: the model explains and suggests, a person
-decides, and the API surface says so.
+decides, and the API surface says so. The server also opens the review database on a read-only
+SQLite connection, so it could not write a decision even if a tool tried.
 
 The MCP SDK needs Python 3.10+, so use an interpreter that new enough for this part:
 
@@ -277,7 +294,8 @@ and reopen Claude Desktop:
 - **A flag is a question, not a finding.** Every `reason` string is worded that way
   on purpose, and so is every narrative.
 - **The LLM never decides anything.** It explains flags and suggests evidence; a named human
-  records every decision, and decisions are append-only.
+  records every decision. Decisions, and the notes they were made against, are append-only,
+  and the database enforces it.
 
 ## Roadmap
 
@@ -288,6 +306,9 @@ and reopen Claude Desktop:
 - [x] **Week 3** — Claude-written exception narratives (structured JSON, with a
       hand-reviewed eval set), reviewer loop with accept / dismiss / escalate, MCP server,
       `@claude` PR review
+- [x] **Review follow-up** — everything the first `@claude` review found: versioned
+      narratives, database-enforced append-only, a read-only MCP connection, eval
+      provenance, a narrower grader, and published run rows
 - [ ] **Week 4** — QuickBooks Online connector (sandbox), scheduled re-run via
       GitHub Actions
 

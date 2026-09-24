@@ -60,29 +60,54 @@ def test_methodology_records_the_model_fit(ledger, labels, tmp_path):
     assert "not an audit procedure" in text
 
 
-def test_review_columns_appear_when_a_store_is_supplied(ledger, labels, tmp_path):
+def _note(summary, confidence="medium"):
+    return {"summary": summary, "why_flagged": "w", "evidence_to_request": ["x"],
+            "suggested_control": "c", "confidence": confidence}
+
+
+def test_review_columns_show_the_note_the_reviewer_saw(ledger, labels, tmp_path):
     from ledgerlens.review import Decision, ReviewStore
 
     store = ReviewStore(tmp_path / "review.sqlite")
     flags = jets.run_all(ledger)
-    top = jets.score_entries(ledger, flags).iloc[0]["entry_id"]
-    store.save_narrative(top, {
-        "summary": "A round-thousand manual entry.", "why_flagged": "w",
-        "evidence_to_request": ["x"], "suggested_control": "c", "confidence": "medium",
-    }, model="claude-test")
-    store.record(Decision(top, "escalate", "ana", "needs a senior"))
+    scored = jets.score_entries(ledger, flags)
+    top, second, third = scored[scored["risk_score"] > 0]["entry_id"].iloc[:3]
+
+    # Decided against the first note, which was then rewritten.
+    seen = store.save_narrative(top, _note("A round-thousand manual entry."), model="claude-test")
+    store.record(Decision(top, "escalate", "ana", "needs a senior", narrative_id=seen))
+    store.save_narrative(top, _note("Rewritten after the decision.", "low"), model="claude-test")
+    # Narrated twice, never decided: the latest note is the right one to show.
+    store.save_narrative(second, _note("First draft."))
+    newest = store.save_narrative(second, _note("Latest draft."))
+    # Decided before any note existed.
+    store.record(Decision(third, "dismiss", "ben", "routine"))
 
     path, _ = _workpaper(ledger, labels, tmp_path, store=store)
     wb = openpyxl.load_workbook(path)
     ws = wb["Exceptions"]
     header = [c.value for c in ws[1]]
-    for col in ("narrative", "narrative_confidence", "decision", "reviewer", "note"):
+    for col in ("narrative_id", "narrative", "narrative_confidence", "narrative_superseded",
+                "decision", "reviewer", "note"):
         assert col in header
     rows = {r[header.index("entry_id")]: r for r in ws.iter_rows(min_row=2, values_only=True)}
-    assert rows[top][header.index("decision")] == "escalate"
-    assert rows[top][header.index("narrative")] == "A round-thousand manual entry."
-    undecided = next(r for eid, r in rows.items() if eid != top)
-    assert undecided[header.index("decision")] is None
+    col = header.index
+
+    assert rows[top][col("decision")] == "escalate"
+    assert rows[top][col("narrative_id")] == seen
+    assert rows[top][col("narrative")] == "A round-thousand manual entry."
+    assert rows[top][col("narrative_confidence")] == "medium"
+    assert rows[top][col("narrative_superseded")] is True
+
+    assert rows[second][col("decision")] is None
+    assert rows[second][col("narrative_id")] == newest
+    assert rows[second][col("narrative")] == "Latest draft."
+    assert rows[second][col("narrative_superseded")] is False
+
+    assert rows[third][col("decision")] == "dismiss"
+    assert rows[third][col("narrative_id")] is None
+    assert rows[third][col("narrative")] is None
+    assert rows[third][col("narrative_superseded")] is False
 
     summary = " ".join(str(c.value) for row in wb["Summary"].iter_rows() for c in row if c.value)
     assert "Decisions recorded" in summary

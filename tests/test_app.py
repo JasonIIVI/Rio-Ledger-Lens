@@ -46,14 +46,20 @@ def test_dashboard_renders_the_queue_and_the_review_loop(data_dir, tmp_path):
     assert any("Record decision" in b.label for b in at.button)
 
 
-def test_dashboard_shows_recorded_decisions(data_dir, tmp_path):
+def test_dashboard_shows_recorded_decisions_and_the_note_they_saw(data_dir, tmp_path):
     db = tmp_path / "review.sqlite"
     first = _run(data_dir, db, reviewer="ana")
     picked = first.selectbox(key="picked").value
-    ReviewStore(db).record(Decision(picked, "escalate", "ana", "needs a senior"))
+    store = ReviewStore(db)
+    seen = store.save_narrative(picked, {
+        "summary": "A note.", "why_flagged": "w", "evidence_to_request": ["x"],
+        "suggested_control": "c", "confidence": "low",
+    }, model="claude-test")
+    store.record(Decision(picked, "escalate", "ana", "needs a senior", narrative_id=seen))
 
     at = _run(data_dir, db, reviewer="ana")
     decided = next(m for m in at.metric if m.label == "Decided")
     assert decided.value == "1"
     assert any("escalate 1" in c.value for c in at.caption)
+    assert any(f"note #{seen}" in c.value for c in at.caption)
     assert any("Decision history" in m.value for m in at.markdown)

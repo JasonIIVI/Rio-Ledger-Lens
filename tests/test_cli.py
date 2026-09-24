@@ -1,3 +1,4 @@
+import hashlib
 import json
 
 from ledgerlens.cli import build_parser, main
@@ -175,6 +176,39 @@ def test_eval_narratives_select_writes_a_skeleton_and_will_not_clobber_it(tmp_pa
                  "--cases", str(cases)]) == 2  # exists, no --overwrite
 
 
+def test_eval_narratives_defaults_to_a_dated_runs_dir_and_regrades_the_newest(
+        tmp_path, capsys, monkeypatch, llm):
+    from ledgerlens import cli
+    from ledgerlens.narrate import DEFAULT_MODEL, Narrator
+
+    monkeypatch.chdir(tmp_path)
+    main(["generate", "--start", "2024-01-01", "--end", "2024-06-30",
+          "--out-dir", str(tmp_path)])
+    ledger, labels = str(tmp_path / "ledger.csv"), str(tmp_path / "labels.csv")
+    cases, report = tmp_path / "cases.json", tmp_path / "report.md"
+    main(["eval-narratives", ledger, "--select", "--labels", labels, "--cases", str(cases)])
+    capsys.readouterr()
+    client = llm.client()
+    monkeypatch.setattr(cli, "Narrator", lambda **kw: Narrator(client=client, **kw))
+    argv = ["eval-narratives", ledger, "--cases", str(cases), "--out", str(report), "--limit", "2"]
+
+    # Nothing to re-grade yet is an error that names the flag, not a fresh paid run.
+    assert main(argv + ["--regrade"]) == 2
+    assert "runs-dir" in capsys.readouterr().out
+    assert client.calls == []
+
+    assert main(argv) == 0
+    runs = sorted((tmp_path / "evals" / "narratives" / "runs").iterdir())
+    assert len(runs) == 1 and runs[0].name.endswith(f"-{DEFAULT_MODEL}")
+    assert len((runs[0] / "results.jsonl").read_text().splitlines()) == 2
+    assert "evals/narratives/runs/" in report.read_text()
+
+    # A re-grade finds that directory without being told, and calls nothing.
+    assert main(argv + ["--regrade"]) == 0
+    assert len(client.calls) == 2
+    assert "re-graded" in report.read_text()
+
+
 def test_eval_narratives_grades_the_cases_and_writes_the_report(tmp_path, capsys, monkeypatch,
                                                                  llm):
     from ledgerlens import cli
@@ -190,12 +224,33 @@ def test_eval_narratives_grades_the_cases_and_writes_the_report(tmp_path, capsys
     client = llm.client()
     monkeypatch.setattr(cli, "Narrator", lambda **kw: Narrator(client=client, **kw))
 
-    code = main(["eval-narratives", ledger, "--cases", str(cases), "--out",
-                 str(tmp_path / "report.md"), "--runs-dir", str(tmp_path / "runs"),
-                 "--limit", "3"])
+    report, runs = tmp_path / "report.md", tmp_path / "runs"
+    argv = ["eval-narratives", ledger, "--cases", str(cases), "--out", str(report),
+            "--runs-dir", str(runs), "--limit", "3"]
+    code = main(argv)
     out = capsys.readouterr().out
     assert code == 0, out
     assert "Graded 3/3" in out
-    assert (tmp_path / "report.md").read_text().startswith("# Narrative eval")
-    assert len((tmp_path / "runs" / "results.jsonl").read_text().splitlines()) == 3
+    assert report.read_text().startswith("# Narrative eval")
+    rows = [json.loads(line) for line in (runs / "results.jsonl").read_text().splitlines()]
+    assert len(rows) == 3
     assert len(client.calls) == 3
+
+    # Every row and the report say which case file graded them; the report also
+    # carries the grader's history and the constant-answer confidence baseline.
+    digest = hashlib.sha256(cases.read_bytes()).hexdigest()
+    assert all(r["cases_sha256"] == digest for r in rows)
+    text = report.read_text()
+    assert digest in text and "## Grader notes" in text and "Confidence baseline" in text
+
+    # Editing a band after the run: a plain re-grade is refused, an explicit one is disclosed.
+    payload = json.loads(cases.read_text())
+    payload["cases"][0]["expected_confidence"] = ["low"]
+    cases.write_text(json.dumps(payload))
+    assert main(argv + ["--regrade"]) == 2
+    assert "allow-cases-change" in capsys.readouterr().out
+    assert main(argv + ["--regrade", "--allow-cases-change"]) == 0
+    assert len(client.calls) == 3  # neither re-grade called the API
+    text = report.read_text()
+    assert "Provenance note" in text and digest in text
+    assert hashlib.sha256(cases.read_bytes()).hexdigest() in text

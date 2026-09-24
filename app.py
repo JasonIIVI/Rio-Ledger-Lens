@@ -53,10 +53,12 @@ def render_narrative(narrative: dict) -> None:
     for item in narrative["evidence_to_request"]:
         st.markdown(f"- {md(item)}")
     st.caption(
-        "Control: {control} · Confidence: {confidence} · Written by {model} at {when}".format(
+        "Control: {control} · Confidence: {confidence} · Written by {model} at {when} · "
+        "note #{note_id}".format(
             control=narrative["suggested_control"], confidence=narrative["confidence"],
             model=narrative.get("model") or "unknown model",
             when=narrative.get("generated_at", ""),
+            note_id=narrative.get("id", "?"),
         )
     )
 
@@ -179,8 +181,10 @@ with tab_queue:
                     narrator = Narrator()
                     entry, entry_flags, entry_lines = entry_context(combined, flags, df, picked)
                     fresh = narrator.narrate_one(build_prompt(entry, entry_flags, entry_lines))
-                store.save_narrative(picked, fresh, model=narrator.model)
-                st.session_state["flash"] = f"Narrative written ({narrator.usage.describe()})."
+                note_id = store.save_narrative(picked, fresh, model=narrator.model)
+                st.session_state["flash"] = (
+                    f"Narrative written as note #{note_id} ({narrator.usage.describe()})."
+                )
                 st.rerun()
             except NarrativeError as exc:
                 st.error(str(exc))
@@ -204,9 +208,13 @@ with tab_queue:
             if st.session_state.get("last_decision") == signature:
                 st.warning("That decision was just recorded.")
             else:
+                # The decision records the note that was on screen, so the
+                # workpaper can show what the reviewer read even if the note
+                # is rewritten later.
                 store.record(Decision(
                     entry_id=picked, decision=choice, reviewer=reviewer, note=note.strip(),
                     risk_score=float(row["risk_score"]), model_score=float(row["model_score"]),
+                    narrative_id=narrative["id"] if narrative else None,
                 ))
                 st.session_state["last_decision"] = signature
                 st.session_state["flash"] = f"Recorded: {choice} by {reviewer}."
@@ -215,7 +223,7 @@ with tab_queue:
         history = store.history(picked)
         if not history.empty:
             st.markdown("**Decision history** (append-only)")
-            st.dataframe(history[["decided_at", "decision", "reviewer", "note"]],
+            st.dataframe(history[["decided_at", "decision", "reviewer", "note", "narrative_id"]],
                          width="stretch", hide_index=True)
 
 # ---- tiers ----

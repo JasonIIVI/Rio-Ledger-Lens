@@ -1,5 +1,6 @@
 """The narrative eval: selection, grading, running and reporting - no API key needed."""
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -8,12 +9,25 @@ import pytest
 
 from ledgerlens import jets
 from ledgerlens.model import combine, score_ledger
-from ledgerlens.narrate import NarrativeError, Narrator, build_prompt, entry_context
+from ledgerlens.narrate import (
+    SYSTEM_PROMPT,
+    NarrativeError,
+    Narrator,
+    build_prompt,
+    entry_context,
+)
 from ledgerlens.narrative_eval import (
+    CITATION_NUMBERS,
+    GRADER_NOTES,
     METRICS,
+    UNRECORDED,
     Case,
+    CasesChangedError,
     aggregate,
+    cases_digest,
     check_cases,
+    confidence_baselines,
+    default_runs_dir,
     grade,
     load_cases,
     numbers_in,
@@ -142,14 +156,30 @@ def test_each_property_fails_on_its_own(sample, damage, failing):
     assert metrics["passed"] is False
 
 
-def test_numbers_from_the_system_prompt_are_not_inventions(sample):
-    """The first real run cited AU-C 240, which the model saw in the system prompt."""
+def test_only_cited_standards_are_admitted_beyond_the_entry(sample):
+    """AU-C 240 is a citation; the system prompt's style-example figures are not.
+
+    The first real run cited AU-C 240 and was marked as inventing a number.
+    The first fix admitted every number in the system prompt, which also let
+    through the style example's $9,912 and account 4000 - a note copying the
+    example onto an entry with neither would have passed. Only the citation is
+    admitted now, and every admitted citation must be something the model saw.
+    """
     case, prompt, entry, lines = sample
-    narrative = oracle(case, entry, lines)
-    narrative["why_flagged"] += " This is the pattern AU-C 240 directs auditors to test."
-    assert grade(narrative, case, prompt)["no_invented_numbers"] is True
-    narrative["why_flagged"] += " The related invoice was for $123,456.78."
-    assert grade(narrative, case, prompt)["no_invented_numbers"] is False
+    assert CITATION_NUMBERS <= numbers_in(SYSTEM_PROMPT)
+    assert "9912" not in numbers_in(prompt)  # the sample entry is not the example
+
+    cited = oracle(case, entry, lines)
+    cited["why_flagged"] += " This is the pattern AU-C 240 directs auditors to test."
+    assert grade(cited, case, prompt)["no_invented_numbers"] is True
+
+    copied = oracle(case, entry, lines)
+    copied["evidence_to_request"].append("Obtain the signed approval for this $9,912 payment")
+    assert grade(copied, case, prompt)["no_invented_numbers"] is False
+
+    invented = oracle(case, entry, lines)
+    invented["why_flagged"] += " The related invoice was for $123,456.78."
+    assert grade(invented, case, prompt)["no_invented_numbers"] is False
 
 
 def test_regrade_rescores_stored_rows_without_calling_the_api(sample, scored, ledger, llm,
@@ -167,6 +197,118 @@ def test_regrade_rescores_stored_rows_without_calling_the_api(sample, scored, le
     assert rows[0]["metrics"]["confidence_in_band"] is False
     stored = json.loads((tmp_path / "results.jsonl").read_text().splitlines()[0])
     assert stored["metrics"]["confidence_in_band"] is False
+
+
+def test_cases_digest_is_the_sha256_of_the_file_bytes(tmp_path):
+    path = tmp_path / "cases.json"
+    path.write_text('{"cases": []}')
+    assert cases_digest(path) == hashlib.sha256(b'{"cases": []}').hexdigest()
+
+
+def test_rows_carry_the_case_file_hash_and_a_regrade_will_not_cross_a_change_quietly(
+        sample, scored, ledger, llm, tmp_path):
+    case, prompt, entry, lines = sample
+    combined, flags = scored
+    same, edited = "a" * 64, "b" * 64
+    results = tmp_path / "results.jsonl"
+
+    first = llm.client([llm.response(oracle(case, entry, lines))])
+    rows = run_eval([case], Narrator(client=first), combined, flags, ledger, tmp_path,
+                    cases_sha256=same)
+    assert rows[0]["cases_sha256"] == same
+    assert json.loads(results.read_text().splitlines()[0])["cases_sha256"] == same
+
+    # A grader fix under the same file re-grades freely and leaves no mark.
+    quiet = llm.client()
+    rows = run_eval([case], Narrator(client=quiet), combined, flags, ledger, tmp_path,
+                    regrade=True, cases_sha256=same)
+    assert quiet.calls == []
+    assert rows[0]["regraded_at"]
+    assert "previous_cases_sha256" not in rows[0]
+    assert aggregate(rows)["provenance"]["rows_regraded_across_cases"] == 0
+
+    # Edited expectations: refused outright, nothing rewritten, still no API call.
+    stricter = Case(**{**case.__dict__, "expected_confidence": ["high"]})  # oracle says medium
+    before = results.read_text()
+    with pytest.raises(CasesChangedError, match="allow-cases-change"):
+        run_eval([stricter], Narrator(client=quiet), combined, flags, ledger, tmp_path,
+                 regrade=True, cases_sha256=edited)
+    assert results.read_text() == before
+    assert quiet.calls == []
+
+    # Allowed explicitly: re-graded, and the row remembers where it came from.
+    rows = run_eval([stricter], Narrator(client=quiet), combined, flags, ledger, tmp_path,
+                    regrade=True, cases_sha256=edited, allow_cases_change=True)
+    assert rows[0]["metrics"]["confidence_in_band"] is False
+    assert rows[0]["cases_sha256"] == edited
+    assert rows[0]["previous_cases_sha256"] == same
+    summary = aggregate(rows)
+    assert summary["provenance"]["cases_sha256"] == [edited]
+    assert summary["provenance"]["rows_regraded_across_cases"] == 1
+    assert summary["provenance"]["previous_cases_sha256"] == [same]
+    report = render_markdown(rows, summary, runs_dir=tmp_path)
+    assert edited in report and same in report
+    assert "Provenance note" in report and "results.jsonl" in report
+
+    # A second crossing keeps the earliest origin rather than the last.
+    rows = run_eval([stricter], Narrator(client=quiet), combined, flags, ledger, tmp_path,
+                    regrade=True, cases_sha256="c" * 64, allow_cases_change=True)
+    assert rows[0]["previous_cases_sha256"] == same
+
+
+def test_rows_graded_before_provenance_existed_count_as_unrecorded(sample, scored, ledger, llm,
+                                                                    tmp_path):
+    case, prompt, entry, lines = sample
+    combined, flags = scored
+    results = tmp_path / "results.jsonl"
+    run_eval([case], Narrator(client=llm.client([llm.response(oracle(case, entry, lines))])),
+             combined, flags, ledger, tmp_path, cases_sha256="a" * 64)
+    stored = json.loads(results.read_text())
+    del stored["cases_sha256"]  # what a row from before this field looks like
+    results.write_text(json.dumps(stored) + "\n")
+
+    with pytest.raises(CasesChangedError, match=UNRECORDED):
+        run_eval([case], Narrator(client=llm.client()), combined, flags, ledger, tmp_path,
+                 regrade=True, cases_sha256="a" * 64)
+    rows = run_eval([case], Narrator(client=llm.client()), combined, flags, ledger, tmp_path,
+                    regrade=True, cases_sha256="a" * 64, allow_cases_change=True)
+    assert rows[0]["previous_cases_sha256"] == UNRECORDED
+    report = render_markdown(rows, aggregate(rows))
+    assert "hash was not recorded" in report
+
+
+def test_the_report_prints_the_constant_answer_baseline_and_its_own_history(
+        sample, scored, ledger, llm, tmp_path):
+    case, prompt, entry, lines = sample
+    combined, flags = scored
+    others = combined[(combined["risk_score"] > 0) & (combined["entry_id"] != case.entry_id)]
+    wide = Case(others.iloc[0]["entry_id"], "y", others.iloc[0]["tests_fired"], "w",
+                expected_confidence=["medium", "low"])
+    narrow = Case(others.iloc[1]["entry_id"], "z", others.iloc[1]["tests_fired"], "w",
+                  expected_confidence=["high"])
+    cases = [case, wide, narrow]  # sample accepts high and medium
+
+    assert confidence_baselines(cases) == {"high": (2, 3), "medium": (2, 3), "low": (1, 3)}
+
+    client = llm.client([llm.response(oracle(case, entry, lines))] * 3)
+    rows = run_eval(cases, Narrator(client=client), combined, flags, ledger, tmp_path)
+    report = render_markdown(rows, aggregate(rows), cases=cases)
+    assert 'always "high" 2/3 (67%)' in report
+    assert 'always "medium" 2/3 (67%)' in report
+    assert 'always "low" 1/3 (33%)' in report
+    assert "more than one level on 2 of 3 cases" in report
+
+    # The baseline is over the cases graded, not the whole file.
+    partial = render_markdown(rows[:1], aggregate(rows[:1]), cases=cases)
+    assert 'always "high" 1/1 (100%)' in partial
+    assert "Confidence baseline" not in render_markdown(rows, aggregate(rows))
+
+    # The grader's history is in the report itself, not only in the commit log.
+    assert "## Grader notes" in report
+    assert len(GRADER_NOTES) >= 2
+    for date, note in GRADER_NOTES:
+        assert date in report and note in report
+    assert "88%" in report and "9,912" in report
 
 
 def test_numbers_normalise_formatting_and_ignore_small_tokens():
@@ -219,6 +361,30 @@ def test_run_eval_records_resumes_and_keeps_plumbing_out_of_the_score(sample, sc
     assert all(r["entry_id"] in report for r in rerun)
     assert "Misses" in report
     assert "max_tokens" in report
+    assert "(or a cited standard)" in report  # the label says what the check now measures
+
+
+def test_a_run_that_does_not_resume_starts_its_files_clean(sample, scored, ledger, llm,
+                                                           tmp_path):
+    case, prompt, entry, lines = sample
+    combined, flags = scored
+    for _ in range(2):
+        client = llm.client([llm.response(oracle(case, entry, lines))])
+        run_eval([case], Narrator(client=client), combined, flags, ledger, tmp_path, resume=False)
+    assert len((tmp_path / "results.jsonl").read_text().splitlines()) == 1
+
+
+def test_default_runs_dir_dates_new_runs_and_finds_the_newest_to_regrade(tmp_path):
+    root = tmp_path / "runs"
+    fresh = default_runs_dir("claude-x", root=root)
+    assert fresh.parent == root
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}-claude-x", fresh.name)
+
+    with pytest.raises(FileNotFoundError, match="runs-dir"):
+        default_runs_dir("claude-x", regrade=True, root=root)
+    for name in ("2026-09-23-claude-x", "2026-09-24-claude-x", "2026-09-25-claude-y"):
+        (root / name).mkdir(parents=True)
+    assert default_runs_dir("claude-x", regrade=True, root=root) == root / "2026-09-24-claude-x"
 
 
 def test_run_eval_fails_once_without_a_key(sample, scored, ledger, monkeypatch, tmp_path):
