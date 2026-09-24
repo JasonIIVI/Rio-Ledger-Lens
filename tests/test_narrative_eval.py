@@ -18,6 +18,7 @@ from ledgerlens.narrate import (
 )
 from ledgerlens.narrative_eval import (
     CITATION_NUMBERS,
+    GRADER_NOTES,
     METRICS,
     UNRECORDED,
     Case,
@@ -25,6 +26,7 @@ from ledgerlens.narrative_eval import (
     aggregate,
     cases_digest,
     check_cases,
+    confidence_baselines,
     grade,
     load_cases,
     numbers_in,
@@ -272,6 +274,40 @@ def test_rows_graded_before_provenance_existed_count_as_unrecorded(sample, score
     assert rows[0]["previous_cases_sha256"] == UNRECORDED
     report = render_markdown(rows, aggregate(rows))
     assert "hash was not recorded" in report
+
+
+def test_the_report_prints_the_constant_answer_baseline_and_its_own_history(
+        sample, scored, ledger, llm, tmp_path):
+    case, prompt, entry, lines = sample
+    combined, flags = scored
+    others = combined[(combined["risk_score"] > 0) & (combined["entry_id"] != case.entry_id)]
+    wide = Case(others.iloc[0]["entry_id"], "y", others.iloc[0]["tests_fired"], "w",
+                expected_confidence=["medium", "low"])
+    narrow = Case(others.iloc[1]["entry_id"], "z", others.iloc[1]["tests_fired"], "w",
+                  expected_confidence=["high"])
+    cases = [case, wide, narrow]  # sample accepts high and medium
+
+    assert confidence_baselines(cases) == {"high": (2, 3), "medium": (2, 3), "low": (1, 3)}
+
+    client = llm.client([llm.response(oracle(case, entry, lines))] * 3)
+    rows = run_eval(cases, Narrator(client=client), combined, flags, ledger, tmp_path)
+    report = render_markdown(rows, aggregate(rows), cases=cases)
+    assert 'always "high" 2/3 (67%)' in report
+    assert 'always "medium" 2/3 (67%)' in report
+    assert 'always "low" 1/3 (33%)' in report
+    assert "more than one level on 2 of 3 cases" in report
+
+    # The baseline is over the cases graded, not the whole file.
+    partial = render_markdown(rows[:1], aggregate(rows[:1]), cases=cases)
+    assert 'always "high" 1/1 (100%)' in partial
+    assert "Confidence baseline" not in render_markdown(rows, aggregate(rows))
+
+    # The grader's history is in the report itself, not only in the commit log.
+    assert "## Grader notes" in report
+    assert len(GRADER_NOTES) >= 2
+    for date, note in GRADER_NOTES:
+        assert date in report and note in report
+    assert "88%" in report and "9,912" in report
 
 
 def test_numbers_normalise_formatting_and_ignore_small_tokens():

@@ -203,10 +203,12 @@ def test_eval_narratives_grades_the_cases_and_writes_the_report(tmp_path, capsys
     assert len(rows) == 3
     assert len(client.calls) == 3
 
-    # Every row and the report say which case file graded them.
+    # Every row and the report say which case file graded them; the report also
+    # carries the grader's history and the constant-answer confidence baseline.
     digest = hashlib.sha256(cases.read_bytes()).hexdigest()
     assert all(r["cases_sha256"] == digest for r in rows)
-    assert digest in report.read_text()
+    text = report.read_text()
+    assert digest in text and "## Grader notes" in text and "Confidence baseline" in text
 
     # Editing a band after the run: a plain re-grade is refused, an explicit one is disclosed.
     payload = json.loads(cases.read_text())

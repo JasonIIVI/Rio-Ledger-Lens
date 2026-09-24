@@ -277,8 +277,10 @@ def cmd_eval_narratives(args: argparse.Namespace) -> int:
     summary = narrative_eval.aggregate(rows)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(narrative_eval.render_markdown(rows, summary, runs_dir=args.runs_dir),
-                   encoding="utf-8")
+    out.write_text(
+        narrative_eval.render_markdown(rows, summary, runs_dir=args.runs_dir, cases=cases),
+        encoding="utf-8",
+    )
 
     print("Graded {graded}/{cases} cases ({invalid} invalid, {errors} errors kept out of the "
           "score)".format(**summary))

@@ -71,6 +71,24 @@ FORBIDDEN_ASSERTIONS = (
 #: so nothing from the prompt is admitted except what it cites.
 CITATION_NUMBERS = frozenset({"240"})  # AU-C 240, in the JET-05 reference
 
+#: What has changed in the grader and what each change did to the published
+#: score, printed in every report. A reader should never have to find this in
+#: a commit message, and a grader that could be fixed without disclosure could
+#: also be loosened without it.
+GRADER_NOTES = (
+    ("2026-09-23",
+     "The first real run scored 88% on all checks. One of the two misses was the grader's: "
+     "no_invented_numbers counted the citation \"AU-C 240\" as an invented number. The fix "
+     "admitted every number in the system prompt as shown to the model, and the run was "
+     "re-graded offline to 94%."),
+    ("2026-09-24",
+     "That fix was too broad. The system prompt's style example quotes $9,912 and account "
+     "4000, so a note that copied the example onto an entry with neither would have passed. "
+     "The union with the prompt was replaced by an explicit citation allowlist (AU-C 240 "
+     "only). Re-grading the 2026-09-23 run under it changed no row: no note had used either "
+     "figure, and the score stayed at 94%."),
+)
+
 METRICS = (
     "schema_valid",
     "mentions_required",
@@ -294,6 +312,18 @@ def grade(narrative: dict | None, case: Case, prompt_text: str) -> dict[str, boo
     return metrics
 
 
+def confidence_baselines(cases: list[Case]) -> dict[str, tuple[int, int]]:
+    """What a narrator that always answered one level would score on confidence_in_band.
+
+    The bands are deliberately wide (most cases accept two of the three
+    levels), which makes the check forgiving; printing the constant-answer
+    baseline next to the rate says how forgiving. The bands themselves are
+    only ever changed for a future case-set revision, before its run.
+    """
+    return {level: (sum(level in c.expected_confidence for c in cases), len(cases))
+            for level in ("high", "medium", "low")}
+
+
 def failed_checks(row: dict) -> list[str]:
     metrics = row.get("metrics") or {}
     return [m for m in METRICS if not metrics.get(m, False)]
@@ -474,10 +504,33 @@ def _provenance_lines(summary: dict, runs_dir: str | Path | None) -> list[str]:
     return lines
 
 
+def _baseline_lines(cases: list[Case] | None, rows: list[dict]) -> list[str]:
+    """The constant-answer baseline for the confidence check, for the cases graded."""
+    graded = {r["entry_id"] for r in rows}
+    cases = [c for c in (cases or []) if c.entry_id in graded]
+    if not cases:
+        return []
+    baselines = confidence_baselines(cases)
+    best = max(baselines, key=lambda level: baselines[level][0])
+    described = ", ".join(f'always "{level}" {n}/{total} ({n / total:.0%})'
+                          for level, (n, total) in baselines.items())
+    n, total = baselines[best]
+    return [
+        "",
+        f"Confidence baseline: the bands accept more than one level on "
+        f"{sum(len(c.expected_confidence) > 1 for c in cases)} of {total} cases, so a "
+        f"narrator that always answered \"{best}\" would pass the confidence check on "
+        f"{n}/{total} ({n / total:.0%}) of them - {described}. Read the confidence row "
+        f"against that number, not against zero.",
+    ]
+
+
 def render_markdown(
     rows: list[dict], summary: dict, runs_dir: str | Path | None = None,
+    cases: list[Case] | None = None,
 ) -> str:
-    """The report that goes in docs/: what was measured, the numbers, every miss."""
+    """The report that goes in docs/: what was measured, the numbers, every miss,
+    the grader's own history, and the baseline the confidence check should be read against."""
     model = next((r["model"] for r in rows if r.get("model")), "unknown")
     when = max((r["graded_at"] for r in rows), default="")
     usage = summary["usage"]
@@ -512,6 +565,7 @@ def render_markdown(
     }
     for metric in (*METRICS, "passed"):
         lines.append(f"| {labels[metric]} | {summary['rates'][metric]:.0%} |")
+    lines += _baseline_lines(cases, rows)
     lines += [
         "",
         "## Per case",
@@ -535,6 +589,8 @@ def render_markdown(
             else:
                 lines.append(f"> {r['error']}")
             lines.append("")
+    lines += ["", "## Grader notes", ""]
+    lines += [f"- **{date}** - {note}" for date, note in GRADER_NOTES]
     lines += [
         "",
         "## Cost",
