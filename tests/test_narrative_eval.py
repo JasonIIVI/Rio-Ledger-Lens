@@ -27,6 +27,7 @@ from ledgerlens.narrative_eval import (
     cases_digest,
     check_cases,
     confidence_baselines,
+    default_runs_dir,
     grade,
     load_cases,
     numbers_in,
@@ -361,6 +362,29 @@ def test_run_eval_records_resumes_and_keeps_plumbing_out_of_the_score(sample, sc
     assert "Misses" in report
     assert "max_tokens" in report
     assert "(or a cited standard)" in report  # the label says what the check now measures
+
+
+def test_a_run_that_does_not_resume_starts_its_files_clean(sample, scored, ledger, llm,
+                                                           tmp_path):
+    case, prompt, entry, lines = sample
+    combined, flags = scored
+    for _ in range(2):
+        client = llm.client([llm.response(oracle(case, entry, lines))])
+        run_eval([case], Narrator(client=client), combined, flags, ledger, tmp_path, resume=False)
+    assert len((tmp_path / "results.jsonl").read_text().splitlines()) == 1
+
+
+def test_default_runs_dir_dates_new_runs_and_finds_the_newest_to_regrade(tmp_path):
+    root = tmp_path / "runs"
+    fresh = default_runs_dir("claude-x", root=root)
+    assert fresh.parent == root
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}-claude-x", fresh.name)
+
+    with pytest.raises(FileNotFoundError, match="runs-dir"):
+        default_runs_dir("claude-x", regrade=True, root=root)
+    for name in ("2026-09-23-claude-x", "2026-09-24-claude-x", "2026-09-25-claude-y"):
+        (root / name).mkdir(parents=True)
+    assert default_runs_dir("claude-x", regrade=True, root=root) == root / "2026-09-24-claude-x"
 
 
 def test_run_eval_fails_once_without_a_key(sample, scored, ledger, monkeypatch, tmp_path):

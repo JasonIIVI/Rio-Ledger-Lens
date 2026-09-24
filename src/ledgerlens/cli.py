@@ -259,11 +259,17 @@ def cmd_eval_narratives(args: argparse.Namespace) -> int:
     if args.limit:
         cases = cases[:args.limit]
     cases_sha256 = narrative_eval.cases_digest(args.cases)
+    try:
+        runs_dir = Path(args.runs_dir) if args.runs_dir else narrative_eval.default_runs_dir(
+            args.model, regrade=args.regrade)
+    except FileNotFoundError as exc:
+        print(f"error: {exc}")
+        return 2
 
     narrator = Narrator(model=args.model, max_tokens=args.max_tokens, effort=args.effort)
     try:
         rows = narrative_eval.run_eval(
-            cases, narrator, scored, flags, df, args.runs_dir, resume=not args.no_resume,
+            cases, narrator, scored, flags, df, runs_dir, resume=not args.no_resume,
             regrade=args.regrade, cases_sha256=cases_sha256,
             allow_cases_change=args.allow_cases_change,
         )
@@ -278,7 +284,7 @@ def cmd_eval_narratives(args: argparse.Namespace) -> int:
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(
-        narrative_eval.render_markdown(rows, summary, runs_dir=args.runs_dir, cases=cases),
+        narrative_eval.render_markdown(rows, summary, runs_dir=runs_dir, cases=cases),
         encoding="utf-8",
     )
 
@@ -287,7 +293,7 @@ def cmd_eval_narratives(args: argparse.Namespace) -> int:
     for metric, rate in summary["rates"].items():
         print(f"  {metric:22s} {rate:.0%}")
     print(f"Case file sha256 {cases_sha256}")
-    print(f"Report written to {out}; per-case rows in {args.runs_dir}")
+    print(f"Report written to {out}; per-case rows in {runs_dir}")
     return 0 if summary["graded"] and not summary["errors"] else 1
 
 
@@ -355,7 +361,9 @@ def build_parser() -> argparse.ArgumentParser:
     ev.add_argument("ledger", help="path to the GL csv the cases were selected from")
     ev.add_argument("--cases", default="evals/narratives/cases.json")
     ev.add_argument("--out", default="docs/narrative-eval.md", help="markdown report")
-    ev.add_argument("--runs-dir", default="out/narrative-eval", help="per-case jsonl rows")
+    ev.add_argument("--runs-dir",
+                    help="per-case jsonl rows (default: evals/narratives/runs/<utc-date>-<model>, "
+                         "or the newest such directory with --regrade)")
     ev.add_argument("--model", default=DEFAULT_MODEL)
     ev.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS)
     ev.add_argument("--effort", choices=("low", "medium", "high"), default=DEFAULT_EFFORT)

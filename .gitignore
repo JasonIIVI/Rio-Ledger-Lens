@@ -22,6 +22,8 @@ data/*.sqlite
 data/*.xlsx
 out/
 *.xlsx
+# Narrative eval run rows are deliberately committed under evals/narratives/runs/
+# (synthetic entries only) so a reader can re-grade a run.
 
 # Secrets — QuickBooks tokens, API keys
 .env

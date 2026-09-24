@@ -176,6 +176,39 @@ def test_eval_narratives_select_writes_a_skeleton_and_will_not_clobber_it(tmp_pa
                  "--cases", str(cases)]) == 2  # exists, no --overwrite
 
 
+def test_eval_narratives_defaults_to_a_dated_runs_dir_and_regrades_the_newest(
+        tmp_path, capsys, monkeypatch, llm):
+    from ledgerlens import cli
+    from ledgerlens.narrate import DEFAULT_MODEL, Narrator
+
+    monkeypatch.chdir(tmp_path)
+    main(["generate", "--start", "2024-01-01", "--end", "2024-06-30",
+          "--out-dir", str(tmp_path)])
+    ledger, labels = str(tmp_path / "ledger.csv"), str(tmp_path / "labels.csv")
+    cases, report = tmp_path / "cases.json", tmp_path / "report.md"
+    main(["eval-narratives", ledger, "--select", "--labels", labels, "--cases", str(cases)])
+    capsys.readouterr()
+    client = llm.client()
+    monkeypatch.setattr(cli, "Narrator", lambda **kw: Narrator(client=client, **kw))
+    argv = ["eval-narratives", ledger, "--cases", str(cases), "--out", str(report), "--limit", "2"]
+
+    # Nothing to re-grade yet is an error that names the flag, not a fresh paid run.
+    assert main(argv + ["--regrade"]) == 2
+    assert "runs-dir" in capsys.readouterr().out
+    assert client.calls == []
+
+    assert main(argv) == 0
+    runs = sorted((tmp_path / "evals" / "narratives" / "runs").iterdir())
+    assert len(runs) == 1 and runs[0].name.endswith(f"-{DEFAULT_MODEL}")
+    assert len((runs[0] / "results.jsonl").read_text().splitlines()) == 2
+    assert "evals/narratives/runs/" in report.read_text()
+
+    # A re-grade finds that directory without being told, and calls nothing.
+    assert main(argv + ["--regrade"]) == 0
+    assert len(client.calls) == 2
+    assert "re-graded" in report.read_text()
+
+
 def test_eval_narratives_grades_the_cases_and_writes_the_report(tmp_path, capsys, monkeypatch,
                                                                  llm):
     from ledgerlens import cli

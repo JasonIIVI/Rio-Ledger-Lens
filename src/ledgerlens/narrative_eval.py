@@ -106,6 +106,29 @@ STATUSES = ("ok", "invalid", "error")
 #: What ``cases_sha256`` reads on rows graded before the hash was stored.
 UNRECORDED = "unrecorded"
 
+#: Where a run's rows live, in the repository next to the case file. The rows
+#: are the narratives and prompts for synthetic entries, so publishing them
+#: costs nothing and lets anyone re-grade a run rather than take the report's
+#: word for it.
+RUNS_ROOT = Path("evals/narratives/runs")
+
+
+def default_runs_dir(model: str, regrade: bool = False, root: str | Path = RUNS_ROOT) -> Path:
+    """Where a run's rows go when the caller does not say.
+
+    A new run gets a directory named for the UTC date and the model, so runs
+    sit side by side and a later one never overwrites an earlier one. A
+    re-grade has to find rows that already exist, so it takes the newest
+    directory for that model instead.
+    """
+    root = Path(root)
+    if not regrade:
+        return root / f"{datetime.now(timezone.utc):%Y-%m-%d}-{model}"
+    existing = sorted(p for p in root.glob(f"*-{model}") if p.is_dir())
+    if not existing:
+        raise FileNotFoundError(f"no run for {model} under {root} to re-grade; pass --runs-dir")
+    return existing[-1]
+
 
 class CasesChangedError(ValueError):
     """A re-grade met rows graded under a different case file than the one given."""
@@ -428,6 +451,13 @@ def run_eval(
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     results_path, errors_path = out_dir / "results.jsonl", out_dir / "errors.jsonl"
+    if not resume:
+        # Rows are appended as they complete, so a run that does not resume has
+        # to start the files clean or the directory would hold two rows per
+        # case and the later one would win silently on the next read.
+        for path in (results_path, errors_path):
+            if path.exists():
+                path.unlink()
     done = {r["entry_id"]: r for r in _read_jsonl(results_path)} if resume else {}
     if regrade and done:
         _regrade(done, cases, cases_sha256, allow_cases_change)
