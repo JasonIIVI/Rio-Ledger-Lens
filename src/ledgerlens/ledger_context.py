@@ -48,6 +48,8 @@ LINE_COLUMNS = ("line_no", "account_code", "account_name", "account_type", "desc
                 "debit", "credit")
 FLAG_COLUMNS = ("test_id", "test_name", "severity", "reason")
 DECISION_COLUMNS = ("decided_at", "decision", "reviewer", "note", "narrative_id")
+NARRATIVE_COLUMNS = ("id", "summary", "why_flagged", "evidence_to_request", "suggested_control",
+                     "confidence", "model", "generated_at")
 
 #: The two tiers relate in one of these ways; see model.combine.
 AGREEMENTS = ("both", "rules only", "model only", "neither")
@@ -122,7 +124,12 @@ class LedgerContext:
         return None
 
     def _attach_review(self, rows: list[dict]) -> list[dict]:
-        """Add the narrative summary and latest decision to entry rows, when a store exists."""
+        """Add the latest narrative summary and the latest decision to entry rows.
+
+        The summary is the latest version; ``narrative_superseded`` says when
+        the decision was recorded against an earlier one, so the model does
+        not present the current note as what the reviewer decided on.
+        """
         store = self._store()
         if store is None:
             return rows
@@ -130,11 +137,19 @@ class LedgerContext:
         current = store.current().set_index("entry_id")
         for row in rows:
             entry_id = row["entry_id"]
+            latest = narratives.at[entry_id, "id"] if entry_id in narratives.index else None
+            recorded = (
+                current.at[entry_id, "narrative_id"] if entry_id in current.index else None
+            )
             row["narrative_summary"] = (
                 narratives.at[entry_id, "summary"] if entry_id in narratives.index else None
             )
             row["decision"] = current.at[entry_id, "decision"] if entry_id in current.index else None
             row["reviewer"] = current.at[entry_id, "reviewer"] if entry_id in current.index else None
+            row["narrative_superseded"] = bool(
+                latest is not None and recorded is not None and not pd.isna(recorded)
+                and int(recorded) != int(latest)
+            )
         return rows
 
     # --- questions ---------------------------------------------------------
@@ -193,7 +208,12 @@ class LedgerContext:
         }
 
     def explain_entry(self, entry_id: str) -> dict:
-        """Everything known about one entry: lines, flags, both scores, note, decisions."""
+        """Everything known about one entry: lines, flags, both scores, notes, decisions.
+
+        ``narrative`` is the latest version; ``narrative_history`` has every
+        version with its id, so a decision's ``narrative_id`` can be read
+        against the text it was actually made on.
+        """
         self.load()
         try:
             _, flags, lines = entry_context(self.combined, self.flags, self.lines, entry_id)
@@ -206,6 +226,9 @@ class LedgerContext:
             "lines": records(lines, LINE_COLUMNS),
             "flags": records(flags, FLAG_COLUMNS),
             "narrative": store.get_narrative(entry_id) if store else None,
+            "narrative_history": (
+                records(store.narrative_history(entry_id), NARRATIVE_COLUMNS) if store else []
+            ),
             "decisions": records(store.history(entry_id), DECISION_COLUMNS) if store else [],
             "caveat": CAVEAT,
         }

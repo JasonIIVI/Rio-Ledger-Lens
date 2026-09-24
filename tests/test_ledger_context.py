@@ -94,9 +94,25 @@ def test_review_data_is_read_but_a_database_is_never_created(small_ledger, tmp_p
     assert detail["decisions"][0]["narrative_id"] == seen
     assert detail["narrative"]["summary"] == "s"
     assert detail["narrative"]["id"] == seen
+    assert [v["id"] for v in detail["narrative_history"]] == [seen]
     top = context.top_exceptions(limit=1)["entries"][0]
     assert top["decision"] == "dismiss"
     assert top["narrative_summary"] == "s"
+    assert top["narrative_superseded"] is False
+
+    # A rewrite after the decision: the latest note is shown, every version is
+    # reachable, and the rows say the decision was made against an earlier one.
+    newer = store.save_narrative(entry_id, {"summary": "s2", "why_flagged": "w",
+                                            "evidence_to_request": ["e"],
+                                            "suggested_control": "c", "confidence": "low"}, model="m")
+    detail = context.explain_entry(entry_id)
+    assert detail["narrative"]["id"] == newer
+    assert [v["id"] for v in detail["narrative_history"]] == [seen, newer]
+    assert detail["narrative_history"][0]["summary"] == "s"
+    assert detail["decisions"][0]["narrative_id"] == seen
+    top = context.top_exceptions(limit=1)["entries"][0]
+    assert top["narrative_summary"] == "s2"
+    assert top["narrative_superseded"] is True
 
 
 def test_the_review_database_is_opened_read_only(small_ledger, tmp_path):

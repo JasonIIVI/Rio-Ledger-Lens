@@ -106,6 +106,7 @@ async def test_explain_entry_returns_the_note_and_the_decision_from_the_store(cl
     detail = result.structured_content
     assert detail["narrative"]["summary"] == "A note."
     assert detail["narrative"]["id"] == review_db.narrative_id
+    assert [v["id"] for v in detail["narrative_history"]] == [review_db.narrative_id]
     assert detail["decisions"][0]["decision"] == "escalate"
     assert detail["decisions"][0]["narrative_id"] == review_db.narrative_id
 

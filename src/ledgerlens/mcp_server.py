@@ -100,7 +100,8 @@ def ledgerlens_explain_entry(
     entry_id: Annotated[str, Field(description="Journal entry id, e.g. JE-2025-004431.")],
 ) -> dict[str, Any]:
     """Everything known about one entry: its lines, every test that flagged it with the reason,
-    both tier scores, the cached Claude-written reviewer note (if any), and the append-only
+    both tier scores, the latest Claude-written reviewer note plus every earlier version (each
+    decision's narrative_id names the version it was made against), and the append-only
     decision history. Raises a tool error if the id is unknown.
     """
     try:
