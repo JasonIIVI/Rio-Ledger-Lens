@@ -26,6 +26,7 @@ entries to test. The narrator never sees a label.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import re
 import time
@@ -350,6 +351,21 @@ def confidence_baselines(cases: list[Case]) -> dict[str, tuple[int, int]]:
             for level in ("high", "medium", "low")}
 
 
+def grader_digest() -> str:
+    """sha256 of the grader itself: the grading code and the word lists it reads.
+
+    Recorded on every row, so a change to how notes are judged is as visible
+    as a change to what they are judged against. Whitespace and comments
+    count: any edit to the grader is a change a reader may want to see.
+    """
+    parts = [inspect.getsource(f) for f in (grade, numbers_in, narrative_text, _is_specific)]
+    parts += [repr(FORBIDDEN_ASSERTIONS), repr(sorted(CITATION_NUMBERS)), repr(METRICS)]
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+
+
+GRADER_SHA256 = grader_digest()
+
+
 def failed_checks(row: dict) -> list[str]:
     metrics = row.get("metrics") or {}
     return [m for m in METRICS if not metrics.get(m, False)]
@@ -366,6 +382,9 @@ def aggregate(rows: list[dict]) -> dict:
         if r.get("usage"):
             usage.add(_UsageView(r["usage"]))
     crossed = [r for r in rows if r.get("previous_cases_sha256")]
+    regraded = [r for r in graded if r.get("metrics_history")]
+    changed = [r for r in regraded
+               if (r["metrics_history"][0]["metrics"] or {}).get("passed") != r["metrics"]["passed"]]
     return {
         "cases": len(rows),
         "graded": n,
@@ -376,7 +395,10 @@ def aggregate(rows: list[dict]) -> dict:
         "usage": asdict(usage),
         "provenance": {
             "cases_sha256": sorted({r.get("cases_sha256") or UNRECORDED for r in rows}),
+            "grader_sha256": sorted({r.get("grader_sha256") or UNRECORDED for r in graded}),
             "regraded_at": max((r.get("regraded_at") or "" for r in rows), default="") or None,
+            "rows_regraded": len(regraded),
+            "rows_with_changed_result": len(changed),
             "rows_regraded_across_cases": len(crossed),
             "previous_cases_sha256": sorted({r["previous_cases_sha256"] for r in crossed}),
         },
@@ -418,7 +440,16 @@ def _regrade(
         )
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     for row in rows:
+        # The grades being replaced are kept, with what produced them, so a
+        # grader change shows on the row itself and not only in a note.
+        row.setdefault("metrics_history", []).append({
+            "metrics": row["metrics"],
+            "grader_sha256": row.get("grader_sha256") or UNRECORDED,
+            "cases_sha256": row.get("cases_sha256") or UNRECORDED,
+            "graded_at": row.get("regraded_at") or row.get("graded_at"),
+        })
         row["metrics"] = grade(row["narrative"], by_id[row["entry_id"]], row["prompt"])
+        row["grader_sha256"] = GRADER_SHA256
         row["regraded_at"] = now
         if row["entry_id"] in crossed:
             # Keep the earliest known origin: a second crossing must not erase the first.
@@ -535,6 +566,7 @@ def run_eval(
             "prompt": prompt,
             "graded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "cases_sha256": cases_sha256,
+            "grader_sha256": GRADER_SHA256,
         }
         target = errors_path if status == "error" else results_path
         with target.open("a", encoding="utf-8") as handle:
@@ -549,12 +581,24 @@ def _provenance_lines(summary: dict, runs_dir: str | Path | None) -> list[str]:
     hashes = provenance.get("cases_sha256") or []
     parts = ["Case file sha256: " + (
         " / ".join(f"`{h}`" for h in hashes) if hashes else UNRECORDED)]
+    graders = provenance.get("grader_sha256") or []
+    parts.append("grader sha256: " + (
+        " / ".join(f"`{h}`" for h in graders) if graders else UNRECORDED))
     if runs_dir:
         parts.append(f"rows: `{Path(runs_dir).as_posix()}/results.jsonl`")
     if provenance.get("regraded_at"):
-        parts.append(f"re-graded {provenance['regraded_at']} by the grader in this commit, "
-                     "no API calls")
+        parts.append(f"re-graded {provenance['regraded_at']} offline (no API calls)")
     lines = [" · ".join(parts)]
+    regraded = provenance.get("rows_regraded") or 0
+    if regraded:
+        changed = provenance.get("rows_with_changed_result") or 0
+        lines += [
+            "",
+            f"Re-grades: {regraded} row(s) keep their earlier grades, with the grader and case "
+            f"file that produced them, under `metrics_history`; {changed} row(s) changed their "
+            "overall result since first graded. The grader hash is the sha256 of the grading "
+            "code and its word lists, so a loosened check would show here as a new hash.",
+        ]
     crossed = provenance.get("rows_regraded_across_cases") or 0
     if crossed:
         previous = provenance.get("previous_cases_sha256") or []

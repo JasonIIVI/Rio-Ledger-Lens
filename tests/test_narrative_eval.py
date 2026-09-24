@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from ledgerlens import jets
+from ledgerlens import jets, narrative_eval
 from ledgerlens.model import combine, score_ledger
 from ledgerlens.narrate import (
     SYSTEM_PROMPT,
@@ -19,6 +19,7 @@ from ledgerlens.narrate import (
 from ledgerlens.narrative_eval import (
     CITATION_NUMBERS,
     GRADER_NOTES,
+    GRADER_SHA256,
     METRICS,
     UNRECORDED,
     Case,
@@ -29,6 +30,7 @@ from ledgerlens.narrative_eval import (
     confidence_baselines,
     default_runs_dir,
     grade,
+    grader_digest,
     load_cases,
     numbers_in,
     render_markdown,
@@ -239,6 +241,13 @@ def test_a_regrade_can_never_reach_the_api(sample, scored, ledger, llm, tmp_path
     assert quiet.calls == []
 
 
+def test_grader_digest_tracks_the_grading_code_and_its_word_lists(monkeypatch):
+    assert re.fullmatch(r"[0-9a-f]{64}", GRADER_SHA256)
+    assert grader_digest() == GRADER_SHA256
+    monkeypatch.setattr(narrative_eval, "FORBIDDEN_ASSERTIONS", ())  # a loosened check
+    assert grader_digest() != GRADER_SHA256
+
+
 def test_cases_digest_is_the_sha256_of_the_file_bytes(tmp_path):
     path = tmp_path / "cases.json"
     path.write_text('{"cases": []}')
@@ -256,16 +265,25 @@ def test_rows_carry_the_case_file_hash_and_a_regrade_will_not_cross_a_change_qui
     rows = run_eval([case], Narrator(client=first), combined, flags, ledger, tmp_path,
                     cases_sha256=same)
     assert rows[0]["cases_sha256"] == same
+    assert rows[0]["grader_sha256"] == GRADER_SHA256
     assert json.loads(results.read_text().splitlines()[0])["cases_sha256"] == same
 
-    # A grader fix under the same file re-grades freely and leaves no mark.
+    # A grader fix under the same file re-grades freely and leaves no case-file
+    # mark, but the grades it replaced stay on the row with what produced them.
     quiet = llm.client()
     rows = run_eval([case], Narrator(client=quiet), combined, flags, ledger, tmp_path,
                     regrade=True, cases_sha256=same)
     assert quiet.calls == []
     assert rows[0]["regraded_at"]
     assert "previous_cases_sha256" not in rows[0]
-    assert aggregate(rows)["provenance"]["rows_regraded_across_cases"] == 0
+    assert rows[0]["metrics_history"] == [{
+        "metrics": rows[0]["metrics"], "grader_sha256": GRADER_SHA256,
+        "cases_sha256": same, "graded_at": rows[0]["graded_at"],
+    }]
+    provenance = aggregate(rows)["provenance"]
+    assert provenance["rows_regraded_across_cases"] == 0
+    assert (provenance["rows_regraded"], provenance["rows_with_changed_result"]) == (1, 0)
+    assert provenance["grader_sha256"] == [GRADER_SHA256]
 
     # Edited expectations: refused outright, nothing rewritten, still no API call.
     stricter = Case(**{**case.__dict__, "expected_confidence": ["high"]})  # oracle says medium
@@ -282,13 +300,16 @@ def test_rows_carry_the_case_file_hash_and_a_regrade_will_not_cross_a_change_qui
     assert rows[0]["metrics"]["confidence_in_band"] is False
     assert rows[0]["cases_sha256"] == edited
     assert rows[0]["previous_cases_sha256"] == same
+    assert [h["metrics"]["passed"] for h in rows[0]["metrics_history"]] == [True, True]
     summary = aggregate(rows)
     assert summary["provenance"]["cases_sha256"] == [edited]
     assert summary["provenance"]["rows_regraded_across_cases"] == 1
     assert summary["provenance"]["previous_cases_sha256"] == [same]
+    assert summary["provenance"]["rows_with_changed_result"] == 1  # passed went True -> False
     report = render_markdown(rows, summary, runs_dir=tmp_path)
-    assert edited in report and same in report
+    assert edited in report and same in report and GRADER_SHA256 in report
     assert "Provenance note" in report and "results.jsonl" in report
+    assert "1 row(s) changed their overall result" in report
 
     # A second crossing keeps the earliest origin rather than the last.
     rows = run_eval([stricter], Narrator(client=quiet), combined, flags, ledger, tmp_path,
