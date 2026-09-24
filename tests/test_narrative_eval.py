@@ -17,7 +17,7 @@ from ledgerlens.narrate import (
     entry_context,
 )
 from ledgerlens.narrative_eval import (
-    CITATION_NUMBERS,
+    CITATIONS,
     GRADER_NOTES,
     GRADER_SHA256,
     METRICS,
@@ -37,7 +37,13 @@ from ledgerlens.narrative_eval import (
     run_eval,
     save_cases,
     select_cases,
+    strip_citations,
 )
+
+#: Figures the system prompt quotes as examples of specific wording ("$9,912
+#: payment", "Sales Revenue (4000)"). They are not citations and are not set
+#: aside by the grader.
+STYLE_EXAMPLE_NUMBERS = {"9912", "4000"}
 
 
 @pytest.fixture(scope="module")
@@ -158,22 +164,41 @@ def test_each_property_fails_on_its_own(sample, damage, failing):
     assert metrics["passed"] is False
 
 
-def test_only_cited_standards_are_admitted_beyond_the_entry(sample):
-    """AU-C 240 is a citation; the system prompt's style-example figures are not.
+def test_every_number_the_prompt_shows_is_a_style_example_or_a_stripped_citation():
+    """The guard that keeps the citation list honest.
+
+    If a future prompt cites another standard, its number appears here without
+    being a style example or a citation the grader strips, and this fails:
+    somebody then has to decide, in CI, rather than the check drifting.
+    """
+    cited = set()
+    for pattern in CITATIONS:
+        for match in pattern.finditer(SYSTEM_PROMPT):
+            cited |= numbers_in(match.group(0))
+    assert cited == {"240"}
+    assert numbers_in(SYSTEM_PROMPT) - STYLE_EXAMPLE_NUMBERS == cited
+    assert strip_citations("per AU-C 240 and au-c240, $240 remains") == "per   and  , $240 remains"
+
+
+def test_the_citation_is_set_aside_but_its_bare_number_is_not(sample):
+    """AU-C 240 is a citation; "$240" is a figure, and the style example is neither.
 
     The first real run cited AU-C 240 and was marked as inventing a number.
     The first fix admitted every number in the system prompt, which also let
-    through the style example's $9,912 and account 4000 - a note copying the
-    example onto an entry with neither would have passed. Only the citation is
-    admitted now, and every admitted citation must be something the model saw.
+    through the style example's $9,912 and account 4000. The second admitted
+    a bare "240" wherever it appeared. Now the citation is removed from the
+    note before its numbers are extracted, and nothing else is excused.
     """
     case, prompt, entry, lines = sample
-    assert CITATION_NUMBERS <= numbers_in(SYSTEM_PROMPT)
-    assert "9912" not in numbers_in(prompt)  # the sample entry is not the example
+    assert {"240", "9912"}.isdisjoint(numbers_in(prompt))  # the sample entry is not the example
 
     cited = oracle(case, entry, lines)
     cited["why_flagged"] += " This is the pattern AU-C 240 directs auditors to test."
     assert grade(cited, case, prompt)["no_invented_numbers"] is True
+
+    bare = oracle(case, entry, lines)
+    bare["why_flagged"] += " A $240 fee was charged on the same day."
+    assert grade(bare, case, prompt)["no_invented_numbers"] is False
 
     copied = oracle(case, entry, lines)
     copied["evidence_to_request"].append("Obtain the signed approval for this $9,912 payment")
@@ -358,6 +383,9 @@ def test_the_report_prints_the_constant_answer_baseline_and_its_own_history(
     assert 'always "medium" 2/3 (67%)' in report
     assert 'always "low" 1/3 (33%)' in report
     assert "more than one level on 2 of 3 cases" in report
+    # The oracle answers "medium" every time: right on the two wide bands, wrong
+    # on the narrow one - exactly a constant answer's score.
+    assert "The notes passed it on 2/3, so they match the best constant answer" in report
 
     # The baseline is over the cases graded, not the whole file.
     partial = render_markdown(rows[:1], aggregate(rows[:1]), cases=cases)
@@ -422,7 +450,7 @@ def test_run_eval_records_resumes_and_keeps_plumbing_out_of_the_score(sample, sc
     assert all(r["entry_id"] in report for r in rerun)
     assert "Misses" in report
     assert "max_tokens" in report
-    assert "(or a cited standard)" in report  # the label says what the check now measures
+    assert "(or is AU-C 240, the one standard the prompt cites)" in report  # the label is exact
 
 
 def test_a_run_that_does_not_resume_never_deletes_stored_rows(sample, scored, ledger, llm,

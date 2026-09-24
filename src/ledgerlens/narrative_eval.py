@@ -10,8 +10,8 @@ trusting a note:
                           (the amount, the accounts, the tests that fired)
 - ``no_assertions``       it never asserts an error, an intent or an irregularity
 - ``evidence_specific``   at least one evidence item names a figure, an account or a date
-- ``no_invented_numbers`` every number in the note is in the entry, or is a standard the
-                          system prompt cites (AU-C 240 is a citation, not an invention)
+- ``no_invented_numbers`` every number in the note is in the entry, once the one standard
+                          the system prompt cites (AU-C 240) is set aside
 - ``confidence_in_band``  confidence lands where a reviewer would put it
 
 Why a rubric and not a reference narrative: the reference would itself be
@@ -64,13 +64,22 @@ FORBIDDEN_ASSERTIONS = (
     r"\bto (hide|disguise|evade|circumvent)\b",
 )
 
-#: Numbers a note may use without their appearing in the entry: the standards
-#: the system prompt cites, and only those. The prompt's style guidance also
-#: quotes figures ("$9,912", "Sales Revenue (4000)") as examples of specific
-#: wording; a note that copied them onto an entry containing neither would be
-#: inventing numbers, which is the exact failure this check exists to catch,
-#: so nothing from the prompt is admitted except what it cites.
-CITATION_NUMBERS = frozenset({"240"})  # AU-C 240, in the JET-05 reference
+#: The standards the system prompt cites, and only those. A citation is removed
+#: from the note before its numbers are extracted, so "AU-C 240" is not an
+#: invented figure but a bare "240" ("$240", "240 days") still has to come from
+#: the entry. The prompt's style guidance also quotes figures ("$9,912",
+#: "Sales Revenue (4000)") as examples of specific wording; a note that copied
+#: them onto an entry containing neither would be inventing numbers, which is
+#: the exact failure this check exists to catch, so nothing else from the
+#: prompt is set aside.
+CITATIONS = (re.compile(r"\bAU-C\s*240\b", re.I),)  # the JET-05 reference
+
+
+def strip_citations(text: str) -> str:
+    """Remove the cited standards from a note so their figures are not counted."""
+    for pattern in CITATIONS:
+        text = pattern.sub(" ", text)
+    return text
 
 #: What has changed in the grader and what each change did to the published
 #: score, printed in every report. A reader should never have to find this in
@@ -89,7 +98,15 @@ GRADER_NOTES = (
      "only). Re-grading the 2026-09-23 run under it changed no row: no note had used either "
      "figure, and the score stayed at 94%. Those rows predate the case-file hash; git records "
      "the case file as unchanged since commit 1ff36ef (2026-09-23 19:29 UTC), before the run "
-     "was graded (19:57 UTC), which is the ordering the first review asked to have checked."),
+     "was graded (19:57 UTC). That is consistent with the bands having been fixed first, "
+     "which is as much as a commit history can show."),
+    ("2026-09-24",
+     "The allowlist admitted any bare \"240\" (\"$240\", \"240 days\"), not the citation. "
+     "Now the citation \"AU-C 240\" is removed from the note before its numbers are "
+     "extracted, and every remaining number must come from the entry. Rows also record the "
+     "grader's own sha256 and keep replaced grades under metrics_history, so a grader change "
+     "shows on the rows and not only here. Re-grading the 2026-09-23 run changed no row; the "
+     "score stayed at 94%."),
 )
 
 METRICS = (
@@ -326,13 +343,13 @@ def grade(narrative: dict | None, case: Case, prompt_text: str) -> dict[str, boo
 
     text = narrative_text(clean)
     forbidden = list(FORBIDDEN_ASSERTIONS) + list(case.must_not_assert)
-    shown = numbers_in(prompt_text) | CITATION_NUMBERS
+    shown = numbers_in(prompt_text)
     metrics = {
         "schema_valid": True,
         "mentions_required": all(re.search(p, text, re.I) for p in case.must_mention),
         "no_assertions": not any(re.search(p, text, re.I) for p in forbidden),
         "evidence_specific": any(_is_specific(i, prompt_text) for i in clean["evidence_to_request"]),
-        "no_invented_numbers": numbers_in(text) <= shown,
+        "no_invented_numbers": numbers_in(strip_citations(text)) <= shown,
         "confidence_in_band": clean["confidence"] in case.expected_confidence,
     }
     metrics["passed"] = all(metrics.values())
@@ -358,8 +375,9 @@ def grader_digest() -> str:
     as a change to what they are judged against. Whitespace and comments
     count: any edit to the grader is a change a reader may want to see.
     """
-    parts = [inspect.getsource(f) for f in (grade, numbers_in, narrative_text, _is_specific)]
-    parts += [repr(FORBIDDEN_ASSERTIONS), repr(sorted(CITATION_NUMBERS)), repr(METRICS)]
+    parts = [inspect.getsource(f)
+             for f in (grade, numbers_in, strip_citations, narrative_text, _is_specific)]
+    parts += [repr(FORBIDDEN_ASSERTIONS), repr([p.pattern for p in CITATIONS]), repr(METRICS)]
     return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
 
 
@@ -627,13 +645,20 @@ def _baseline_lines(cases: list[Case] | None, rows: list[dict]) -> list[str]:
     described = ", ".join(f'always "{level}" {n}/{total} ({n / total:.0%})'
                           for level, (n, total) in baselines.items())
     n, total = baselines[best]
+    actual = sum(1 for r in rows if r["status"] in ("ok", "invalid")
+                 and (r["metrics"] or {}).get("confidence_in_band"))
+    margin = actual - n
+    verdict = (f"beat the best constant answer by {margin} case(s)" if margin > 0
+               else "match the best constant answer" if margin == 0
+               else f"fall short of the best constant answer by {-margin} case(s)")
     return [
         "",
         f"Confidence baseline: the bands accept more than one level on "
         f"{sum(len(c.expected_confidence) > 1 for c in cases)} of {total} cases, so a "
         f"narrator that always answered \"{best}\" would pass the confidence check on "
-        f"{n}/{total} ({n / total:.0%}) of them - {described}. Read the confidence row "
-        f"against that number, not against zero.",
+        f"{n}/{total} ({n / total:.0%}) of them - {described}. The notes passed it on "
+        f"{actual}/{total}, so they {verdict}. Read the confidence row against that, not "
+        f"against zero.",
     ]
 
 
@@ -673,7 +698,8 @@ def render_markdown(
         "mentions_required": "Mentions the required facts (amount, accounts, tests)",
         "no_assertions": "Asserts no error, intent or irregularity",
         "evidence_specific": "At least one evidence item is specific",
-        "no_invented_numbers": "Every number in the note is in the entry (or a cited standard)",
+        "no_invented_numbers": "Every number in the note is in the entry (or is AU-C 240, the "
+                               "one standard the prompt cites)",
         "confidence_in_band": "Confidence in the expected band",
         "passed": "**All of the above**",
     }
