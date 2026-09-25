@@ -74,7 +74,11 @@ FORBIDDEN_ASSERTIONS = (
 #: them onto an entry containing neither would be inventing numbers, which is
 #: the exact failure this check exists to catch, so nothing else from the
 #: prompt is set aside.
-CITATIONS = (re.compile(r"\bAU-C\s*240\b", re.I),)  # the JET-05 reference
+#: Hyphen, non-breaking hyphen, figure dash, en dash, em dash, horizontal bar:
+#: models write the standard's name in all of them.
+CITATIONS = (
+    re.compile(r"\bAU[-\u2010-\u2015]C\s*(?:section\s*|\u00a7\s*)?240\b", re.I),  # JET-05's reference
+)
 
 
 def strip_citations(text: str) -> str:

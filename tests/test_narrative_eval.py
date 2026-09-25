@@ -181,6 +181,14 @@ def test_every_number_the_prompt_shows_is_a_style_example_or_a_stripped_citation
     assert strip_citations("per AU-C 240 and au-c240, $240 remains") == "per   and  , $240 remains"
 
 
+def test_the_citation_is_stripped_in_the_forms_it_is_written_in():
+    for form in ("AU-C 240", "AU-C Section 240", "AU-C \u00a7240", "AU\u2011C 240",
+                 "AU\u2013C 240", "au-c240"):
+        assert numbers_in(strip_citations(f"per {form}, obtain the contract")) == set(), form
+    for not_it in ("$240", "240 days", "AU-C 2400", "AU-C 24 and $1,240"):
+        assert numbers_in(strip_citations(not_it)) == numbers_in(not_it), not_it
+
+
 def test_the_citation_is_set_aside_but_its_bare_number_is_not(sample):
     """AU-C 240 is a citation; "$240" is a figure, and the style example is neither.
 
