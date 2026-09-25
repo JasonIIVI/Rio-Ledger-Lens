@@ -268,6 +268,34 @@ def test_a_regrade_can_never_reach_the_api(sample, scored, ledger, llm, tmp_path
     assert not list(tmp_path.glob(".results-*"))  # the atomic rewrite leaves nothing behind
 
 
+def test_a_grade_overwritten_before_history_existed_is_disclosed(sample, scored, ledger, llm,
+                                                                 tmp_path):
+    """The committed 2026-09-23 rows look like this: first graded at 19:57, first kept
+    grade from a later re-grade. The report must not imply the kept grades go back
+    to the first grading."""
+    case, prompt, entry, lines = sample
+    combined, flags = scored
+    same = "a" * 64
+    results = tmp_path / "results.jsonl"
+    run_eval([case], Narrator(client=llm.client([llm.response(oracle(case, entry, lines))])),
+             combined, flags, ledger, tmp_path, cases_sha256=same)
+    run_eval([case], Narrator(client=llm.client()), combined, flags, ledger, tmp_path,
+             regrade=True, cases_sha256=same)
+    stored = json.loads(results.read_text())
+    stored["metrics_history"][0]["graded_at"] = "2099-01-01T00:00:00+00:00"  # kept grade came later
+    results.write_text(json.dumps(stored) + "\n")
+
+    rows = run_eval([case], Narrator(client=llm.client()), combined, flags, ledger, tmp_path,
+                    regrade=True, cases_sha256=same)
+    summary = aggregate(rows)
+    assert summary["provenance"]["rows_with_unkept_grades"] == 1
+    assert summary["provenance"]["first_graded_at"] == rows[0]["graded_at"]
+    assert summary["provenance"]["earliest_kept_grade_at"] == "2099-01-01T00:00:00+00:00"
+    report = render_markdown(rows, summary)
+    assert f"1 row(s) were first graded earlier ({rows[0]['graded_at']})" in report
+    assert "replaced before `metrics_history` existed" in report
+
+
 def test_a_case_that_only_errored_is_reported_as_such_by_a_regrade(sample, scored, ledger, llm,
                                                                     tmp_path):
     case, prompt, entry, lines = sample
@@ -376,7 +404,11 @@ def test_rows_carry_the_case_file_hash_and_a_regrade_will_not_cross_a_change_qui
     report = render_markdown(rows, summary, runs_dir=tmp_path)
     assert edited in report and same in report and GRADER_SHA256 in report
     assert "Provenance note" in report and "results.jsonl" in report
-    assert "1 row(s) changed their overall result" in report
+    assert ("1 row(s) changed their overall result since their earliest kept grade "
+            f"({rows[0]['graded_at']})") in report
+    assert "since first graded" not in report
+    assert summary["provenance"]["rows_with_unkept_grades"] == 0
+    assert "replaced before `metrics_history` existed" not in report
 
     # A second crossing keeps the earliest origin rather than the last.
     rows = run_eval([stricter], Narrator(client=quiet), combined, flags, ledger, tmp_path,

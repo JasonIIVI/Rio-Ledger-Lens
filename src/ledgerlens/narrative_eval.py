@@ -415,6 +415,10 @@ def aggregate(rows: list[dict]) -> dict:
     regraded = [r for r in graded if r.get("metrics_history")]
     changed = [r for r in regraded
                if (r["metrics_history"][0]["metrics"] or {}).get("passed") != r["metrics"]["passed"]]
+    # A row's kept grades start at its first re-grade; if that came later than
+    # the row's own grading, an earlier grade was overwritten before history
+    # existed, and the report has to say so rather than imply "since the start".
+    unkept = [r for r in regraded if r["metrics_history"][0].get("graded_at") != r.get("graded_at")]
     return {
         "cases": len(rows),
         "graded": n,
@@ -429,6 +433,11 @@ def aggregate(rows: list[dict]) -> dict:
             "regraded_at": max((r.get("regraded_at") or "" for r in rows), default="") or None,
             "rows_regraded": len(regraded),
             "rows_with_changed_result": len(changed),
+            "earliest_kept_grade_at": min(
+                (r["metrics_history"][0].get("graded_at") or "" for r in regraded), default=""
+            ) or None,
+            "rows_with_unkept_grades": len(unkept),
+            "first_graded_at": min((r.get("graded_at") or "" for r in unkept), default="") or None,
             "rows_regraded_across_cases": len(crossed),
             "previous_cases_sha256": sorted({r["previous_cases_sha256"] for r in crossed}),
         },
@@ -660,9 +669,19 @@ def _provenance_lines(summary: dict, runs_dir: str | Path | None) -> list[str]:
             "",
             f"Re-grades: {regraded} row(s) keep their earlier grades, with the grader and case "
             f"file that produced them, under `metrics_history`; {changed} row(s) changed their "
-            "overall result since first graded. The grader hash is the sha256 of the grading "
-            "code and its word lists, so a loosened check would show here as a new hash.",
+            f"overall result since their earliest kept grade "
+            f"({provenance.get('earliest_kept_grade_at')}). The grader hash is the sha256 of "
+            "the grading code, its word lists and patterns, and the schema check it calls, so "
+            "a loosened check would show here as a new hash.",
         ]
+        unkept = provenance.get("rows_with_unkept_grades") or 0
+        if unkept:
+            lines += [
+                "",
+                f"{unkept} row(s) were first graded earlier ({provenance.get('first_graded_at')}) "
+                "and that grade was replaced before `metrics_history` existed; only the grader "
+                "notes below record what it was.",
+            ]
     crossed = provenance.get("rows_regraded_across_cases") or 0
     if crossed:
         previous = provenance.get("previous_cases_sha256") or []
