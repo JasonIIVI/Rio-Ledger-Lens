@@ -49,4 +49,6 @@ regenerates the ledger and fails if precision drops below 0.80 or recall below 0
 - Eval run rows under `evals/narratives/runs/` are committed and never hand-edited (a run that
   starts over goes to a fresh directory; nothing deletes rows). The rows record the grader's
   hash and keep the grades a re-grade replaces; a grader change is also recorded in
-  `GRADER_NOTES` with what it did to the published score, and the report prints both.
+  `GRADER_NOTES` with what it did to the published score, and the report prints both. A test
+  checks that the committed rows carry this checkout's grader hash, so a grader edit only lands
+  together with its re-grade (`ledgerlens eval-narratives data/ledger.csv --regrade`).

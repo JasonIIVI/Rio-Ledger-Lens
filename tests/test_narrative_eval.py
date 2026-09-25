@@ -633,6 +633,23 @@ def test_committed_case_set_matches_the_default_ledger(scored, labels):
             assert test_id in case.must_mention, (case.entry_id, test_id)
 
 
+RUNS_PATH = (Path(__file__).resolve().parents[1] / "evals" / "narratives" / "runs"
+             / "2026-09-23-claude-opus-5" / "results.jsonl")
+
+
+def test_committed_rows_were_graded_by_this_grader_against_this_case_file():
+    """Rule 9's teeth: a grader or case-file edit must ship its re-grade in the same commit.
+
+    The rows carry the hashes of what graded them; if either differs from
+    this checkout, the published numbers no longer describe this code.
+    """
+    rows = [json.loads(line) for line in RUNS_PATH.read_text().splitlines() if line]
+    assert len(rows) == 16
+    assert {r["grader_sha256"] for r in rows} == {grader_digest()}
+    assert {r["cases_sha256"] for r in rows} == {cases_digest(CASES_PATH)}
+    assert all(r["metrics_history"] for r in rows)
+
+
 def test_committed_expectations_are_satisfiable_from_the_prompt(scored, ledger):
     """Every required fact is in the entry's own prompt, so a faithful note can pass."""
     combined, flags = scored

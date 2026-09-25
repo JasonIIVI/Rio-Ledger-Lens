@@ -46,7 +46,7 @@ and the MCP SDK, so the two together cover every code path CI will see.
   (`ledger_id`), `PRAGMA user_version` migrations, keep QuickBooks text out of committed eval
   rows (extend the rule-1 check to `evals/narratives/runs/`), an injection eval case, tokens
   outside the repo.
-- 195 tests on 3.9 / 202 on 3.12, ruff clean.
+- 204 tests on 3.9 / 211 on 3.12, ruff clean.
 
 **Verified on the real API (2026-09-23):** 25 narratives cached (89% of input tokens read from
 cache), eval 94% pass-all. The grader has been corrected three times since the first run, each

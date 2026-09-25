@@ -114,6 +114,14 @@ GRADER_NOTES = (
      "grader's own sha256 and keep replaced grades under metrics_history, so a grader change "
      "shows on the rows and not only here. Re-grading the 2026-09-23 run changed no row; the "
      "score stayed at 94%."),
+    ("2026-09-25",
+     "The grader's sha256 on each row now also covers the number and line-name patterns and the "
+     "schema check (narrate.validate) the grader calls, which the first version of the hash left "
+     "out, and the citation is stripped in the forms it is written in (\"AU-C Section 240\", "
+     "\"AU-C \u00a7240\", dash variants), a loosening. Neither changes how the committed notes "
+     "are judged: re-grading the 2026-09-23 run changed no row, and the score stayed at 94%. A "
+     "test now fails if the committed rows were not graded by the grader in the same commit, so "
+     "a grader edit cannot land without its re-grade."),
 )
 
 METRICS = (
