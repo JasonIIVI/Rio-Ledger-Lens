@@ -41,12 +41,16 @@ and the MCP SDK, so the two together cover every code path CI will see.
   workpaper, `narrative_history` / `narrative_superseded` over MCP; `--regrade` can never call
   the API and never deletes rows; `grader_sha256` and `metrics_history` on every row; the
   AU-C 240 citation is stripped before counting numbers instead of a bare "240" being allowed.
+- **Pre-QuickBooks hardening (PR #6, 2026-09-25)** — the review database carries a schema
+  version (`PRAGMA user_version`, numbered migration steps, newer files refused); every eval
+  row records the ledger's sha256, the CLI refuses any ledger but the generator's default in
+  the committed eval paths, a test rebuilds every committed prompt from that ledger, and CI
+  has a `rule-1` job.
 - **Next: week 4** — QuickBooks Online sandbox connector and README polish, toward v1.0.0
   (due 2026-10-18). Do first, per the second review: key the review store by ledger
-  (`ledger_id`), `PRAGMA user_version` migrations, keep QuickBooks text out of committed eval
-  rows (extend the rule-1 check to `evals/narratives/runs/`), an injection eval case, tokens
-  outside the repo.
-- 206 tests on 3.9 / 213 on 3.12, ruff clean.
+  (`ledger_id`, schema version 4), an injection eval case with expectations written
+  beforehand, and QuickBooks tokens stored outside the repository.
+- 211 tests on 3.9 / 218 on 3.12, ruff clean.
 
 **Verified on the real API (2026-09-23):** 25 narratives cached (89% of input tokens read from
 cache), eval 94% pass-all. The grader has been corrected three times since the first run, each
