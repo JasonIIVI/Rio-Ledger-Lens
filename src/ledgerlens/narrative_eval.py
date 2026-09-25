@@ -48,7 +48,7 @@ from .narrate import (
     entry_context,
     validate,
 )
-from .schema import AnomalyType
+from .schema import REQUIRED_COLUMNS, AnomalyType
 
 #: Wording that turns a question into a finding. Case-insensitive regexes over
 #: the whole note. A floor, not a ceiling: a note can be assertive without any
@@ -178,6 +178,38 @@ class RegradeError(ValueError):
 
 class ResultsError(ValueError):
     """A results file cannot be trusted: it holds two rows for one case."""
+
+
+#: What `ledgerlens generate` writes with its defaults (seed 20260922), as
+#: :func:`ledger_digest` sees it. The committed runs directory holds rows for
+#: this ledger only; a test ties the constant to the generator.
+DEFAULT_LEDGER_SHA256 = "b08d55f43962fc2c9e02969653c49c98f5a3e8ac1f6bc89d3456ee6dc8275de2"
+
+
+def _canonical(value) -> str:
+    if isinstance(value, float):
+        return f"{value:.2f}"
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat()
+    return str(value)
+
+
+def ledger_digest(lines: pd.DataFrame) -> str:
+    """sha256 of a ledger's content in a canonical form.
+
+    The required columns only, lines in (entry_id, line_no) order, amounts to
+    the cent, dates in ISO form. Not the CSV's bytes: pandas writes floats
+    differently across versions, and the same ledger has to hash the same on
+    every Python CI runs. Recorded on every eval row, so a reader can tell
+    which ledger a stored prompt came from - and the CLI refuses to write
+    rows for any other ledger into the committed directory.
+    """
+    columns = list(REQUIRED_COLUMNS)
+    frame = lines.sort_values(["entry_id", "line_no"], kind="mergesort")[columns]
+    digest = hashlib.sha256("|".join(columns).encode("utf-8") + b"\n")
+    for row in frame.itertuples(index=False):
+        digest.update("|".join(_canonical(v) for v in row).encode("utf-8") + b"\n")
+    return digest.hexdigest()
 
 
 def cases_digest(path: str | Path) -> str:
@@ -454,6 +486,7 @@ def aggregate(rows: list[dict]) -> dict:
         "provenance": {
             "cases_sha256": sorted({r.get("cases_sha256") or UNRECORDED for r in rows}),
             "grader_sha256": sorted({r.get("grader_sha256") or UNRECORDED for r in graded}),
+            "ledger_sha256": sorted({r.get("ledger_sha256") or UNRECORDED for r in graded}),
             "regraded_at": max((r.get("regraded_at") or "" for r in rows), default="") or None,
             "rows_regraded": len(regraded),
             "rows_with_changed_result": len(changed),
@@ -568,6 +601,7 @@ def _missing_row(case: Case, cases_sha256: str | None, errored: bool = False) ->
         "status": "missing", "error": why,
         "model": None, "usage": None, "latency_s": None, "narrative": None, "metrics": None,
         "prompt": None, "graded_at": None, "cases_sha256": cases_sha256, "grader_sha256": None,
+        "ledger_sha256": None,
     }
 
 
@@ -611,6 +645,7 @@ def run_eval(
     regrade: bool = False,
     cases_sha256: str | None = None,
     allow_cases_change: bool = False,
+    ledger_sha256: str | None = None,
 ) -> list[dict]:
     """Run the real narrator over every case and grade the result.
 
@@ -622,8 +657,10 @@ def run_eval(
     with no stored row comes back as ``missing`` rather than narrated, and a
     directory with nothing stored is an error rather than a paid run.
 
-    Every row records ``cases_sha256``, the case file it was graded against.
-    A re-grade under a different file is refused unless ``allow_cases_change``
+    Every row records ``cases_sha256``, the case file it was graded against,
+    and ``ledger_sha256``, the ledger its prompt was built from (see
+    :func:`ledger_digest`). A re-grade under a different case file is refused
+    unless ``allow_cases_change``
     says otherwise, and then the row keeps the hash it was first graded under
     so the report can disclose it. Applying a grader fix leaves no such mark;
     editing expectations after seeing the output cannot avoid one.
@@ -681,6 +718,7 @@ def run_eval(
             "graded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "cases_sha256": cases_sha256,
             "grader_sha256": grader,
+            "ledger_sha256": ledger_sha256,
         }
         target = errors_path if status == "error" else results_path
         with target.open("a", encoding="utf-8") as handle:
@@ -698,6 +736,9 @@ def _provenance_lines(summary: dict, runs_dir: str | Path | None) -> list[str]:
     graders = provenance.get("grader_sha256") or []
     parts.append("grader sha256: " + (
         " / ".join(f"`{h}`" for h in graders) if graders else UNRECORDED))
+    ledgers = provenance.get("ledger_sha256") or []
+    parts.append("ledger sha256: " + (
+        " / ".join(f"`{h}`" for h in ledgers) if ledgers else UNRECORDED))
     if runs_dir:
         parts.append(f"rows: `{Path(runs_dir).as_posix()}/results.jsonl`")
     if provenance.get("regraded_at"):

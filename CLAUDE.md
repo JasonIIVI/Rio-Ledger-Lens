@@ -91,9 +91,14 @@ ledger CSV ──▶ ingest ──┼──▶ Benford analysis ─────�
 1. **Never commit real data.** Synthetic + QuickBooks sandbox only. Before any push touching
    data handling:
    ```bash
-   git ls-files | grep -E '\.csv$|\.xlsx$|^data/'   # must be empty
-   git ls-files | grep -E '^\.env$'                 # must be empty
+   git ls-files | grep -E '\.csv$|\.xlsx$|\.parquet$|\.sqlite$|^data/'   # must be empty
+   git ls-files | grep -E '^\.env$'                                       # must be empty
    ```
+   CI runs the same greps as the `rule-1` job. The committed eval rows under
+   `evals/narratives/runs/` and the case file are for the generator's default ledger only:
+   every row carries the ledger's sha256, a test rebuilds every stored prompt from that ledger,
+   and `ledgerlens eval-narratives` refuses to write rows or cases for any other ledger into
+   those paths without an explicit `--runs-dir` / `--cases` elsewhere.
 2. **Detection code never sees the labels.** Only `evaluate` joins them back. This is the only
    reason the reported metrics mean anything.
 3. **The two tiers are scored separately and never blended.** They answer different questions;

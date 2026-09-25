@@ -227,6 +227,18 @@ def cmd_narrate(args: argparse.Namespace) -> int:
     return 0 if result.narratives or result.entries_requested == 0 else 1
 
 
+DEFAULT_CASES = "evals/narratives/cases.json"
+
+
+def _not_the_default_ledger(ledger_sha256: str, what: str) -> str:
+    return (
+        f"refused: {what} is committed and belongs to the default synthetic ledger only "
+        f"(sha256 {narrative_eval.DEFAULT_LEDGER_SHA256[:12]}); this ledger hashes to "
+        f"{ledger_sha256[:12]}. Name a path outside evals/ for it, and never commit rows or "
+        "cases built from real data."
+    )
+
+
 def cmd_eval_narratives(args: argparse.Namespace) -> int:
     """Run the narrative eval and write the report, or select a fresh case skeleton."""
     df = load_csv(args.ledger)
@@ -234,10 +246,17 @@ def cmd_eval_narratives(args: argparse.Namespace) -> int:
     scored = jets.score_entries(df, flags)
     model_scores, _ = score_ledger(df)
     scored = combine(scored, model_scores)
+    # Rule 1 at the point of writing: the committed case file and runs
+    # directory are for the generator's default output, nothing else.
+    ledger_sha256 = narrative_eval.ledger_digest(df)
+    default_ledger = ledger_sha256 == narrative_eval.DEFAULT_LEDGER_SHA256
 
     if args.select:
         if not args.labels:
             print("--select needs --labels: the label file decides which entries to test")
+            return 2
+        if args.cases == DEFAULT_CASES and not default_ledger:
+            print(_not_the_default_ledger(ledger_sha256, f"the case file {DEFAULT_CASES}"))
             return 2
         if Path(args.cases).exists() and not args.overwrite:
             print(f"{args.cases} exists; --overwrite replaces it (hand-written expectations "
@@ -259,6 +278,10 @@ def cmd_eval_narratives(args: argparse.Namespace) -> int:
     if args.limit:
         cases = cases[:args.limit]
     cases_sha256 = narrative_eval.cases_digest(args.cases)
+    if args.runs_dir is None and not default_ledger:
+        print(_not_the_default_ledger(
+            ledger_sha256, f"the default runs directory {narrative_eval.RUNS_ROOT}/"))
+        return 2
     try:
         runs_dir = Path(args.runs_dir) if args.runs_dir else narrative_eval.default_runs_dir(
             args.model, regrade=args.regrade)
@@ -271,7 +294,7 @@ def cmd_eval_narratives(args: argparse.Namespace) -> int:
         rows = narrative_eval.run_eval(
             cases, narrator, scored, flags, df, runs_dir, resume=not args.no_resume,
             regrade=args.regrade, cases_sha256=cases_sha256,
-            allow_cases_change=args.allow_cases_change,
+            allow_cases_change=args.allow_cases_change, ledger_sha256=ledger_sha256,
         )
     except narrative_eval.CasesChangedError as exc:
         print(f"refused: {exc}")
@@ -299,7 +322,8 @@ def cmd_eval_narratives(args: argparse.Namespace) -> int:
     if summary["missing"]:
         print(f"{summary['missing']} case(s) have no stored row and were not narrated: a "
               "re-grade never calls the API. Run without --regrade to narrate them.")
-    print(f"Case file sha256 {cases_sha256}")
+    print(f"Case file sha256 {cases_sha256}; ledger sha256 {ledger_sha256}"
+          + ("" if default_ledger else " (not the default synthetic ledger)"))
     print(f"Report written to {out}; per-case rows in {runs_dir}")
     return 0 if summary["graded"] and not summary["errors"] and not summary["missing"] else 1
 
@@ -366,7 +390,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     ev = sub.add_parser("eval-narratives", help="grade the narrative layer against the case set")
     ev.add_argument("ledger", help="path to the GL csv the cases were selected from")
-    ev.add_argument("--cases", default="evals/narratives/cases.json")
+    ev.add_argument("--cases", default=DEFAULT_CASES)
     ev.add_argument("--out", default="docs/narrative-eval.md", help="markdown report")
     ev.add_argument("--runs-dir",
                     help="per-case jsonl rows (default: evals/narratives/runs/<utc-date>-<model>, "

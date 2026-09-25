@@ -21,6 +21,7 @@ from ledgerlens.narrate import (
 )
 from ledgerlens.narrative_eval import (
     CITATIONS,
+    DEFAULT_LEDGER_SHA256,
     GRADER_NOTES,
     METRICS,
     UNRECORDED,
@@ -35,6 +36,7 @@ from ledgerlens.narrative_eval import (
     default_runs_dir,
     grade,
     grader_digest,
+    ledger_digest,
     load_cases,
     numbers_in,
     render_markdown,
@@ -423,6 +425,15 @@ def test_the_grader_hash_is_never_computed_at_import(monkeypatch):
         grader_digest()
 
 
+def test_ledger_digest_is_canonical_and_pins_the_default_ledger(ledger):
+    """Row order and float formatting do not change it; a cent does."""
+    assert ledger_digest(ledger) == DEFAULT_LEDGER_SHA256
+    assert ledger_digest(ledger.sample(frac=1, random_state=3)) == DEFAULT_LEDGER_SHA256
+    changed = ledger.copy()
+    changed.loc[changed.index[0], "debit"] += 0.01
+    assert ledger_digest(changed) != DEFAULT_LEDGER_SHA256
+
+
 def test_cases_digest_is_the_sha256_of_the_file_bytes(tmp_path):
     path = tmp_path / "cases.json"
     path.write_text('{"cases": []}')
@@ -438,9 +449,10 @@ def test_rows_carry_the_case_file_hash_and_a_regrade_will_not_cross_a_change_qui
 
     first = llm.client([llm.response(oracle(case, entry, lines))])
     rows = run_eval([case], Narrator(client=first), combined, flags, ledger, tmp_path,
-                    cases_sha256=same)
+                    cases_sha256=same, ledger_sha256="l" * 64)
     assert rows[0]["cases_sha256"] == same
     assert rows[0]["grader_sha256"] == GRADER
+    assert rows[0]["ledger_sha256"] == "l" * 64
     assert json.loads(results.read_text().splitlines()[0])["cases_sha256"] == same
 
     # A grader fix under the same file re-grades freely and leaves no case-file
@@ -484,6 +496,7 @@ def test_rows_carry_the_case_file_hash_and_a_regrade_will_not_cross_a_change_qui
     report = render_markdown(rows, summary, runs_dir=tmp_path)
     assert edited in report and same in report and GRADER in report
     assert "Provenance note" in report and "results.jsonl" in report
+    assert "ledger sha256: `" + "l" * 64 + "`" in report
     assert ("1 row(s) changed their overall result since their earliest kept grade "
             f"({rows[0]['graded_at']})") in report
     assert "since first graded" not in report
@@ -686,6 +699,23 @@ def test_committed_rows_were_graded_by_this_grader_against_this_case_file():
     cases = {c.entry_id: c for c in load_cases(CASES_PATH)}
     for r in rows:
         assert grade(r["narrative"], cases[r["entry_id"]], r["prompt"]) == r["metrics"], r["entry_id"]
+
+
+RUNS_ROOT_PATH = Path(__file__).resolve().parents[1] / "evals" / "narratives" / "runs"
+
+
+def test_every_committed_run_was_built_from_the_default_ledger(scored, ledger):
+    """Rule 1 for the published rows: each stored prompt is rebuilt from the generator's
+    default output and must match, so no other ledger's text can sit in this directory."""
+    combined, flags = scored
+    runs = sorted(RUNS_ROOT_PATH.glob("*/results.jsonl"))
+    assert runs
+    for run in runs:
+        for line in run.read_text().splitlines():
+            row = json.loads(line)
+            assert (row.get("ledger_sha256") or DEFAULT_LEDGER_SHA256) == DEFAULT_LEDGER_SHA256
+            entry, entry_flags, lines = entry_context(combined, flags, ledger, row["entry_id"])
+            assert build_prompt(entry, entry_flags, lines) == row["prompt"], (run, row["entry_id"])
 
 
 def test_committed_expectations_are_satisfiable_from_the_prompt(scored, ledger):

@@ -179,13 +179,16 @@ def test_eval_narratives_select_writes_a_skeleton_and_will_not_clobber_it(tmp_pa
 
 
 def test_eval_narratives_defaults_to_a_dated_runs_dir_and_regrades_the_newest(
-        tmp_path, capsys, monkeypatch, llm):
+        tmp_path, capsys, monkeypatch, llm, raw_ledger):
     from ledgerlens import cli
     from ledgerlens.narrate import DEFAULT_MODEL, Narrator
 
     monkeypatch.chdir(tmp_path)
-    main(["generate", "--start", "2024-01-01", "--end", "2024-06-30",
-          "--out-dir", str(tmp_path)])
+    # The default runs directory is for the default ledger only, so this test
+    # writes the generator's default output (as `ledgerlens generate` would).
+    lines, labels_frame = raw_ledger
+    lines.to_csv(tmp_path / "ledger.csv", index=False)
+    labels_frame.to_csv(tmp_path / "labels.csv", index=False)
     ledger, labels = str(tmp_path / "ledger.csv"), str(tmp_path / "labels.csv")
     cases, report = tmp_path / "cases.json", tmp_path / "report.md"
     main(["eval-narratives", ledger, "--select", "--labels", labels, "--cases", str(cases)])
@@ -222,6 +225,41 @@ def test_eval_narratives_defaults_to_a_dated_runs_dir_and_regrades_the_newest(
     monkeypatch.setattr(cli.narrative_eval, "run_eval", boom)
     with pytest.raises(ValueError, match="boom"):
         main(argv + ["--regrade"])
+
+
+def test_eval_narratives_keeps_other_ledgers_out_of_the_committed_paths(tmp_path, capsys,
+                                                                       monkeypatch, llm):
+    """Rule 1 at the point of writing: another ledger needs its own --runs-dir and --cases."""
+    from ledgerlens import cli
+    from ledgerlens.narrate import Narrator
+
+    monkeypatch.chdir(tmp_path)
+    main(["generate", "--start", "2024-01-01", "--end", "2024-06-30",
+          "--out-dir", str(tmp_path)])
+    ledger, labels = str(tmp_path / "ledger.csv"), str(tmp_path / "labels.csv")
+    capsys.readouterr()
+
+    assert main(["eval-narratives", ledger, "--select", "--labels", labels]) == 2  # default --cases
+    assert "default synthetic ledger" in capsys.readouterr().out
+    assert not (tmp_path / "evals").exists()
+    cases = tmp_path / "cases.json"
+    assert main(["eval-narratives", ledger, "--select", "--labels", labels,
+                 "--cases", str(cases)]) == 0
+    capsys.readouterr()
+
+    client = llm.client()
+    monkeypatch.setattr(cli, "Narrator", lambda **kw: Narrator(client=client, **kw))
+    argv = ["eval-narratives", ledger, "--cases", str(cases), "--out", str(tmp_path / "r.md"),
+            "--limit", "2"]
+    assert main(argv) == 2  # default --runs-dir would be the committed directory
+    out = capsys.readouterr().out
+    assert "default synthetic ledger" in out and "runs" in out
+    assert client.calls == [] and not (tmp_path / "evals").exists()
+    assert main(argv + ["--runs-dir", str(tmp_path / "runs")]) == 0
+    out = capsys.readouterr().out
+    assert "not the default synthetic ledger" in out
+    rows = [json.loads(line) for line in (tmp_path / "runs" / "results.jsonl").read_text().splitlines()]
+    assert len(rows) == 2 and all(len(r["ledger_sha256"]) == 64 for r in rows)
 
 
 def test_eval_narratives_grades_the_cases_and_writes_the_report(tmp_path, capsys, monkeypatch,
