@@ -714,7 +714,8 @@ def _baseline_lines(cases: list[Case] | None, rows: list[dict]) -> list[str]:
     described = ", ".join(f'always "{level}" {n}/{total} ({n / total:.0%})'
                           for level, (n, total) in baselines.items())
     n, total = baselines[best]
-    actual = sum(1 for r in rows if r["status"] in ("ok", "invalid")
+    counted = {c.entry_id for c in cases}  # the same cases the baseline is computed over
+    actual = sum(1 for r in rows if r["entry_id"] in counted and r["status"] in ("ok", "invalid")
                  and (r["metrics"] or {}).get("confidence_in_band"))
     margin = actual - n
     cases_word = "case" if abs(margin) == 1 else "cases"

@@ -469,9 +469,12 @@ def test_the_report_prints_the_constant_answer_baseline_and_its_own_history(
     # on the narrow one - exactly a constant answer's score.
     assert "The notes passed it on 2/3, so they match the best constant answer" in report
 
-    # The baseline is over the cases graded, not the whole file.
+    # The baseline is over the cases graded, not the whole file, and the
+    # notes' own count is over those same cases.
     partial = render_markdown(rows[:1], aggregate(rows[:1]), cases=cases)
     assert 'always "high" 1/1 (100%)' in partial
+    narrowed = render_markdown(rows, aggregate(rows), cases=[case])
+    assert "The notes passed it on 1/1" in narrowed
     assert "Confidence baseline" not in render_markdown(rows, aggregate(rows))
 
     # The grader's history is in the report itself, not only in the commit log.
