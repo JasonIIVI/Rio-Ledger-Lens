@@ -4,7 +4,17 @@ import pandas as pd
 import pytest
 
 from ledgerlens import jets
-from ledgerlens.review import DECISIONS, REVIEW_STATE_COLUMNS, Decision, ReviewStore
+from ledgerlens.review import (
+    DECISIONS,
+    REVIEW_STATE_COLUMNS,
+    SCHEMA_VERSION,
+    Decision,
+    ReviewStore,
+)
+
+
+def schema_version(path):
+    return sqlite3.connect(str(path)).execute("PRAGMA user_version").fetchone()[0]
 
 
 @pytest.fixture
@@ -21,6 +31,7 @@ def test_store_creates_its_schema_on_a_fresh_path(tmp_path):
     path = tmp_path / "nested" / "review.sqlite"
     ReviewStore(path)
     assert path.exists()
+    assert schema_version(path) == SCHEMA_VERSION == 3
 
 
 def test_history_is_append_only(store):
@@ -305,6 +316,57 @@ def test_a_database_from_before_versioning_is_migrated_on_open(tmp_path):
     for name in ("decisions_no_update", "decisions_no_delete", "decisions_no_replace",
                  "narratives_no_update", "narratives_no_delete", "narratives_no_replace"):
         assert ("trigger", name) in objects  # the migrated file gets every guard too
+    assert schema_version(path) == SCHEMA_VERSION
+
+
+def make_v2_database(path):
+    """A file as v0.3.1's predecessor wrote it: versioned narratives, no REPLACE guards, no stamp."""
+    conn = sqlite3.connect(str(path))
+    conn.executescript(V030_SCHEMA.replace(
+        "entry_id            TEXT PRIMARY KEY,",
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, entry_id TEXT NOT NULL,",
+    ).replace("decided_at   TEXT    NOT NULL", "narrative_id INTEGER, decided_at TEXT NOT NULL"))
+    conn.executescript("""
+        CREATE TRIGGER decisions_no_update BEFORE UPDATE ON decisions
+        BEGIN SELECT RAISE(ABORT, 'decisions are append-only'); END;
+        INSERT INTO narratives (entry_id, summary, generated_at)
+        VALUES ('JE-1', 'kept', '2026-09-24T00:00:00+00:00');
+    """)
+    conn.commit()
+    conn.close()
+
+
+def test_each_older_shape_is_recognised_and_walked_up_to_the_current_version(tmp_path):
+    v2 = tmp_path / "v2.sqlite"
+    make_v2_database(v2)
+    assert schema_version(v2) == 0  # unstamped, recognised by its shape
+    store = ReviewStore(v2)
+    assert schema_version(v2) == SCHEMA_VERSION
+    assert store.get_narrative("JE-1")["summary"] == "kept"
+    with sqlite3.connect(str(v2)) as raw:
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            raw.execute("REPLACE INTO narratives (id, entry_id, generated_at) VALUES (1, 'JE-1', 'x')")
+
+    # A file already at the current shape but unstamped is stamped and otherwise untouched.
+    current = tmp_path / "current.sqlite"
+    ReviewStore(current)
+    with sqlite3.connect(str(current)) as raw:
+        raw.execute("PRAGMA user_version = 0")
+    ReviewStore(current)
+    assert schema_version(current) == SCHEMA_VERSION
+
+
+def test_a_file_from_a_newer_version_is_refused_by_both_openers(tmp_path):
+    path = tmp_path / "future.sqlite"
+    ReviewStore(path)
+    with sqlite3.connect(str(path)) as raw:
+        raw.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 1}")
+    before = path.read_bytes()
+    with pytest.raises(RuntimeError, match="newer LedgerLens"):
+        ReviewStore(path)
+    with pytest.raises(RuntimeError, match="newer LedgerLens"):
+        ReviewStore.read_only(path)
+    assert path.read_bytes() == before
 
 
 def test_a_read_only_store_reads_everything_and_writes_nothing(tmp_path):
