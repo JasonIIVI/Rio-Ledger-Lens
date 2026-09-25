@@ -52,8 +52,13 @@ def _note(summary):
 
 
 def _submit(at, decision="Accept", note="fine"):
-    at.radio[0].set_value(decision)
-    at.text_area[0].set_value(note)
+    picked = at.selectbox(key="picked").value
+    at.radio(key=f"choice-{picked}").set_value(decision)
+    at.text_area(key=f"note-{picked}").set_value(note)
+    _click_record(at)
+
+
+def _click_record(at):
     next(b for b in at.button if "Record decision" in b.label).click()
     at.run()
     assert not at.exception, at.exception
@@ -79,12 +84,38 @@ def test_a_decision_records_the_note_the_reviewer_read_not_one_written_meanwhile
     assert store.history(picked).empty
     assert any("changed while you were reading" in w.value for w in at.warning)
     assert any(f"note #{second}" in c.value for c in at.caption)  # the rerun shows the new one
+    assert at.text_area(key=f"note-{picked}").value == "fine"  # the draft survived the refusal
 
     # Read it, decide again: this time the recorded note is the one on screen.
     _submit(at)
     history = store.history(picked)
     assert history["decision"].tolist() == ["accept"]
     assert history["narrative_id"].tolist() == [second]
+
+
+def test_a_refusal_keeps_the_draft_and_the_next_click_records_it(data_dir, tmp_path):
+    """No note on screen, a note written before the submit: refused, nothing lost."""
+    db = tmp_path / "review.sqlite"
+    at = _run(data_dir, db, reviewer="ana")
+    picked = at.selectbox(key="picked").value
+    store = ReviewStore(db)
+    written = store.save_narrative(picked, _note("written before the submit"), model="claude-test")
+
+    _submit(at, "Escalate", "checked the purchase order")
+    assert store.history(picked).empty
+    assert any(f"now note #{written}" in w.value for w in at.warning)
+    assert at.text_area(key=f"note-{picked}").value == "checked the purchase order"
+    assert at.radio(key=f"choice-{picked}").value == "escalate"
+
+    # The rerun showed the note; clicking again records the untouched draft
+    # against it, and only then is the form cleared.
+    _click_record(at)
+    history = store.history(picked)
+    assert history["decision"].tolist() == ["escalate"]
+    assert history["note"].tolist() == ["checked the purchase order"]
+    assert history["narrative_id"].tolist() == [written]
+    assert at.text_area(key=f"note-{picked}").value == ""
+    assert at.radio(key=f"choice-{picked}").value == "accept"
 
 
 def test_a_decision_with_no_note_on_screen_records_none(data_dir, tmp_path):

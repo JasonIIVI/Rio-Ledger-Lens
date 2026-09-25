@@ -202,10 +202,19 @@ with tab_queue:
 
         # ---- decision: a named human, append-only ----
         st.markdown("**Record a decision**")
-        with st.form(key=f"decision-{picked}", clear_on_submit=True):
+        choice_key, note_key = f"choice-{picked}", f"note-{picked}"
+        # The form is not cleared on submit: a refused submit (the note changed
+        # while the reviewer was reading it) must not discard what they typed.
+        # The draft is cleared here instead, on the rerun after a decision was
+        # recorded, and each entry keeps its own draft in the meantime.
+        if st.session_state.pop("clear-decision", None) == picked:
+            for key in (choice_key, note_key):
+                st.session_state.pop(key, None)
+        with st.form(key=f"decision-{picked}"):
             choice = st.radio("Decision", DECISIONS, horizontal=True,
-                              format_func=str.capitalize)
-            note = st.text_area("Note", placeholder="What you checked, or why this is fine.")
+                              format_func=str.capitalize, key=choice_key)
+            note = st.text_area("Note", placeholder="What you checked, or why this is fine.",
+                                key=note_key)
             submitted = st.form_submit_button("Record decision", disabled=not reviewer)
         if not reviewer:
             st.caption("Enter your name in the sidebar to record a decision.")
@@ -237,6 +246,7 @@ with tab_queue:
                 ))
                 st.session_state["last_decision"] = signature
                 st.session_state["flash"] = f"Recorded: {choice} by {reviewer}."
+                st.session_state["clear-decision"] = picked
                 st.rerun()
 
         history = store.history(picked)
