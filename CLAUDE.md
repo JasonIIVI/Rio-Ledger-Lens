@@ -32,8 +32,8 @@ and the MCP SDK, so the two together cover every code path CI will see.
   narratives are versioned and each decision records the note it saw (`narrative_id`);
   append-only is enforced by SQLite triggers; the MCP path opens the review database read-only;
   a data-not-instructions rule in the system prompt; `cases_sha256` on every eval row, with
-  `--regrade` refusing to cross a changed case file; an explicit citation allowlist in the
-  grader; grader notes and the "always medium" baseline in the report; run rows committed under
+  `--regrade` refusing to cross a changed case file; the citation stripped before a note's
+  numbers are counted; grader notes and the "always medium" baseline in the report; run rows committed under
   `evals/narratives/runs/`; `fetch-depth: 0` for reviews.
 - **Second follow-up (PR #5, 2026-09-24)** — the second review's findings: `BEFORE INSERT`
   guards close the `REPLACE INTO` route around the triggers; the dashboard records the note it
@@ -49,8 +49,9 @@ and the MCP SDK, so the two together cover every code path CI will see.
 - 195 tests on 3.9 / 202 on 3.12, ruff clean.
 
 **Verified on the real API (2026-09-23):** 25 narratives cached (89% of input tokens read from
-cache), eval 94% pass-all. The grader has been corrected twice since, both disclosed under
-"Grader notes" in the report; neither re-grade moved a row. `ANTHROPIC_API_KEY` is in `.env`
+cache), eval 94% pass-all. The grader has been corrected three times since the first run, each
+disclosed under "Grader notes" in the report; the first correction moved one row (88% to 94%),
+the later ones none. `ANTHROPIC_API_KEY` is in `.env`
 (never read it, never commit it) and in the repository secrets; the Claude GitHub App is
 installed; the `ledgerlens` MCP entry is in Claude Desktop's config. An organisation-level
 key needs `ANTHROPIC_WORKSPACE_ID` as well; a workspace-scoped key does not.
@@ -78,7 +79,7 @@ ledger CSV ──▶ ingest ──┼──▶ Benford analysis ─────�
 | `report.py` | 5-tab Excel workpaper |
 | `review.py` | append-only SQLite store: decisions and versioned narratives, enforced by triggers; `read_only()` opener |
 | `narrate.py` | Claude narratives: structured-output JSON contract, cacheable system prompt, usage accounting |
-| `narrative_eval.py` | case selection (the one label reader), rubric grader (explicit citation allowlist), runner with case-file provenance, report with grader notes and baseline |
+| `narrative_eval.py` | case selection (the one label reader), rubric grader (the citation stripped before numbers are counted), runner with case-file provenance, report with grader notes and baseline |
 | `ledger_context.py` | read-only query layer (summary, top exceptions, explain, search, Benford, review status); opens the review DB `mode=ro`; 3.9-safe |
 | `mcp_server.py` | MCP registration over `ledger_context` (v2 SDK, stdio); needs 3.10+ |
 | `env.py` | dependency-free `.env` loader |

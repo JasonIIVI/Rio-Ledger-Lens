@@ -16,7 +16,7 @@ Claude API: the `llm` fixture in `tests/conftest.py` stands in for it.
 ## Before opening a pull request
 
 ```bash
-ruff check src tests
+ruff check src tests app.py
 pytest -q --cov=ledgerlens
 ```
 

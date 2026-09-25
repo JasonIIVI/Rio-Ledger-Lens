@@ -206,13 +206,14 @@ touch a score or a record, and it never sees the labels. Every note is advisory 
 to an entry. A named human records every accept / dismiss / escalate in an append-only SQLite
 store: changing your mind adds a decision, it never edits one. Notes are append-only too - a
 rewrite adds a version - and each decision records the version that was on screen, so the
-record of what a reviewer was told cannot change after they decided; if the note changes while
-they are reading it, the dashboard refuses to record until they have seen the new one. Both
-rules are enforced by the database itself (triggers refuse any update, delete or overwriting
-insert), not only by the code. The dashboard shows the note beside the entry, takes the
-decision, and shows the history; the workpaper carries the note the reviewer actually saw, the
-latest decision per exception, a flag when a newer note exists than the one they read, and
-whether the note shown is one the reviewer saw at all.
+record of what a reviewer was told is not silently editable after they decided; if the note
+changes while they are reading it, the dashboard refuses to record until they have seen the new
+one. Both rules are enforced by the database itself (triggers refuse any update, delete or
+overwriting insert), not only by the code. That is tamper-resistant, not tamper-evident: a
+writer who drops the triggers and puts them back leaves no trace. The dashboard shows the note
+beside the entry, takes the decision, and shows the history; the workpaper and the MCP server
+show the note the reviewer actually saw, the latest decision per exception, a flag when a newer
+note exists than the one they read, and whether the note shown is one the reviewer saw at all.
 
 **Measuring the notes.** `evals/narratives/cases.json` holds sixteen entries chosen
 deterministically from the default ledger - one per injected archetype, three multi-flag
@@ -231,8 +232,9 @@ counted a citation of AU-C 240 as an invented number - and the stored run was re
 which the repository's own `@claude` review pointed out was too broad: the prompt's style example
 quotes $9,912 and account 4000, so a note copying the example would have passed. The second fix
 admitted a bare 240 anywhere, which the next review caught; the grader now removes the one
-citation (AU-C 240) from a note before checking its numbers. Re-grading the run under each fix
-changed no row - the score is still 94%. The remaining miss is a real disagreement: the model
+citation (AU-C 240, in the forms it is written in) from a note before checking its numbers. The
+first re-grade moved one row (88% to 94%); the later ones moved none, and the score is still
+94%. The remaining miss is a real disagreement: the model
 rated a $359 last-day cash receipt to revenue as low confidence where the case file says a High
 cut-off test should keep it at medium. The expectation was written before the run and stays as
 written.
@@ -241,7 +243,8 @@ Three things make that number checkable rather than something to take on trust. 
 row and the report carry the sha256 of the case file they were graded against and of the grader
 itself; `--regrade` never calls the API, refuses to re-score rows across a changed case file
 unless told to (and then the report says so), and keeps the grades it replaces on the row, so a
-loosened check would show up as a new grader hash next to a changed result. The report prints
+loosened check - in the grading code, its word lists and patterns, or the schema check it calls -
+would show up as a new grader hash next to a changed result. The report prints
 the grader's own change history and the baseline the confidence check should be read against:
 the bands accept two levels on 14 of 16 cases, so a narrator that always answered "medium" would
 score 88% on that check, and the notes beat that by one case. And the run rows - every prompt,
