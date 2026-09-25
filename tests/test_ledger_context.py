@@ -109,10 +109,38 @@ def test_review_data_is_read_but_a_database_is_never_created(small_ledger, tmp_p
     assert detail["narrative"]["id"] == newer
     assert [v["id"] for v in detail["narrative_history"]] == [seen, newer]
     assert detail["narrative_history"][0]["summary"] == "s"
+    assert detail["narrative_history"][0]["evidence_to_request"] == ["e"]  # a list, as on narrative
     assert detail["decisions"][0]["narrative_id"] == seen
+    # The row shows the note the decision was made against, as the workpaper
+    # does; the rewrite is reachable through explain_entry and flagged here.
     top = context.top_exceptions(limit=1)["entries"][0]
-    assert top["narrative_summary"] == "s2"
+    assert top["narrative_summary"] == "s"
+    assert top["narrative_id"] == seen
     assert top["narrative_superseded"] is True
+    assert top["narrative_seen_by_reviewer"] == "yes"
+
+    # Decided with no note, narrated afterwards: the later note is shown but
+    # not passed off as what the reviewer decided on - the same answer the
+    # workpaper gives, because both read ReviewStore.review_state.
+    second = context.top_exceptions(limit=2)["entries"][1]["entry_id"]
+    with sqlite3.connect(str(db)) as raw:
+        raw.execute("INSERT INTO decisions (entry_id, decision, reviewer, note, decided_at) "
+                    "VALUES (?, 'accept', 'ben', 'checked', '2026-01-01T00:00:00+00:00')",
+                    (second,))
+    after = store.save_narrative(second, {"summary": "later", "why_flagged": "w",
+                                          "evidence_to_request": ["e"],
+                                          "suggested_control": "c", "confidence": "low"}, model="m")
+    rows = context.top_exceptions(limit=2)["entries"]
+    json.dumps(rows)
+    row = next(r for r in rows if r["entry_id"] == second)
+    assert row["decision"] == "accept"
+    assert row["narrative_id"] == after
+    assert row["narrative_superseded"] is False
+    assert row["narrative_seen_by_reviewer"] == "no"
+    untouched = context.search_entries(limit=200)["entries"]
+    blank = next(r for r in untouched if r["entry_id"] not in (entry_id, second))
+    assert blank["decision"] is None and blank["narrative_id"] is None
+    assert blank["narrative_superseded"] is False and blank["narrative_seen_by_reviewer"] == ""
 
 
 def test_the_review_database_is_opened_read_only(small_ledger, tmp_path):

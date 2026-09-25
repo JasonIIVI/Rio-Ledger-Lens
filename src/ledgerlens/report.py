@@ -67,47 +67,17 @@ REVIEW_COLUMNS = (
 
 
 def _attach_review(exceptions: pd.DataFrame, store: ReviewStore) -> pd.DataFrame:
-    """Add what the human loop knows: the narrative the reviewer saw and the latest decision.
+    """Add what the human loop knows beside each exception.
 
-    Left merges, so an entry nobody has looked at simply has blank cells - the
-    workpaper then doubles as the list of what is still outstanding.
-
-    The narrative shown is the version the decision recorded, because that is
-    the text the decision was based on. An entry with no decision, or one
-    that recorded no note, shows the latest version; ``narrative_superseded``
-    says when a newer version exists than the one shown, and
-    ``narrative_seen_by_reviewer`` says whether the note shown is the one the
-    reviewer read: yes when the decision recorded it, no when the decision
-    recorded nothing and the note was written afterwards, unknown when the
-    decision recorded nothing but the note already existed (decisions from
-    before notes were versioned). A later note is never passed off as the
-    basis of an earlier decision.
+    A left merge on :meth:`ReviewStore.review_state`, so an entry nobody has
+    looked at simply has blank cells - the workpaper then doubles as the list
+    of what is still outstanding. That method says what the narrative columns
+    mean; the MCP server reads the same one, so the two never disagree.
     """
-    decisions = store.current()[
-        ["entry_id", "decision", "reviewer", "note", "narrative_id", "decided_at"]
-    ]
-    latest = store.narratives_frame().set_index("entry_id")["id"]
-    versions = store.narratives_frame(latest_only=False).set_index("id")
-
-    out = exceptions.merge(decisions, on="entry_id", how="left")
-    newest = pd.to_numeric(out["entry_id"].map(latest)).astype("Int64")
-    recorded = pd.to_numeric(out["narrative_id"]).astype("Int64")
-    shown = recorded.fillna(newest)
-    out["narrative_id"] = shown
-    out["narrative"] = shown.map(versions["summary"])
-    out["narrative_confidence"] = shown.map(versions["confidence"])
-    out["narrative_superseded"] = (
-        (shown.notna() & (shown != newest)).fillna(False).astype(bool)
-    )
-    decided = out["decision"].notna()
-    # ISO-8601 UTC strings compare correctly as text; a note written in the
-    # same second as the decision is "unknown", the honest reading.
-    written_after = shown.map(versions["generated_at"]).fillna("") > out["decided_at"].fillna("")
-    seen = pd.Series("", index=out.index, dtype=object)
-    seen[decided & recorded.notna()] = "yes"
-    seen[decided & recorded.isna() & shown.notna() & written_after] = "no"
-    seen[decided & recorded.isna() & shown.notna() & ~written_after] = "unknown"
-    out["narrative_seen_by_reviewer"] = seen
+    state = store.review_state().rename(columns={"narrative_summary": "narrative"})
+    out = exceptions.merge(state, on="entry_id", how="left")
+    out["narrative_superseded"] = out["narrative_superseded"].eq(True)
+    out["narrative_seen_by_reviewer"] = out["narrative_seen_by_reviewer"].fillna("")
     return out[[c for c in out.columns if c not in REVIEW_COLUMNS] + list(REVIEW_COLUMNS)]
 
 

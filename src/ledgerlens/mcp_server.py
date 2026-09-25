@@ -42,8 +42,12 @@ a severity) and an Isolation Forest score. Every tool is read-only.
 
 Start with ledgerlens_summary. For "the riskiest entries in Q4 2025" call
 ledgerlens_top_exceptions with fiscal_year=2025, period_from=10, period_to=12 - a period is a
-calendar month. Use ledgerlens_explain_entry for the lines, every reason, the cached reviewer note
-and the decision history of one entry.
+calendar month. Use ledgerlens_explain_entry for the lines, every reason, every version of the
+reviewer note and the decision history of one entry. Entry rows carry the current decision and
+the note it was made against (narrative_summary, narrative_id), or the latest note when there
+is no decision or it recorded none; narrative_superseded says a newer version exists than the
+one shown, and narrative_seen_by_reviewer (yes / no / unknown) says whether the note shown is one
+the reviewer read. Never present a note as what a reviewer decided on unless it says yes.
 
 A flag is a question, not a finding: never present an entry as an error or an irregularity.
 Decisions (accept / dismiss / escalate) are recorded only by a named reviewer in the dashboard;
@@ -87,7 +91,11 @@ def ledgerlens_top_exceptions(
     agreement: Annotated[Literal["both", "rules only", "model only", "neither"] | None, Field(description="Keep only entries where the rule tier and the model tier relate this way. 'model only' is the interesting case: unusual in a way no rule describes.")] = None,
 ) -> dict[str, Any]:
     """The riskiest flagged entries, highest risk first, each with the written reason for every
-    test that fired, both tier scores, and the reviewer's note and decision where they exist.
+    test that fired, both tier scores, and where they exist the current decision and the reviewer
+    note it was made against (narrative_summary, narrative_id; the latest note when there is no
+    decision or it recorded none), narrative_superseded (a newer note exists than the one shown)
+    and narrative_seen_by_reviewer (yes / no / unknown: whether the note shown is one the
+    reviewer read).
     """
     return _ctx().top_exceptions(
         limit=limit, fiscal_year=fiscal_year, period_from=period_from, period_to=period_to,
