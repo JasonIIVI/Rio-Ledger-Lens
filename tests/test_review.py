@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 
 from ledgerlens import jets
-from ledgerlens.review import DECISIONS, Decision, ReviewStore
+from ledgerlens.review import DECISIONS, REVIEW_STATE_COLUMNS, Decision, ReviewStore
 
 
 @pytest.fixture
@@ -105,6 +105,65 @@ def test_rewriting_a_narrative_keeps_every_version(store):
     assert len(store.narratives_frame(latest_only=False)) == 2
 
 
+def test_review_state_says_which_note_the_reviewer_saw(store):
+    """The one answer the workpaper and the MCP server both read."""
+    empty = store.review_state()
+    assert empty.empty and list(empty.columns) == list(REVIEW_STATE_COLUMNS)
+
+    # JE-1: decided against note 1, which was then rewritten.
+    seen = store.save_narrative("JE-1", narrative("what ana read"))
+    store.record(Decision("JE-1", "escalate", "ana", narrative_id=seen))
+    store.save_narrative("JE-1", narrative("rewritten"))
+    # JE-2: narrated twice, never decided.
+    store.save_narrative("JE-2", narrative("first"))
+    newest = store.save_narrative("JE-2", narrative("latest"))
+    # JE-3: decided, never narrated.
+    store.record(Decision("JE-3", "dismiss", "ben"))
+    # JE-4: decided with no note, then narrated. The decision is inserted with
+    # an earlier timestamp through a raw connection (an insert with a new id is
+    # allowed) so the test does not have to wait a second.
+    with sqlite3.connect(str(store.path)) as raw:
+        raw.execute("INSERT INTO decisions (entry_id, decision, reviewer, note, decided_at) "
+                    "VALUES ('JE-4', 'accept', 'ben', 'checked', '2026-01-01T00:00:00+00:00')")
+    later = store.save_narrative("JE-4", narrative("written after the decision"))
+    # JE-5: narrated, then decided without recording the note.
+    existing = store.save_narrative("JE-5", narrative("already there"))
+    store.record(Decision("JE-5", "dismiss", "ana"))
+
+    state = store.review_state().set_index("entry_id")
+    assert list(state.index) == ["JE-1", "JE-2", "JE-3", "JE-4", "JE-5"]
+
+    assert state.at["JE-1", "narrative_id"] == seen
+    assert state.at["JE-1", "narrative_summary"] == "what ana read"
+    assert state.at["JE-1", "narrative_superseded"] is True or state.at["JE-1", "narrative_superseded"] == True  # noqa: E712
+    assert state.at["JE-1", "narrative_seen_by_reviewer"] == "yes"
+    assert state.at["JE-1", "decision"] == "escalate"
+
+    assert state.at["JE-2", "narrative_id"] == newest
+    assert state.at["JE-2", "narrative_summary"] == "latest"
+    assert not state.at["JE-2", "narrative_superseded"]
+    assert state.at["JE-2", "narrative_seen_by_reviewer"] == ""
+    assert pd.isna(state.at["JE-2", "decision"])
+
+    assert pd.isna(state.at["JE-3", "narrative_id"])
+    assert pd.isna(state.at["JE-3", "narrative_summary"])
+    assert state.at["JE-3", "narrative_seen_by_reviewer"] == ""
+    assert state.at["JE-3", "decision"] == "dismiss"
+
+    # The later note is shown, but not passed off as the basis of the decision.
+    assert state.at["JE-4", "narrative_id"] == later
+    assert not state.at["JE-4", "narrative_superseded"]
+    assert state.at["JE-4", "narrative_seen_by_reviewer"] == "no"
+
+    assert state.at["JE-5", "narrative_id"] == existing
+    assert state.at["JE-5", "narrative_seen_by_reviewer"] == "unknown"
+
+    versions = store.narrative_versions("JE-1")
+    assert [v["summary"] for v in versions] == ["what ana read", "rewritten"]
+    assert versions[0]["evidence_to_request"] == ["a", "b"]
+    assert store.narrative_versions("JE-9") == []
+
+
 def test_a_decision_records_the_narrative_the_reviewer_saw(store):
     seen = store.save_narrative("JE-1", narrative("what the reviewer read"))
     store.record(Decision("JE-1", "escalate", "ana", "needs a senior", narrative_id=seen))
@@ -131,12 +190,22 @@ def test_a_decision_records_the_narrative_the_reviewer_saw(store):
     "DELETE FROM decisions",
     "UPDATE narratives SET summary = 'edited'",
     "DELETE FROM narratives",
+    # REPLACE deletes the conflicting row without firing delete triggers
+    # (unless recursive_triggers is on, and it is off by default), so it is
+    # caught on the way in instead.
+    "REPLACE INTO decisions (id, entry_id, decision, reviewer, decided_at) "
+    "VALUES (1, 'JE-1', 'accept', 'mallory', '2026-01-01T00:00:00+00:00')",
+    "INSERT OR REPLACE INTO narratives (id, entry_id, summary, generated_at) "
+    "VALUES (1, 'JE-1', 'rewritten', '2026-01-01T00:00:00+00:00')",
+    "INSERT INTO narratives (id, entry_id, summary, generated_at) "
+    "VALUES (1, 'JE-1', 'duplicate id', '2026-01-01T00:00:00+00:00')",
 ])
 def test_the_database_itself_refuses_to_change_history(store, statement):
     """Append-only is enforced by SQLite, not just by this module's API.
 
     Anything that opens the file - a stray script, a DB browser, a future
-    tool with a write method - hits the same wall.
+    tool with a write method - hits the same wall, including the REPLACE
+    route around the delete trigger.
     """
     seen = store.save_narrative("JE-1", narrative())
     store.record(Decision("JE-1", "dismiss", "ana", narrative_id=seen))
@@ -145,7 +214,14 @@ def test_the_database_itself_refuses_to_change_history(store, statement):
         with pytest.raises(sqlite3.IntegrityError, match="append-only"):
             raw.execute(statement)
     assert store.history("JE-1")["decision"].tolist() == ["dismiss"]
+    assert store.history("JE-1")["reviewer"].tolist() == ["ana"]
     assert store.get_narrative("JE-1")["summary"] == "s"
+    # Ordinary appends still work, with or without an explicit new id.
+    assert store.save_narrative("JE-1", narrative("second")) == 2
+    with sqlite3.connect(str(store.path)) as raw:
+        raw.execute("INSERT INTO narratives (id, entry_id, summary, generated_at) "
+                    "VALUES (50, 'JE-1', 'explicit new id', '2026-01-01T00:00:00+00:00')")
+    assert store.get_narrative("JE-1")["id"] == 50
 
 
 def test_decisions_survive_a_restart(tmp_path):
@@ -226,7 +302,9 @@ def test_a_database_from_before_versioning_is_migrated_on_open(tmp_path):
     objects = {(r[0], r[1]) for r in sqlite3.connect(str(path)).execute(
         "SELECT type, name FROM sqlite_master")}
     assert ("table", "narratives_v1") not in objects
-    assert ("trigger", "decisions_no_update") in objects  # the migrated file gets the guards too
+    for name in ("decisions_no_update", "decisions_no_delete", "decisions_no_replace",
+                 "narratives_no_update", "narratives_no_delete", "narratives_no_replace"):
+        assert ("trigger", name) in objects  # the migrated file gets every guard too
 
 
 def test_a_read_only_store_reads_everything_and_writes_nothing(tmp_path):

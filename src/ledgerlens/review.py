@@ -13,8 +13,12 @@ Three design choices worth stating:
    on screen when it was made. An audit trail that can be silently edited is
    not an audit trail, and neither is one whose supporting text can be. The
    database enforces this itself: triggers refuse any UPDATE or DELETE on
-   either table, whatever client issues it, so the rule does not depend on
-   every caller going through this module.
+   either table, and any INSERT that would land on an existing id (which is
+   how ``REPLACE INTO`` overwrites a row without firing a delete trigger), so
+   the rule does not depend on every caller going through this module. This
+   is tamper-resistant, not tamper-evident: a writer who drops the triggers
+   and puts them back leaves no trace, and a hash chain would be the next
+   step if that ever matters.
 2. **The model never writes here.** Narratives are advisory context attached to
    an entry; only a named human sets a decision.
 3. **SQLite, not a CSV.** Concurrent reviewers, transactional writes, and
@@ -39,6 +43,13 @@ DEFAULT_DB = Path("data/review.sqlite")
 #: flag was valid and is now dealt with, escalating means it needs someone more
 #: senior. Collapsing them would lose the distinction that matters most.
 DECISIONS = ("accept", "dismiss", "escalate")
+
+#: What :meth:`ReviewStore.review_state` reports for each entry, in this order.
+REVIEW_STATE_COLUMNS = (
+    "entry_id", "decision", "reviewer", "note", "decided_at", "narrative_id",
+    "narrative_summary", "narrative_confidence", "narrative_superseded",
+    "narrative_seen_by_reviewer",
+)
 
 #: On its own because the migration below has to create the same table.
 NARRATIVES_TABLE = """
@@ -78,6 +89,12 @@ BEGIN SELECT RAISE(ABORT, 'decisions are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS narratives_no_update BEFORE UPDATE ON narratives
 BEGIN SELECT RAISE(ABORT, 'narratives are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS narratives_no_delete BEFORE DELETE ON narratives
+BEGIN SELECT RAISE(ABORT, 'narratives are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS decisions_no_replace BEFORE INSERT ON decisions
+WHEN EXISTS (SELECT 1 FROM decisions WHERE id = NEW.id)
+BEGIN SELECT RAISE(ABORT, 'decisions are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS narratives_no_replace BEFORE INSERT ON narratives
+WHEN EXISTS (SELECT 1 FROM narratives WHERE id = NEW.id)
 BEGIN SELECT RAISE(ABORT, 'narratives are append-only'); END;
 """
 
@@ -281,7 +298,7 @@ class ReviewStore:
         Never replaces. A reviewer may already have read the previous version
         and decided against it, and that decision has to keep pointing at the
         text they saw. A rewrite costs a few kilobytes; the advice trail is
-        then as tamper-evident as the decision trail.
+        then as tamper-resistant as the decision trail.
         """
         with closing(self._connect()) as conn:
             cur = conn.execute(
@@ -327,6 +344,14 @@ class ReviewStore:
                 conn, params=(entry_id,),
             )
 
+    def narrative_versions(self, entry_id: str) -> list[dict]:
+        """The same history as dicts, shaped like :meth:`get_narrative` (evidence as a list)."""
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                "SELECT * FROM narratives WHERE entry_id = ? ORDER BY id", (entry_id,)
+            ).fetchall()
+        return [_narrative_dict(row) for row in rows]
+
     def narratives_frame(self, latest_only: bool = True) -> pd.DataFrame:
         """Cached narratives for the workpaper and the MCP server.
 
@@ -349,3 +374,57 @@ class ReviewStore:
         with closing(self._connect()) as conn:
             rows = conn.execute("SELECT DISTINCT entry_id FROM narratives").fetchall()
         return {r["entry_id"] for r in rows}
+
+    # --- both together ----------------------------------------------------
+
+    def review_state(self) -> pd.DataFrame:
+        """One row per entry with a decision or a narrative: what to show beside it.
+
+        The workpaper and the MCP server both read this, so they cannot
+        disagree about which note goes with which decision. Columns are
+        :data:`REVIEW_STATE_COLUMNS`.
+
+        The narrative shown is the version the decision recorded, because that
+        is the text the decision was based on. An entry with no decision, or
+        one that recorded no note, shows the latest version.
+        ``narrative_superseded`` says when a newer version exists than the one
+        shown. ``narrative_seen_by_reviewer`` says whether the note shown is
+        the one the reviewer read: "yes" when the decision recorded it, "no"
+        when the decision recorded nothing and the note was written afterwards,
+        "unknown" when the decision recorded nothing but the note already
+        existed (any decision recorded without an id; those from before notes
+        were versioned are the common case), and "" when there is no decision
+        or no note. A later note is never passed off as the basis of an
+        earlier decision.
+        """
+        decisions = self.current()[
+            ["entry_id", "decision", "reviewer", "note", "narrative_id", "decided_at"]
+        ]
+        latest = self.narratives_frame().set_index("entry_id")["id"]
+        versions = self.narratives_frame(latest_only=False).set_index("id")
+
+        # dtype=object: an empty id list would otherwise be float64 and refuse to merge.
+        ids = sorted(set(decisions["entry_id"]) | set(latest.index))
+        entries = pd.DataFrame({"entry_id": pd.Series(ids, dtype=object)})
+        out = entries.merge(decisions, on="entry_id", how="left")
+        newest = pd.to_numeric(out["entry_id"].map(latest)).astype("Int64")
+        recorded = pd.to_numeric(out["narrative_id"]).astype("Int64")
+        shown = recorded.fillna(newest)
+        out["narrative_id"] = shown
+        out["narrative_summary"] = shown.map(versions["summary"])
+        out["narrative_confidence"] = shown.map(versions["confidence"])
+        out["narrative_superseded"] = (
+            (shown.notna() & (shown != newest)).fillna(False).astype(bool)
+        )
+        decided = out["decision"].notna()
+        # ISO-8601 UTC strings compare correctly as text; a note written in the
+        # same second as the decision is "unknown", the honest reading.
+        written_after = (
+            shown.map(versions["generated_at"]).fillna("") > out["decided_at"].fillna("")
+        )
+        seen = pd.Series("", index=out.index, dtype=object)
+        seen[decided & recorded.notna()] = "yes"
+        seen[decided & recorded.isna() & shown.notna() & written_after] = "no"
+        seen[decided & recorded.isna() & shown.notna() & ~written_after] = "unknown"
+        out["narrative_seen_by_reviewer"] = seen
+        return out[list(REVIEW_STATE_COLUMNS)]

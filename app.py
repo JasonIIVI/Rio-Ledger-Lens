@@ -169,6 +169,14 @@ with tab_queue:
         # ---- narrative: advisory text, never a decision ----
         st.markdown("**Reviewer note** (written by Claude, advisory only)")
         narrative = store.get_narrative(picked)
+        # The note the reviewer actually read is the one rendered on the
+        # *previous* run of this script: a submit reruns everything, and a
+        # version written in between (a rewrite, another reviewer) would
+        # otherwise be recorded as the one they saw. So the id on screen is
+        # remembered per entry, and read back before it is overwritten.
+        shown_key = f"shown-{picked}"
+        seen_id = st.session_state.get(shown_key)
+        st.session_state[shown_key] = narrative["id"] if narrative else None
         if narrative:
             render_narrative(narrative)
         else:
@@ -194,19 +202,39 @@ with tab_queue:
 
         # ---- decision: a named human, append-only ----
         st.markdown("**Record a decision**")
-        with st.form(key=f"decision-{picked}", clear_on_submit=True):
+        choice_key, note_key = f"choice-{picked}", f"note-{picked}"
+        # The form is not cleared on submit: a refused submit (the note changed
+        # while the reviewer was reading it) must not discard what they typed.
+        # The draft is cleared here instead, on the rerun after a decision was
+        # recorded, and each entry keeps its own draft in the meantime.
+        if st.session_state.pop("clear-decision", None) == picked:
+            for key in (choice_key, note_key):
+                st.session_state.pop(key, None)
+        with st.form(key=f"decision-{picked}"):
             choice = st.radio("Decision", DECISIONS, horizontal=True,
-                              format_func=str.capitalize)
-            note = st.text_area("Note", placeholder="What you checked, or why this is fine.")
+                              format_func=str.capitalize, key=choice_key)
+            note = st.text_area("Note", placeholder="What you checked, or why this is fine.",
+                                key=note_key)
             submitted = st.form_submit_button("Record decision", disabled=not reviewer)
         if not reviewer:
             st.caption("Enter your name in the sidebar to record a decision.")
         if submitted:
+            latest_id = narrative["id"] if narrative else None
             # A form submits once per click, and this guard absorbs a double click:
             # an append-only log should not carry an accidental duplicate.
             signature = (picked, choice, note.strip())
             if st.session_state.get("last_decision") == signature:
                 st.warning("That decision was just recorded.")
+            elif seen_id != latest_id:
+                # The note changed between the render the reviewer read and
+                # this submit. Recording the new id would claim they read it;
+                # recording the old one would attach advice that is no longer
+                # on screen. Neither is true, so nothing is recorded.
+                st.warning(
+                    "The reviewer note changed while you were reading it (now note "
+                    f"#{latest_id if latest_id is not None else 'none'}). Read the note "
+                    "shown above and record the decision again."
+                )
             else:
                 # The decision records the note that was on screen, so the
                 # workpaper can show what the reviewer read even if the note
@@ -214,10 +242,11 @@ with tab_queue:
                 store.record(Decision(
                     entry_id=picked, decision=choice, reviewer=reviewer, note=note.strip(),
                     risk_score=float(row["risk_score"]), model_score=float(row["model_score"]),
-                    narrative_id=narrative["id"] if narrative else None,
+                    narrative_id=seen_id,
                 ))
                 st.session_state["last_decision"] = signature
                 st.session_state["flash"] = f"Recorded: {choice} by {reviewer}."
+                st.session_state["clear-decision"] = picked
                 st.rerun()
 
         history = store.history(picked)

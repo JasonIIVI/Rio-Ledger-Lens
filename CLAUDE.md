@@ -25,22 +25,33 @@ and the MCP SDK, so the two together cover every code path CI will see.
 
 ## Current state
 
-- **v0.3.0** on `main` (PR #2 squash-merged and tagged 2026-09-23). Weeks 1–3 complete:
+- **v0.3.1** on `main` (PR #5 squash-merged and tagged 2026-09-25; v0.3.0 was PR #2 on
+  2026-09-23). Weeks 1–3 complete:
   narratives, review loop, dashboard integration, MCP server, narrative eval, `@claude` workflow.
 - **Review follow-up on `main`** (PR #4, 2026-09-24) — the first `@claude` review's findings:
   narratives are versioned and each decision records the note it saw (`narrative_id`);
   append-only is enforced by SQLite triggers; the MCP path opens the review database read-only;
   a data-not-instructions rule in the system prompt; `cases_sha256` on every eval row, with
   `--regrade` refusing to cross a changed case file; an explicit citation allowlist in the
-  grader; grader notes and the "always medium" baseline in the report; run rows committed under
+  grader (replaced by stripping the citation in the second follow-up); grader notes and the "always medium" baseline in the report; run rows committed under
   `evals/narratives/runs/`; `fetch-depth: 0` for reviews.
+- **Second follow-up (PR #5, 2026-09-24)** — the second review's findings: `BEFORE INSERT`
+  guards close the `REPLACE INTO` route around the triggers; the dashboard records the note it
+  rendered and refuses if it changed before the submit; `narrative_seen_by_reviewer` in the
+  workpaper, `narrative_history` / `narrative_superseded` over MCP; `--regrade` can never call
+  the API and never deletes rows; `grader_sha256` and `metrics_history` on every row; the
+  AU-C 240 citation is stripped before counting numbers instead of a bare "240" being allowed.
 - **Next: week 4** — QuickBooks Online sandbox connector and README polish, toward v1.0.0
-  (due 2026-10-18).
-- 187 tests on 3.9 / 194 on 3.12, ruff clean.
+  (due 2026-10-18). Do first, per the second review: key the review store by ledger
+  (`ledger_id`), `PRAGMA user_version` migrations, keep QuickBooks text out of committed eval
+  rows (extend the rule-1 check to `evals/narratives/runs/`), an injection eval case, tokens
+  outside the repo.
+- 206 tests on 3.9 / 213 on 3.12, ruff clean.
 
 **Verified on the real API (2026-09-23):** 25 narratives cached (89% of input tokens read from
-cache), eval 94% pass-all. The grader has been corrected twice since, both disclosed under
-"Grader notes" in the report; neither re-grade moved a row. `ANTHROPIC_API_KEY` is in `.env`
+cache), eval 94% pass-all. The grader has been corrected three times since the first run, each
+disclosed under "Grader notes" in the report; the first correction moved one row (88% to 94%),
+the later ones none. `ANTHROPIC_API_KEY` is in `.env`
 (never read it, never commit it) and in the repository secrets; the Claude GitHub App is
 installed; the `ledgerlens` MCP entry is in Claude Desktop's config. An organisation-level
 key needs `ANTHROPIC_WORKSPACE_ID` as well; a workspace-scoped key does not.
@@ -68,7 +79,7 @@ ledger CSV ──▶ ingest ──┼──▶ Benford analysis ─────�
 | `report.py` | 5-tab Excel workpaper |
 | `review.py` | append-only SQLite store: decisions and versioned narratives, enforced by triggers; `read_only()` opener |
 | `narrate.py` | Claude narratives: structured-output JSON contract, cacheable system prompt, usage accounting |
-| `narrative_eval.py` | case selection (the one label reader), rubric grader (explicit citation allowlist), runner with case-file provenance, report with grader notes and baseline |
+| `narrative_eval.py` | case selection (the one label reader), rubric grader (the citation stripped before numbers are counted), runner with case-file provenance, report with grader notes and baseline |
 | `ledger_context.py` | read-only query layer (summary, top exceptions, explain, search, Benford, review status); opens the review DB `mode=ro`; 3.9-safe |
 | `mcp_server.py` | MCP registration over `ledger_context` (v2 SDK, stdio); needs 3.10+ |
 | `env.py` | dependency-free `.env` loader |
@@ -102,7 +113,8 @@ ledger CSV ──▶ ingest ──┼──▶ Benford analysis ─────�
    database, and the connection it opens is `mode=ro`.
 9. **Eval expectations are written from the entry's own data, before any run,** and are never
    adjusted to fit a model's output. Report whatever the numbers are. Every result row carries
-   the case file's sha256; `--regrade` refuses to cross a changed file unless
+   the case file's sha256 and the grader's; `--regrade` never calls the API, keeps the grades
+   it replaces under `metrics_history`, refuses to cross a changed file unless
    `--allow-cases-change`, and the report then says so. Any grader change goes in
    `GRADER_NOTES` with its effect on the published score.
 

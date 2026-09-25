@@ -10,8 +10,8 @@ trusting a note:
                           (the amount, the accounts, the tests that fired)
 - ``no_assertions``       it never asserts an error, an intent or an irregularity
 - ``evidence_specific``   at least one evidence item names a figure, an account or a date
-- ``no_invented_numbers`` every number in the note is in the entry, or is a standard the
-                          system prompt cites (AU-C 240 is a citation, not an invention)
+- ``no_invented_numbers`` every number in the note is in the entry, once the one standard
+                          the system prompt cites (AU-C 240) is set aside
 - ``confidence_in_band``  confidence lands where a reviewer would put it
 
 Why a rubric and not a reference narrative: the reference would itself be
@@ -26,15 +26,20 @@ entries to test. The narrator never sees a label.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
+import os
 import re
+import tempfile
 import time
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
 
+from . import narrate
 from .narrate import (
     NarrativeError,
     Narrator,
@@ -63,13 +68,26 @@ FORBIDDEN_ASSERTIONS = (
     r"\bto (hide|disguise|evade|circumvent)\b",
 )
 
-#: Numbers a note may use without their appearing in the entry: the standards
-#: the system prompt cites, and only those. The prompt's style guidance also
-#: quotes figures ("$9,912", "Sales Revenue (4000)") as examples of specific
-#: wording; a note that copied them onto an entry containing neither would be
-#: inventing numbers, which is the exact failure this check exists to catch,
-#: so nothing from the prompt is admitted except what it cites.
-CITATION_NUMBERS = frozenset({"240"})  # AU-C 240, in the JET-05 reference
+#: The standards the system prompt cites, and only those. A citation is removed
+#: from the note before its numbers are extracted, so "AU-C 240" is not an
+#: invented figure but a bare "240" ("$240", "240 days") still has to come from
+#: the entry. The prompt's style guidance also quotes figures ("$9,912",
+#: "Sales Revenue (4000)") as examples of specific wording; a note that copied
+#: them onto an entry containing neither would be inventing numbers, which is
+#: the exact failure this check exists to catch, so nothing else from the
+#: prompt is set aside.
+#: Hyphen, non-breaking hyphen, figure dash, en dash, em dash, horizontal bar:
+#: models write the standard's name in all of them.
+CITATIONS = (
+    re.compile(r"\bAU[-\u2010-\u2015]C[-\u2010-\u2015\s]*(?:section\s*|\u00a7\s*)?240\b", re.I),
+)
+
+
+def strip_citations(text: str) -> str:
+    """Remove the cited standards from a note so their figures are not counted."""
+    for pattern in CITATIONS:
+        text = pattern.sub(" ", text)
+    return text
 
 #: What has changed in the grader and what each change did to the published
 #: score, printed in every report. A reader should never have to find this in
@@ -88,7 +106,18 @@ GRADER_NOTES = (
      "only). Re-grading the 2026-09-23 run under it changed no row: no note had used either "
      "figure, and the score stayed at 94%. Those rows predate the case-file hash; git records "
      "the case file as unchanged since commit 1ff36ef (2026-09-23 19:29 UTC), before the run "
-     "was graded (19:57 UTC), which is the ordering the first review asked to have checked."),
+     "was graded (19:57 UTC). That is consistent with the bands having been fixed first, "
+     "which is as much as a commit history can show."),
+    ("2026-09-25",
+     "The allowlist admitted any bare \"240\" (\"$240\", \"240 days\"), not the citation. "
+     "Now the citation \"AU-C 240\", in the forms it is written in (\"AU-C Section 240\", "
+     "\"AU-C \u00a7240\", dash variants), is removed from the note before its numbers are "
+     "extracted, and every remaining number must come from the entry. Rows record the grader's "
+     "own sha256 (the grading code, its patterns and word lists, and the schema check it calls) "
+     "and keep replaced grades under metrics_history, so a grader change shows on the rows and "
+     "not only here; a test fails if the committed rows were not graded by the grader in the "
+     "same commit. One offline re-grade of the 2026-09-23 run from its previous rows changed no "
+     "check on any row; the score stayed at 94%."),
 )
 
 METRICS = (
@@ -102,8 +131,9 @@ METRICS = (
 
 #: Statuses a case can end in. ``invalid`` is the model's doing (unusable
 #: output) and is graded as a failure; ``error`` is plumbing (a network or
-#: API failure) and is kept out of the score entirely.
-STATUSES = ("ok", "invalid", "error")
+#: API failure) and is kept out of the score entirely; ``missing`` is a case
+#: a re-grade found no stored row for, reported rather than narrated.
+STATUSES = ("ok", "invalid", "error", "missing")
 
 #: What ``cases_sha256`` reads on rows graded before the hash was stored.
 UNRECORDED = "unrecorded"
@@ -134,6 +164,20 @@ def default_runs_dir(model: str, regrade: bool = False, root: str | Path = RUNS_
 
 class CasesChangedError(ValueError):
     """A re-grade met rows graded under a different case file than the one given."""
+
+
+class RegradeError(ValueError):
+    """A re-grade was asked for something a re-grade cannot do.
+
+    Start over, or run without the case-file hash. A ValueError so that
+    callers who catch the general class still stop, but the CLI maps only
+    this one (and :class:`ResultsError`) to a usage error rather than hiding
+    real bugs behind it.
+    """
+
+
+class ResultsError(ValueError):
+    """A results file cannot be trusted: it holds two rows for one case."""
 
 
 def cases_digest(path: str | Path) -> str:
@@ -324,13 +368,13 @@ def grade(narrative: dict | None, case: Case, prompt_text: str) -> dict[str, boo
 
     text = narrative_text(clean)
     forbidden = list(FORBIDDEN_ASSERTIONS) + list(case.must_not_assert)
-    shown = numbers_in(prompt_text) | CITATION_NUMBERS
+    shown = numbers_in(prompt_text)
     metrics = {
         "schema_valid": True,
         "mentions_required": all(re.search(p, text, re.I) for p in case.must_mention),
         "no_assertions": not any(re.search(p, text, re.I) for p in forbidden),
         "evidence_specific": any(_is_specific(i, prompt_text) for i in clean["evidence_to_request"]),
-        "no_invented_numbers": numbers_in(text) <= shown,
+        "no_invented_numbers": numbers_in(strip_citations(text)) <= shown,
         "confidence_in_band": clean["confidence"] in case.expected_confidence,
     }
     metrics["passed"] = all(metrics.values())
@@ -349,6 +393,33 @@ def confidence_baselines(cases: list[Case]) -> dict[str, tuple[int, int]]:
             for level in ("high", "medium", "low")}
 
 
+def grader_digest() -> str:
+    """sha256 of the grader itself: the grading code, the word lists and patterns
+    it reads, and the schema check it calls.
+
+    Recorded on every row, so a change to how notes are judged is as visible
+    as a change to what they are judged against. Whitespace and comments
+    count: any edit to the grader is a change a reader may want to see. The
+    case-file side (``Case``, ``load_cases``) is not in it; that is what
+    ``cases_sha256`` is for. Computed on demand, never at import: it reads
+    source files, and the CLI imports this module for every command.
+    """
+    graders = (grade, numbers_in, strip_citations, narrative_text, _is_specific, validate)
+    try:
+        parts = [inspect.getsource(f) for f in graders]
+    except OSError as exc:
+        raise RuntimeError(
+            "the grader's source is not available, so its sha256 cannot be recorded; run the "
+            "eval from a source checkout"
+        ) from exc
+    parts += [
+        repr(FORBIDDEN_ASSERTIONS), repr([p.pattern for p in CITATIONS]), repr(METRICS),
+        _NUMBER.pattern, _LINE_NAME.pattern,
+        repr(narrate.REQUIRED_KEYS), repr(narrate.VALID_CONFIDENCE),
+    ]
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+
+
 def failed_checks(row: dict) -> list[str]:
     metrics = row.get("metrics") or {}
     return [m for m in METRICS if not metrics.get(m, False)]
@@ -365,16 +436,32 @@ def aggregate(rows: list[dict]) -> dict:
         if r.get("usage"):
             usage.add(_UsageView(r["usage"]))
     crossed = [r for r in rows if r.get("previous_cases_sha256")]
+    regraded = [r for r in graded if r.get("metrics_history")]
+    changed = [r for r in regraded
+               if (r["metrics_history"][0]["metrics"] or {}).get("passed") != r["metrics"]["passed"]]
+    # A row's kept grades start at its first re-grade; if that came later than
+    # the row's own grading, an earlier grade was overwritten before history
+    # existed, and the report has to say so rather than imply "since the start".
+    unkept = [r for r in regraded if r["metrics_history"][0].get("graded_at") != r.get("graded_at")]
     return {
         "cases": len(rows),
         "graded": n,
         "errors": sum(1 for r in rows if r["status"] == "error"),
         "invalid": sum(1 for r in rows if r["status"] == "invalid"),
+        "missing": sum(1 for r in rows if r["status"] == "missing"),
         "rates": rates,
         "usage": asdict(usage),
         "provenance": {
             "cases_sha256": sorted({r.get("cases_sha256") or UNRECORDED for r in rows}),
+            "grader_sha256": sorted({r.get("grader_sha256") or UNRECORDED for r in graded}),
             "regraded_at": max((r.get("regraded_at") or "" for r in rows), default="") or None,
+            "rows_regraded": len(regraded),
+            "rows_with_changed_result": len(changed),
+            "earliest_kept_grade_at": min(
+                (r["metrics_history"][0].get("graded_at") or "" for r in regraded), default=""
+            ) or None,
+            "rows_with_unkept_grades": len(unkept),
+            "first_graded_at": min((r.get("graded_at") or "" for r in unkept), default="") or None,
             "rows_regraded_across_cases": len(crossed),
             "previous_cases_sha256": sorted({r["previous_cases_sha256"] for r in crossed}),
         },
@@ -397,6 +484,40 @@ def _read_jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
 
 
+def _stored_rows(path: Path) -> dict[str, dict]:
+    """The rows in a results file, keyed by entry id.
+
+    Rows are appended once per case, so two rows for one entry can only come
+    from a hand edit or a damaged file. Merging them would pick one silently;
+    refusing points at the rule that rows are never edited by hand.
+    """
+    rows = _read_jsonl(path)
+    duplicates = sorted(i for i, n in Counter(r["entry_id"] for r in rows).items() if n > 1)
+    if duplicates:
+        raise ResultsError(
+            f"{path} holds more than one row for {', '.join(duplicates)}; rows are never edited "
+            "by hand, so this file cannot be trusted. Restore it (git checkout for a committed "
+            "run) or use a fresh --runs-dir."
+        )
+    return {r["entry_id"]: r for r in rows}
+
+
+def _write_rows(path: Path, rows) -> None:
+    """Replace a results file in one step, so a crash mid-write leaves the old file whole."""
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".results-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write("".join(json.dumps(r) + "\n" for r in rows))
+            handle.flush()
+            os.fsync(handle.fileno())
+        # mkstemp creates the file owner-only; the replaced file keeps its own mode.
+        os.chmod(tmp, path.stat().st_mode & 0o7777)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
 def _regrade(
     done: dict[str, dict], cases: list[Case], cases_sha256: str | None, allow_cases_change: bool,
 ) -> None:
@@ -415,13 +536,68 @@ def _regrade(
             "report will say so."
         )
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    grader = grader_digest()
     for row in rows:
+        # The grades being replaced are kept, with what produced them, so a
+        # grader change shows on the row itself and not only in a note.
+        row.setdefault("metrics_history", []).append({
+            "metrics": row["metrics"],
+            "grader_sha256": row.get("grader_sha256") or UNRECORDED,
+            "cases_sha256": row.get("cases_sha256") or UNRECORDED,
+            "graded_at": row.get("regraded_at") or row.get("graded_at"),
+        })
         row["metrics"] = grade(row["narrative"], by_id[row["entry_id"]], row["prompt"])
+        row["grader_sha256"] = grader
         row["regraded_at"] = now
         if row["entry_id"] in crossed:
             # Keep the earliest known origin: a second crossing must not erase the first.
             row.setdefault("previous_cases_sha256", crossed[row["entry_id"]])
             row["cases_sha256"] = cases_sha256
+
+
+def _missing_row(case: Case, cases_sha256: str | None, errored: bool = False) -> dict:
+    """The row for a case a re-grade found nothing stored for. Never written to disk.
+
+    Same keys as a graded row, so a reader can treat the list uniformly.
+    """
+    why = "no stored result row for this case; a re-grade never narrates (run without --regrade)"
+    if errored:
+        why += " (the narrator failed on it: see errors.jsonl)"
+    return {
+        "entry_id": case.entry_id, "archetype": case.archetype, "tests_fired": case.tests_fired,
+        "status": "missing", "error": why,
+        "model": None, "usage": None, "latency_s": None, "narrative": None, "metrics": None,
+        "prompt": None, "graded_at": None, "cases_sha256": cases_sha256, "grader_sha256": None,
+    }
+
+
+def _regrade_run(
+    cases: list[Case], results_path: Path, cases_sha256: str | None,
+    allow_cases_change: bool, resume: bool,
+) -> list[dict]:
+    """Re-score stored rows and nothing else: no narrator is in reach here."""
+    if not resume:
+        raise RegradeError("a re-grade re-scores stored rows; it cannot start over (--no-resume)")
+    if cases_sha256 is None:
+        raise RegradeError("a re-grade needs cases_sha256, so the rows can say what graded them")
+    done = _stored_rows(results_path)
+    if not done:
+        raise FileNotFoundError(f"nothing to re-grade: {results_path} has no rows")
+    # A re-grade covers every stored row, or the file would carry two grader
+    # hashes and the report would quietly drop the rows it did not score.
+    left_out = sorted(set(done) - {c.entry_id for c in cases})
+    if left_out:
+        raise RegradeError(
+            f"{len(left_out)} stored row(s) are not in the case set ({', '.join(left_out)}); a "
+            "re-grade covers every stored row, so run it without --limit, or move rows that no "
+            "longer belong to a case to another --runs-dir"
+        )
+    errored = {r["entry_id"] for r in _read_jsonl(results_path.with_name("errors.jsonl"))}
+    _regrade(done, cases, cases_sha256, allow_cases_change)
+    _write_rows(results_path, done.values())
+    return [done[c.entry_id] if c.entry_id in done
+            else _missing_row(c, cases_sha256, errored=c.entry_id in errored)
+            for c in cases]
 
 
 def run_eval(
@@ -441,33 +617,38 @@ def run_eval(
     Rows are written as each case completes, so a crash costs nothing already
     paid for, and a re-run with ``resume`` skips them. API failures go to an
     ``errors.jsonl`` sidecar rather than into the score. ``regrade`` re-scores
-    the stored narratives with the current grader without calling the API,
-    which is how a grader fix is applied to a run already paid for.
+    the stored narratives with the current grader, which is how a grader fix
+    is applied to a run already paid for; it never calls the API, so a case
+    with no stored row comes back as ``missing`` rather than narrated, and a
+    directory with nothing stored is an error rather than a paid run.
 
     Every row records ``cases_sha256``, the case file it was graded against.
     A re-grade under a different file is refused unless ``allow_cases_change``
     says otherwise, and then the row keeps the hash it was first graded under
     so the report can disclose it. Applying a grader fix leaves no such mark;
     editing expectations after seeing the output cannot avoid one.
+
+    Stored rows are never deleted: a run that does not resume into a
+    directory that already holds rows is refused, so a worse result cannot
+    be quietly replaced by a better one.
     """
     out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
     results_path, errors_path = out_dir / "results.jsonl", out_dir / "errors.jsonl"
+    if regrade:
+        return _regrade_run(cases, results_path, cases_sha256, allow_cases_change, resume)
+    out_dir.mkdir(parents=True, exist_ok=True)
     if not resume:
-        # Rows are appended as they complete, so a run that does not resume has
-        # to start the files clean or the directory would hold two rows per
-        # case and the later one would win silently on the next read.
         for path in (results_path, errors_path):
             if path.exists():
-                path.unlink()
-    done = {r["entry_id"]: r for r in _read_jsonl(results_path)} if resume else {}
-    if regrade and done:
-        _regrade(done, cases, cases_sha256, allow_cases_change)
-        results_path.write_text(
-            "".join(json.dumps(r) + "\n" for r in done.values()), encoding="utf-8"
-        )
+                raise FileExistsError(
+                    f"{path} already holds rows; a run that does not resume needs a fresh "
+                    "--runs-dir (stored rows are never deleted)"
+                )
+    done = _stored_rows(results_path) if resume else {}
+    grader = None
     if any(c.entry_id not in done for c in cases):
         _ = narrator.client  # a missing key fails here, once, not once per case as "invalid"
+        grader = grader_digest()
 
     rows: list[dict] = []
     for case in cases:
@@ -499,6 +680,7 @@ def run_eval(
             "prompt": prompt,
             "graded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "cases_sha256": cases_sha256,
+            "grader_sha256": grader,
         }
         target = errors_path if status == "error" else results_path
         with target.open("a", encoding="utf-8") as handle:
@@ -513,12 +695,34 @@ def _provenance_lines(summary: dict, runs_dir: str | Path | None) -> list[str]:
     hashes = provenance.get("cases_sha256") or []
     parts = ["Case file sha256: " + (
         " / ".join(f"`{h}`" for h in hashes) if hashes else UNRECORDED)]
+    graders = provenance.get("grader_sha256") or []
+    parts.append("grader sha256: " + (
+        " / ".join(f"`{h}`" for h in graders) if graders else UNRECORDED))
     if runs_dir:
         parts.append(f"rows: `{Path(runs_dir).as_posix()}/results.jsonl`")
     if provenance.get("regraded_at"):
-        parts.append(f"re-graded {provenance['regraded_at']} by the grader in this commit, "
-                     "no API calls")
+        parts.append(f"re-graded {provenance['regraded_at']} offline (no API calls)")
     lines = [" · ".join(parts)]
+    regraded = provenance.get("rows_regraded") or 0
+    if regraded:
+        changed = provenance.get("rows_with_changed_result") or 0
+        lines += [
+            "",
+            f"Re-grades: {regraded} row(s) keep their earlier grades, with the grader and case "
+            f"file that produced them, under `metrics_history`; {changed} row(s) changed their "
+            f"overall result since their earliest kept grade "
+            f"({provenance.get('earliest_kept_grade_at')}). The grader hash is the sha256 of "
+            "the grading code, its word lists and patterns, and the schema check it calls, so "
+            "a loosened check would show here as a new hash.",
+        ]
+        unkept = provenance.get("rows_with_unkept_grades") or 0
+        if unkept:
+            lines += [
+                "",
+                f"{unkept} row(s) were first graded earlier ({provenance.get('first_graded_at')}) "
+                "and that grade was replaced before `metrics_history` existed; only the grader "
+                "notes below describe it.",
+            ]
     crossed = provenance.get("rows_regraded_across_cases") or 0
     if crossed:
         previous = provenance.get("previous_cases_sha256") or []
@@ -538,7 +742,7 @@ def _provenance_lines(summary: dict, runs_dir: str | Path | None) -> list[str]:
 
 def _baseline_lines(cases: list[Case] | None, rows: list[dict]) -> list[str]:
     """The constant-answer baseline for the confidence check, for the cases graded."""
-    graded = {r["entry_id"] for r in rows}
+    graded = {r["entry_id"] for r in rows if r["status"] in ("ok", "invalid")}
     cases = [c for c in (cases or []) if c.entry_id in graded]
     if not cases:
         return []
@@ -547,13 +751,22 @@ def _baseline_lines(cases: list[Case] | None, rows: list[dict]) -> list[str]:
     described = ", ".join(f'always "{level}" {n}/{total} ({n / total:.0%})'
                           for level, (n, total) in baselines.items())
     n, total = baselines[best]
+    counted = {c.entry_id for c in cases}  # the same cases the baseline is computed over
+    actual = sum(1 for r in rows if r["entry_id"] in counted and r["status"] in ("ok", "invalid")
+                 and (r["metrics"] or {}).get("confidence_in_band"))
+    margin = actual - n
+    cases_word = "case" if abs(margin) == 1 else "cases"
+    verdict = (f"beat the best constant answer by {margin} {cases_word}" if margin > 0
+               else "match the best constant answer" if margin == 0
+               else f"fall short of the best constant answer by {-margin} {cases_word}")
     return [
         "",
         f"Confidence baseline: the bands accept more than one level on "
         f"{sum(len(c.expected_confidence) > 1 for c in cases)} of {total} cases, so a "
         f"narrator that always answered \"{best}\" would pass the confidence check on "
-        f"{n}/{total} ({n / total:.0%}) of them - {described}. Read the confidence row "
-        f"against that number, not against zero.",
+        f"{n}/{total} ({n / total:.0%}) of them - {described}. The notes passed it on "
+        f"{actual}/{total}, so they {verdict}. Read the confidence row against that, not "
+        f"against zero.",
     ]
 
 
@@ -564,14 +777,16 @@ def render_markdown(
     """The report that goes in docs/: what was measured, the numbers, every miss,
     the grader's own history, and the baseline the confidence check should be read against."""
     model = next((r["model"] for r in rows if r.get("model")), "unknown")
-    when = max((r["graded_at"] for r in rows), default="")
+    when = max((r["graded_at"] for r in rows if r.get("graded_at")), default="")
     usage = summary["usage"]
+    missing = summary.get("missing") or 0
     lines = [
         "# Narrative eval",
         "",
         f"Run: {when} · model: `{model}` · cases: {summary['cases']} · graded: "
         f"{summary['graded']} · invalid: {summary['invalid']} · errors (not scored): "
-        f"{summary['errors']}",
+        f"{summary['errors']}"
+        + (f" · missing (no stored row, not narrated): {missing}" if missing else ""),
         "",
         *_provenance_lines(summary, runs_dir),
         "",
@@ -591,7 +806,8 @@ def render_markdown(
         "mentions_required": "Mentions the required facts (amount, accounts, tests)",
         "no_assertions": "Asserts no error, intent or irregularity",
         "evidence_specific": "At least one evidence item is specific",
-        "no_invented_numbers": "Every number in the note is in the entry (or a cited standard)",
+        "no_invented_numbers": "Every number in the note is in the entry (or is AU-C 240, the "
+                               "one standard the prompt cites)",
         "confidence_in_band": "Confidence in the expected band",
         "passed": "**All of the above**",
     }
@@ -605,12 +821,14 @@ def render_markdown(
         "| Entry | Archetype | Tests | Confidence | Failed checks |",
         "|---|---|---|---|---|",
     ]
+    unscored = ("error", "missing")
     for r in rows:
         conf = (r.get("narrative") or {}).get("confidence", "-")
-        failed = ", ".join(failed_checks(r)) if r["status"] != "error" else f"error: {r['error']}"
+        failed = (", ".join(failed_checks(r)) if r["status"] not in unscored
+                  else f"{r['status']}: {r['error']}")
         lines.append(f"| {r['entry_id']} | {r['archetype']} | {r['tests_fired']} | {conf} | "
                      f"{failed or '-'} |")
-    misses = [r for r in rows if r["status"] != "error" and failed_checks(r)]
+    misses = [r for r in rows if r["status"] not in unscored and failed_checks(r)]
     if misses:
         lines += ["", "## Misses, with the text that failed", ""]
         for r in misses:
