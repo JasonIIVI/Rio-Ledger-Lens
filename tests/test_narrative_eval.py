@@ -27,6 +27,7 @@ from ledgerlens.narrative_eval import (
     Case,
     CasesChangedError,
     RegradeError,
+    ResultsError,
     aggregate,
     cases_digest,
     check_cases,
@@ -188,7 +189,7 @@ def test_every_number_the_prompt_shows_is_a_style_example_or_a_stripped_citation
 
 def test_the_citation_is_stripped_in_the_forms_it_is_written_in():
     for form in ("AU-C 240", "AU-C Section 240", "AU-C \u00a7240", "AU\u2011C 240",
-                 "AU\u2013C 240", "au-c240"):
+                 "AU\u2013C 240", "au-c240", "AU-C-240", "AU-C \u2013 240"):
         assert numbers_in(strip_citations(f"per {form}, obtain the contract")) == set(), form
     for not_it in ("$240", "240 days", "AU-C 2400", "AU-C 24 and $1,240"):
         assert numbers_in(strip_citations(not_it)) == numbers_in(not_it), not_it
@@ -325,6 +326,7 @@ def test_a_case_that_only_errored_is_reported_as_such_by_a_regrade(sample, score
     assert quiet.calls == []
     assert rows[1]["status"] == "missing"
     assert "errors.jsonl" in rows[1]["error"]
+    assert {"cases_sha256", "grader_sha256"} <= set(rows[1]) <= set(rows[0])  # one row shape
     assert "errors.jsonl" in render_markdown(rows, aggregate(rows))
 
 
@@ -339,14 +341,26 @@ def test_a_results_file_with_two_rows_for_one_case_is_refused_not_merged(sample,
     results.write_text(damaged)
 
     quiet = llm.client()
-    with pytest.raises(RegradeError, match="more than one row"):
+    with pytest.raises(ResultsError, match="more than one row"):
         run_eval([case], Narrator(client=quiet), combined, flags, ledger, tmp_path,
                  regrade=True, cases_sha256="a" * 64)
-    with pytest.raises(RegradeError, match="more than one row"):
+    with pytest.raises(ResultsError, match="more than one row"):
         run_eval([case], Narrator(client=quiet), combined, flags, ledger, tmp_path,
                  cases_sha256="a" * 64)  # a resumed run trusts the same file
     assert quiet.calls == []
     assert results.read_text() == damaged  # refused, not repaired
+
+
+def test_a_regrade_keeps_the_results_file_mode(sample, scored, ledger, llm, tmp_path):
+    case, prompt, entry, lines = sample
+    combined, flags = scored
+    results = tmp_path / "results.jsonl"
+    run_eval([case], Narrator(client=llm.client([llm.response(oracle(case, entry, lines))])),
+             combined, flags, ledger, tmp_path, cases_sha256="a" * 64)
+    results.chmod(0o664)
+    run_eval([case], Narrator(client=llm.client()), combined, flags, ledger, tmp_path,
+             regrade=True, cases_sha256="a" * 64)
+    assert results.stat().st_mode & 0o777 == 0o664  # not mkstemp's owner-only default
 
 
 def test_grader_digest_tracks_the_code_its_patterns_and_the_schema_check(monkeypatch):

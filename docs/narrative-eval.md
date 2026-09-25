@@ -2,7 +2,7 @@
 
 Run: 2026-09-23T19:59:19+00:00 · model: `claude-opus-5` · cases: 16 · graded: 16 · invalid: 0 · errors (not scored): 0
 
-Case file sha256: `fd49e46f2dd59a6d14c1bfff17186e3eef93172b39803074c0b5c987bade96bb` · grader sha256: `e2fa420f2880eb1212cd6199b83e56005b6848973ebb6e1415a7c0ca1c660bf5` · rows: `evals/narratives/runs/2026-09-23-claude-opus-5/results.jsonl` · re-graded 2026-09-25T04:31:24+00:00 offline (no API calls)
+Case file sha256: `fd49e46f2dd59a6d14c1bfff17186e3eef93172b39803074c0b5c987bade96bb` · grader sha256: `0273c171c50d0e01f119493f53213ad48f045442633659378d64f3f63bf5fece` · rows: `evals/narratives/runs/2026-09-23-claude-opus-5/results.jsonl` · re-graded 2026-09-25T04:37:36+00:00 offline (no API calls)
 
 Re-grades: 16 row(s) keep their earlier grades, with the grader and case file that produced them, under `metrics_history`; 0 row(s) changed their overall result since their earliest kept grade (2026-09-24T00:48:33+00:00). The grader hash is the sha256 of the grading code, its word lists and patterns, and the schema check it calls, so a loosened check would show here as a new hash.
 

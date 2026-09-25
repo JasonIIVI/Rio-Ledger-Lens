@@ -32,6 +32,7 @@ import os
 import re
 import tempfile
 import time
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -78,7 +79,7 @@ FORBIDDEN_ASSERTIONS = (
 #: Hyphen, non-breaking hyphen, figure dash, en dash, em dash, horizontal bar:
 #: models write the standard's name in all of them.
 CITATIONS = (
-    re.compile(r"\bAU[-\u2010-\u2015]C\s*(?:section\s*|\u00a7\s*)?240\b", re.I),  # JET-05's reference
+    re.compile(r"\bAU[-\u2010-\u2015]C[-\u2010-\u2015\s]*(?:section\s*|\u00a7\s*)?240\b", re.I),
 )
 
 
@@ -173,11 +174,15 @@ class CasesChangedError(ValueError):
 class RegradeError(ValueError):
     """A re-grade was asked for something a re-grade cannot do.
 
-    Start over, run without the case-file hash, or work from a results file
-    that holds two rows for one case. A ValueError so that callers who catch
-    the general class still stop, but the CLI maps only this one to a usage
-    error rather than hiding real bugs behind it.
+    Start over, or run without the case-file hash. A ValueError so that
+    callers who catch the general class still stop, but the CLI maps only
+    this one (and :class:`ResultsError`) to a usage error rather than hiding
+    real bugs behind it.
     """
+
+
+class ResultsError(ValueError):
+    """A results file cannot be trusted: it holds two rows for one case."""
 
 
 def cases_digest(path: str | Path) -> str:
@@ -491,12 +496,12 @@ def _stored_rows(path: Path) -> dict[str, dict]:
     refusing points at the rule that rows are never edited by hand.
     """
     rows = _read_jsonl(path)
-    ids = [r["entry_id"] for r in rows]
-    duplicates = sorted({i for i in ids if ids.count(i) > 1})
+    duplicates = sorted(i for i, n in Counter(r["entry_id"] for r in rows).items() if n > 1)
     if duplicates:
-        raise RegradeError(
+        raise ResultsError(
             f"{path} holds more than one row for {', '.join(duplicates)}; rows are never edited "
-            "by hand, so this file cannot be trusted - re-run into a fresh --runs-dir"
+            "by hand, so this file cannot be trusted. Restore it (git checkout for a committed "
+            "run) or use a fresh --runs-dir."
         )
     return {r["entry_id"]: r for r in rows}
 
@@ -509,6 +514,8 @@ def _write_rows(path: Path, rows) -> None:
             handle.write("".join(json.dumps(r) + "\n" for r in rows))
             handle.flush()
             os.fsync(handle.fileno())
+        # mkstemp creates the file owner-only; the replaced file keeps its own mode.
+        os.chmod(tmp, path.stat().st_mode & 0o7777)
         os.replace(tmp, path)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
@@ -553,7 +560,10 @@ def _regrade(
 
 
 def _missing_row(case: Case, cases_sha256: str | None, errored: bool = False) -> dict:
-    """The row for a case a re-grade found nothing stored for. Never written to disk."""
+    """The row for a case a re-grade found nothing stored for. Never written to disk.
+
+    Same keys as a graded row, so a reader can treat the list uniformly.
+    """
     why = "no stored result row for this case; a re-grade never narrates (run without --regrade)"
     if errored:
         why += " (the narrator failed on it: see errors.jsonl)"
@@ -561,7 +571,7 @@ def _missing_row(case: Case, cases_sha256: str | None, errored: bool = False) ->
         "entry_id": case.entry_id, "archetype": case.archetype, "tests_fired": case.tests_fired,
         "status": "missing", "error": why,
         "model": None, "usage": None, "latency_s": None, "narrative": None, "metrics": None,
-        "prompt": None, "graded_at": None, "cases_sha256": cases_sha256,
+        "prompt": None, "graded_at": None, "cases_sha256": cases_sha256, "grader_sha256": None,
     }
 
 
