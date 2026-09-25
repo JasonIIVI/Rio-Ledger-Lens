@@ -108,21 +108,16 @@ GRADER_NOTES = (
      "the case file as unchanged since commit 1ff36ef (2026-09-23 19:29 UTC), before the run "
      "was graded (19:57 UTC). That is consistent with the bands having been fixed first, "
      "which is as much as a commit history can show."),
-    ("2026-09-24",
-     "The allowlist admitted any bare \"240\" (\"$240\", \"240 days\"), not the citation. "
-     "Now the citation \"AU-C 240\" is removed from the note before its numbers are "
-     "extracted, and every remaining number must come from the entry. Rows also record the "
-     "grader's own sha256 and keep replaced grades under metrics_history, so a grader change "
-     "shows on the rows and not only here. Re-grading the 2026-09-23 run changed no row; the "
-     "score stayed at 94%."),
     ("2026-09-25",
-     "The grader's sha256 on each row now also covers the number and line-name patterns and the "
-     "schema check (narrate.validate) the grader calls, which the first version of the hash left "
-     "out, and the citation is stripped in the forms it is written in (\"AU-C Section 240\", "
-     "\"AU-C \u00a7240\", dash variants), a loosening. Neither changes how the committed notes "
-     "are judged: re-grading the 2026-09-23 run changed no row, and the score stayed at 94%. A "
-     "test now fails if the committed rows were not graded by the grader in the same commit, so "
-     "a grader edit cannot land without its re-grade."),
+     "The allowlist admitted any bare \"240\" (\"$240\", \"240 days\"), not the citation. "
+     "Now the citation \"AU-C 240\", in the forms it is written in (\"AU-C Section 240\", "
+     "\"AU-C \u00a7240\", dash variants), is removed from the note before its numbers are "
+     "extracted, and every remaining number must come from the entry. Rows record the grader's "
+     "own sha256 (the grading code, its patterns and word lists, and the schema check it calls) "
+     "and keep replaced grades under metrics_history, so a grader change shows on the rows and "
+     "not only here; a test fails if the committed rows were not graded by the grader in the "
+     "same commit. One offline re-grade of the 2026-09-23 run from its previous rows changed no "
+     "check on any row; the score stayed at 94%."),
 )
 
 METRICS = (
@@ -404,9 +399,10 @@ def grader_digest() -> str:
 
     Recorded on every row, so a change to how notes are judged is as visible
     as a change to what they are judged against. Whitespace and comments
-    count: any edit to the grader is a change a reader may want to see.
-    Computed on demand, never at import: it reads source files, and the CLI
-    imports this module for every command.
+    count: any edit to the grader is a change a reader may want to see. The
+    case-file side (``Case``, ``load_cases``) is not in it; that is what
+    ``cases_sha256`` is for. Computed on demand, never at import: it reads
+    source files, and the CLI imports this module for every command.
     """
     graders = (grade, numbers_in, strip_citations, narrative_text, _is_specific, validate)
     try:
@@ -587,6 +583,15 @@ def _regrade_run(
     done = _stored_rows(results_path)
     if not done:
         raise FileNotFoundError(f"nothing to re-grade: {results_path} has no rows")
+    # A re-grade covers every stored row, or the file would carry two grader
+    # hashes and the report would quietly drop the rows it did not score.
+    left_out = sorted(set(done) - {c.entry_id for c in cases})
+    if left_out:
+        raise RegradeError(
+            f"{len(left_out)} stored row(s) are not in the case set ({', '.join(left_out)}); a "
+            "re-grade covers every stored row, so run it without --limit, or move rows that no "
+            "longer belong to a case to another --runs-dir"
+        )
     errored = {r["entry_id"] for r in _read_jsonl(results_path.with_name("errors.jsonl"))}
     _regrade(done, cases, cases_sha256, allow_cases_change)
     _write_rows(results_path, done.values())
@@ -716,7 +721,7 @@ def _provenance_lines(summary: dict, runs_dir: str | Path | None) -> list[str]:
                 "",
                 f"{unkept} row(s) were first graded earlier ({provenance.get('first_graded_at')}) "
                 "and that grade was replaced before `metrics_history` existed; only the grader "
-                "notes below record what it was.",
+                "notes below describe it.",
             ]
     crossed = provenance.get("rows_regraded_across_cases") or 0
     if crossed:

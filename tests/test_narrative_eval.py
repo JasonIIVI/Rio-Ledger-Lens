@@ -282,6 +282,25 @@ def test_a_regrade_can_never_reach_the_api(sample, scored, ledger, llm, tmp_path
     assert not list(tmp_path.glob(".results-*"))  # the atomic rewrite leaves nothing behind
 
 
+def test_a_regrade_must_cover_every_stored_row(sample, scored, ledger, llm, tmp_path):
+    """--limit with --regrade, or a removed case, would leave rows un-regraded and unreported."""
+    case, prompt, entry, lines = sample
+    combined, flags = scored
+    others = combined[(combined["risk_score"] > 0) & (combined["entry_id"] != case.entry_id)]
+    second = Case(others.iloc[0]["entry_id"], "y", others.iloc[0]["tests_fired"], "w")
+    client = llm.client([llm.response(oracle(case, entry, lines))] * 2)
+    run_eval([case, second], Narrator(client=client), combined, flags, ledger, tmp_path,
+             cases_sha256="a" * 64)
+    before = (tmp_path / "results.jsonl").read_text()
+
+    quiet = llm.client()
+    with pytest.raises(RegradeError, match="not in the case set"):
+        run_eval([case], Narrator(client=quiet), combined, flags, ledger, tmp_path,
+                 regrade=True, cases_sha256="a" * 64)
+    assert quiet.calls == []
+    assert (tmp_path / "results.jsonl").read_text() == before
+
+
 def test_a_grade_overwritten_before_history_existed_is_disclosed(sample, scored, ledger, llm,
                                                                  tmp_path):
     """The committed 2026-09-23 rows look like this: first graded at 19:57, first kept
@@ -662,6 +681,11 @@ def test_committed_rows_were_graded_by_this_grader_against_this_case_file():
     assert {r["grader_sha256"] for r in rows} == {grader_digest()}
     assert {r["cases_sha256"] for r in rows} == {cases_digest(CASES_PATH)}
     assert all(r["metrics_history"] for r in rows)
+    # And the grades themselves: this checkout's grader, run on the stored
+    # narrative and prompt, must reproduce every committed metric.
+    cases = {c.entry_id: c for c in load_cases(CASES_PATH)}
+    for r in rows:
+        assert grade(r["narrative"], cases[r["entry_id"]], r["prompt"]) == r["metrics"], r["entry_id"]
 
 
 def test_committed_expectations_are_satisfiable_from_the_prompt(scored, ledger):

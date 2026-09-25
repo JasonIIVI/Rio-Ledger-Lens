@@ -2,11 +2,11 @@
 
 Run: 2026-09-23T19:59:19+00:00 · model: `claude-opus-5` · cases: 16 · graded: 16 · invalid: 0 · errors (not scored): 0
 
-Case file sha256: `fd49e46f2dd59a6d14c1bfff17186e3eef93172b39803074c0b5c987bade96bb` · grader sha256: `0273c171c50d0e01f119493f53213ad48f045442633659378d64f3f63bf5fece` · rows: `evals/narratives/runs/2026-09-23-claude-opus-5/results.jsonl` · re-graded 2026-09-25T04:37:36+00:00 offline (no API calls)
+Case file sha256: `fd49e46f2dd59a6d14c1bfff17186e3eef93172b39803074c0b5c987bade96bb` · grader sha256: `0273c171c50d0e01f119493f53213ad48f045442633659378d64f3f63bf5fece` · rows: `evals/narratives/runs/2026-09-23-claude-opus-5/results.jsonl` · re-graded 2026-09-25T04:54:14+00:00 offline (no API calls)
 
 Re-grades: 16 row(s) keep their earlier grades, with the grader and case file that produced them, under `metrics_history`; 0 row(s) changed their overall result since their earliest kept grade (2026-09-24T00:48:33+00:00). The grader hash is the sha256 of the grading code, its word lists and patterns, and the schema check it calls, so a loosened check would show here as a new hash.
 
-16 row(s) were first graded earlier (2026-09-23T19:57:44+00:00) and that grade was replaced before `metrics_history` existed; only the grader notes below record what it was.
+16 row(s) were first graded earlier (2026-09-23T19:57:44+00:00) and that grade was replaced before `metrics_history` existed; only the grader notes below describe it.
 
 **Provenance note:** 16 row(s) were first graded under a different case file - one whose hash was not recorded (the rows predate provenance tracking) - and re-graded under the one above. If the expectations differ between the two files, the re-graded score is not the original run's score; compare the files before reading it as one.
 
@@ -63,8 +63,7 @@ Confidence baseline: the bands accept more than one level on 14 of 16 cases, so 
 
 - **2026-09-23** - The first real run scored 88% on all checks. One of the two misses was the grader's: no_invented_numbers counted the citation "AU-C 240" as an invented number. The fix admitted every number in the system prompt as shown to the model, and the run was re-graded offline to 94%.
 - **2026-09-24** - That fix was too broad. The system prompt's style example quotes $9,912 and account 4000, so a note that copied the example onto an entry with neither would have passed. The union with the prompt was replaced by an explicit citation allowlist (AU-C 240 only). Re-grading the 2026-09-23 run under it changed no row: no note had used either figure, and the score stayed at 94%. Those rows predate the case-file hash; git records the case file as unchanged since commit 1ff36ef (2026-09-23 19:29 UTC), before the run was graded (19:57 UTC). That is consistent with the bands having been fixed first, which is as much as a commit history can show.
-- **2026-09-24** - The allowlist admitted any bare "240" ("$240", "240 days"), not the citation. Now the citation "AU-C 240" is removed from the note before its numbers are extracted, and every remaining number must come from the entry. Rows also record the grader's own sha256 and keep replaced grades under metrics_history, so a grader change shows on the rows and not only here. Re-grading the 2026-09-23 run changed no row; the score stayed at 94%.
-- **2026-09-25** - The grader's sha256 on each row now also covers the number and line-name patterns and the schema check (narrate.validate) the grader calls, which the first version of the hash left out, and the citation is stripped in the forms it is written in ("AU-C Section 240", "AU-C §240", dash variants), a loosening. Neither changes how the committed notes are judged: re-grading the 2026-09-23 run changed no row, and the score stayed at 94%. A test now fails if the committed rows were not graded by the grader in the same commit, so a grader edit cannot land without its re-grade.
+- **2026-09-25** - The allowlist admitted any bare "240" ("$240", "240 days"), not the citation. Now the citation "AU-C 240", in the forms it is written in ("AU-C Section 240", "AU-C §240", dash variants), is removed from the note before its numbers are extracted, and every remaining number must come from the entry. Rows record the grader's own sha256 (the grading code, its patterns and word lists, and the schema check it calls) and keep replaced grades under metrics_history, so a grader change shows on the rows and not only here; a test fails if the committed rows were not graded by the grader in the same commit. One offline re-grade of the 2026-09-23 run from its previous rows changed no check on any row; the score stayed at 94%.
 
 ## Cost
 

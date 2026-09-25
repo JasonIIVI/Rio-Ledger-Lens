@@ -32,8 +32,8 @@ and the MCP SDK, so the two together cover every code path CI will see.
   narratives are versioned and each decision records the note it saw (`narrative_id`);
   append-only is enforced by SQLite triggers; the MCP path opens the review database read-only;
   a data-not-instructions rule in the system prompt; `cases_sha256` on every eval row, with
-  `--regrade` refusing to cross a changed case file; the citation stripped before a note's
-  numbers are counted; grader notes and the "always medium" baseline in the report; run rows committed under
+  `--regrade` refusing to cross a changed case file; an explicit citation allowlist in the
+  grader (replaced by stripping the citation in the second follow-up); grader notes and the "always medium" baseline in the report; run rows committed under
   `evals/narratives/runs/`; `fetch-depth: 0` for reviews.
 - **Second follow-up (PR #5, 2026-09-24)** — the second review's findings: `BEFORE INSERT`
   guards close the `REPLACE INTO` route around the triggers; the dashboard records the note it
@@ -46,7 +46,7 @@ and the MCP SDK, so the two together cover every code path CI will see.
   (`ledger_id`), `PRAGMA user_version` migrations, keep QuickBooks text out of committed eval
   rows (extend the rule-1 check to `evals/narratives/runs/`), an injection eval case, tokens
   outside the repo.
-- 205 tests on 3.9 / 212 on 3.12, ruff clean.
+- 206 tests on 3.9 / 213 on 3.12, ruff clean.
 
 **Verified on the real API (2026-09-23):** 25 narratives cached (89% of input tokens read from
 cache), eval 94% pass-all. The grader has been corrected three times since the first run, each
