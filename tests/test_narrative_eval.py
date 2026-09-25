@@ -1,13 +1,16 @@
 """The narrative eval: selection, grading, running and reporting - no API key needed."""
 
 import hashlib
+import inspect
 import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
-from ledgerlens import jets, narrative_eval
+from ledgerlens import jets, narrate, narrative_eval
 from ledgerlens.model import combine, score_ledger
 from ledgerlens.narrate import (
     SYSTEM_PROMPT,
@@ -19,7 +22,6 @@ from ledgerlens.narrate import (
 from ledgerlens.narrative_eval import (
     CITATIONS,
     GRADER_NOTES,
-    GRADER_SHA256,
     METRICS,
     UNRECORDED,
     Case,
@@ -45,6 +47,9 @@ from ledgerlens.narrative_eval import (
 #: payment", "Sales Revenue (4000)"). They are not citations and are not set
 #: aside by the grader.
 STYLE_EXAMPLE_NUMBERS = {"9912", "4000"}
+
+#: The grader as it is in this checkout; every row a test grades carries it.
+GRADER = grader_digest()
 
 
 @pytest.fixture(scope="module")
@@ -344,11 +349,45 @@ def test_a_results_file_with_two_rows_for_one_case_is_refused_not_merged(sample,
     assert results.read_text() == damaged  # refused, not repaired
 
 
-def test_grader_digest_tracks_the_grading_code_and_its_word_lists(monkeypatch):
-    assert re.fullmatch(r"[0-9a-f]{64}", GRADER_SHA256)
-    assert grader_digest() == GRADER_SHA256
-    monkeypatch.setattr(narrative_eval, "FORBIDDEN_ASSERTIONS", ())  # a loosened check
-    assert grader_digest() != GRADER_SHA256
+def test_grader_digest_tracks_the_code_its_patterns_and_the_schema_check(monkeypatch):
+    assert re.fullmatch(r"[0-9a-f]{64}", GRADER)
+    assert grader_digest() == GRADER
+    loosenings = (
+        (narrative_eval, "FORBIDDEN_ASSERTIONS", ()),
+        (narrative_eval, "_NUMBER", re.compile(r"\d{4,}")),
+        (narrative_eval, "_LINE_NAME", re.compile(r"^$")),
+        (narrate, "VALID_CONFIDENCE", ("high",)),
+        (narrate, "REQUIRED_KEYS", ("summary",)),
+    )
+    for module, name, value in loosenings:
+        with monkeypatch.context() as patched:
+            patched.setattr(module, name, value)
+            assert grader_digest() != GRADER, name
+    assert grader_digest() == GRADER
+
+
+def test_the_grader_hash_is_never_computed_at_import(monkeypatch):
+    """cli.py imports narrative_eval for every command; a source-less install must still run."""
+    code = (
+        "import inspect\n"
+        "def no_source(obj):\n"
+        "    raise OSError('no source')\n"
+        "inspect.getsource = no_source\n"
+        "import ledgerlens.cli\n"
+        "from ledgerlens import narrative_eval\n"
+        "try:\n"
+        "    narrative_eval.grader_digest()\n"
+        "except RuntimeError as exc:\n"
+        "    print('RuntimeError:', exc)\n"
+    )
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    assert "RuntimeError: the grader's source is not available" in out.stdout
+
+    def no_source(obj):
+        raise OSError("no source")
+    monkeypatch.setattr(inspect, "getsource", no_source)
+    with pytest.raises(RuntimeError, match="source checkout"):
+        grader_digest()
 
 
 def test_cases_digest_is_the_sha256_of_the_file_bytes(tmp_path):
@@ -368,7 +407,7 @@ def test_rows_carry_the_case_file_hash_and_a_regrade_will_not_cross_a_change_qui
     rows = run_eval([case], Narrator(client=first), combined, flags, ledger, tmp_path,
                     cases_sha256=same)
     assert rows[0]["cases_sha256"] == same
-    assert rows[0]["grader_sha256"] == GRADER_SHA256
+    assert rows[0]["grader_sha256"] == GRADER
     assert json.loads(results.read_text().splitlines()[0])["cases_sha256"] == same
 
     # A grader fix under the same file re-grades freely and leaves no case-file
@@ -380,13 +419,13 @@ def test_rows_carry_the_case_file_hash_and_a_regrade_will_not_cross_a_change_qui
     assert rows[0]["regraded_at"]
     assert "previous_cases_sha256" not in rows[0]
     assert rows[0]["metrics_history"] == [{
-        "metrics": rows[0]["metrics"], "grader_sha256": GRADER_SHA256,
+        "metrics": rows[0]["metrics"], "grader_sha256": GRADER,
         "cases_sha256": same, "graded_at": rows[0]["graded_at"],
     }]
     provenance = aggregate(rows)["provenance"]
     assert provenance["rows_regraded_across_cases"] == 0
     assert (provenance["rows_regraded"], provenance["rows_with_changed_result"]) == (1, 0)
-    assert provenance["grader_sha256"] == [GRADER_SHA256]
+    assert provenance["grader_sha256"] == [GRADER]
 
     # Edited expectations: refused outright, nothing rewritten, still no API call.
     stricter = Case(**{**case.__dict__, "expected_confidence": ["high"]})  # oracle says medium
@@ -410,7 +449,7 @@ def test_rows_carry_the_case_file_hash_and_a_regrade_will_not_cross_a_change_qui
     assert summary["provenance"]["previous_cases_sha256"] == [same]
     assert summary["provenance"]["rows_with_changed_result"] == 1  # passed went True -> False
     report = render_markdown(rows, summary, runs_dir=tmp_path)
-    assert edited in report and same in report and GRADER_SHA256 in report
+    assert edited in report and same in report and GRADER in report
     assert "Provenance note" in report and "results.jsonl" in report
     assert ("1 row(s) changed their overall result since their earliest kept grade "
             f"({rows[0]['graded_at']})") in report

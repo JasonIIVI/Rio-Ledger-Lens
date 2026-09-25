@@ -38,6 +38,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from . import narrate
 from .narrate import (
     NarrativeError,
     Narrator,
@@ -385,19 +386,29 @@ def confidence_baselines(cases: list[Case]) -> dict[str, tuple[int, int]]:
 
 
 def grader_digest() -> str:
-    """sha256 of the grader itself: the grading code and the word lists it reads.
+    """sha256 of the grader itself: the grading code, the word lists and patterns
+    it reads, and the schema check it calls.
 
     Recorded on every row, so a change to how notes are judged is as visible
     as a change to what they are judged against. Whitespace and comments
     count: any edit to the grader is a change a reader may want to see.
+    Computed on demand, never at import: it reads source files, and the CLI
+    imports this module for every command.
     """
-    parts = [inspect.getsource(f)
-             for f in (grade, numbers_in, strip_citations, narrative_text, _is_specific)]
-    parts += [repr(FORBIDDEN_ASSERTIONS), repr([p.pattern for p in CITATIONS]), repr(METRICS)]
+    graders = (grade, numbers_in, strip_citations, narrative_text, _is_specific, validate)
+    try:
+        parts = [inspect.getsource(f) for f in graders]
+    except OSError as exc:
+        raise RuntimeError(
+            "the grader's source is not available, so its sha256 cannot be recorded; run the "
+            "eval from a source checkout"
+        ) from exc
+    parts += [
+        repr(FORBIDDEN_ASSERTIONS), repr([p.pattern for p in CITATIONS]), repr(METRICS),
+        _NUMBER.pattern, _LINE_NAME.pattern,
+        repr(narrate.REQUIRED_KEYS), repr(narrate.VALID_CONFIDENCE),
+    ]
     return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
-
-
-GRADER_SHA256 = grader_digest()
 
 
 def failed_checks(row: dict) -> list[str]:
@@ -514,6 +525,7 @@ def _regrade(
             "report will say so."
         )
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    grader = grader_digest()
     for row in rows:
         # The grades being replaced are kept, with what produced them, so a
         # grader change shows on the row itself and not only in a note.
@@ -524,7 +536,7 @@ def _regrade(
             "graded_at": row.get("regraded_at") or row.get("graded_at"),
         })
         row["metrics"] = grade(row["narrative"], by_id[row["entry_id"]], row["prompt"])
-        row["grader_sha256"] = GRADER_SHA256
+        row["grader_sha256"] = grader
         row["regraded_at"] = now
         if row["entry_id"] in crossed:
             # Keep the earliest known origin: a second crossing must not erase the first.
@@ -610,8 +622,10 @@ def run_eval(
                     "--runs-dir (stored rows are never deleted)"
                 )
     done = _stored_rows(results_path) if resume else {}
+    grader = None
     if any(c.entry_id not in done for c in cases):
         _ = narrator.client  # a missing key fails here, once, not once per case as "invalid"
+        grader = grader_digest()
 
     rows: list[dict] = []
     for case in cases:
@@ -643,7 +657,7 @@ def run_eval(
             "prompt": prompt,
             "graded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "cases_sha256": cases_sha256,
-            "grader_sha256": GRADER_SHA256,
+            "grader_sha256": grader,
         }
         target = errors_path if status == "error" else results_path
         with target.open("a", encoding="utf-8") as handle:
