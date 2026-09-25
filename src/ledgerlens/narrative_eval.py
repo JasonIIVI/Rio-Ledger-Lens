@@ -28,7 +28,9 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import os
 import re
+import tempfile
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -153,6 +155,16 @@ def default_runs_dir(model: str, regrade: bool = False, root: str | Path = RUNS_
 
 class CasesChangedError(ValueError):
     """A re-grade met rows graded under a different case file than the one given."""
+
+
+class RegradeError(ValueError):
+    """A re-grade was asked for something a re-grade cannot do.
+
+    Start over, run without the case-file hash, or work from a results file
+    that holds two rows for one case. A ValueError so that callers who catch
+    the general class still stop, but the CLI maps only this one to a usage
+    error rather than hiding real bugs behind it.
+    """
 
 
 def cases_digest(path: str | Path) -> str:
@@ -439,6 +451,38 @@ def _read_jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
 
 
+def _stored_rows(path: Path) -> dict[str, dict]:
+    """The rows in a results file, keyed by entry id.
+
+    Rows are appended once per case, so two rows for one entry can only come
+    from a hand edit or a damaged file. Merging them would pick one silently;
+    refusing points at the rule that rows are never edited by hand.
+    """
+    rows = _read_jsonl(path)
+    ids = [r["entry_id"] for r in rows]
+    duplicates = sorted({i for i in ids if ids.count(i) > 1})
+    if duplicates:
+        raise RegradeError(
+            f"{path} holds more than one row for {', '.join(duplicates)}; rows are never edited "
+            "by hand, so this file cannot be trusted - re-run into a fresh --runs-dir"
+        )
+    return {r["entry_id"]: r for r in rows}
+
+
+def _write_rows(path: Path, rows) -> None:
+    """Replace a results file in one step, so a crash mid-write leaves the old file whole."""
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".results-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write("".join(json.dumps(r) + "\n" for r in rows))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
 def _regrade(
     done: dict[str, dict], cases: list[Case], cases_sha256: str | None, allow_cases_change: bool,
 ) -> None:
@@ -475,12 +519,14 @@ def _regrade(
             row["cases_sha256"] = cases_sha256
 
 
-def _missing_row(case: Case, cases_sha256: str | None) -> dict:
+def _missing_row(case: Case, cases_sha256: str | None, errored: bool = False) -> dict:
     """The row for a case a re-grade found nothing stored for. Never written to disk."""
+    why = "no stored result row for this case; a re-grade never narrates (run without --regrade)"
+    if errored:
+        why += " (the narrator failed on it: see errors.jsonl)"
     return {
         "entry_id": case.entry_id, "archetype": case.archetype, "tests_fired": case.tests_fired,
-        "status": "missing",
-        "error": "no stored row for this case; a re-grade never narrates (run without --regrade)",
+        "status": "missing", "error": why,
         "model": None, "usage": None, "latency_s": None, "narrative": None, "metrics": None,
         "prompt": None, "graded_at": None, "cases_sha256": cases_sha256,
     }
@@ -492,17 +538,17 @@ def _regrade_run(
 ) -> list[dict]:
     """Re-score stored rows and nothing else: no narrator is in reach here."""
     if not resume:
-        raise ValueError("a re-grade re-scores stored rows; it cannot start over (--no-resume)")
+        raise RegradeError("a re-grade re-scores stored rows; it cannot start over (--no-resume)")
     if cases_sha256 is None:
-        raise ValueError("a re-grade needs cases_sha256, so the rows can say what graded them")
-    done = {r["entry_id"]: r for r in _read_jsonl(results_path)}
+        raise RegradeError("a re-grade needs cases_sha256, so the rows can say what graded them")
+    done = _stored_rows(results_path)
     if not done:
         raise FileNotFoundError(f"nothing to re-grade: {results_path} has no rows")
+    errored = {r["entry_id"] for r in _read_jsonl(results_path.with_name("errors.jsonl"))}
     _regrade(done, cases, cases_sha256, allow_cases_change)
-    results_path.write_text(
-        "".join(json.dumps(r) + "\n" for r in done.values()), encoding="utf-8"
-    )
-    return [done[c.entry_id] if c.entry_id in done else _missing_row(c, cases_sha256)
+    _write_rows(results_path, done.values())
+    return [done[c.entry_id] if c.entry_id in done
+            else _missing_row(c, cases_sha256, errored=c.entry_id in errored)
             for c in cases]
 
 
@@ -550,7 +596,7 @@ def run_eval(
                     f"{path} already holds rows; a run that does not resume needs a fresh "
                     "--runs-dir (stored rows are never deleted)"
                 )
-    done = {r["entry_id"]: r for r in _read_jsonl(results_path)} if resume else {}
+    done = _stored_rows(results_path) if resume else {}
     if any(c.entry_id not in done for c in cases):
         _ = narrator.client  # a missing key fails here, once, not once per case as "invalid"
 

@@ -24,6 +24,7 @@ from ledgerlens.narrative_eval import (
     UNRECORDED,
     Case,
     CasesChangedError,
+    RegradeError,
     aggregate,
     cases_digest,
     check_cases,
@@ -258,12 +259,53 @@ def test_a_regrade_can_never_reach_the_api(sample, scored, ledger, llm, tmp_path
     assert f"| {added.entry_id} |" in report and "missing:" in report
     assert "1/1" in report  # the baseline counts graded cases only
 
-    with pytest.raises(ValueError, match="no-resume"):
+    with pytest.raises(RegradeError, match="no-resume"):
         run_eval([case], Narrator(client=quiet), combined, flags, ledger, tmp_path,
                  regrade=True, resume=False, cases_sha256=same)
-    with pytest.raises(ValueError, match="cases_sha256"):
+    with pytest.raises(RegradeError, match="cases_sha256"):
         run_eval([case], Narrator(client=quiet), combined, flags, ledger, tmp_path, regrade=True)
     assert quiet.calls == []
+    assert not list(tmp_path.glob(".results-*"))  # the atomic rewrite leaves nothing behind
+
+
+def test_a_case_that_only_errored_is_reported_as_such_by_a_regrade(sample, scored, ledger, llm,
+                                                                    tmp_path):
+    case, prompt, entry, lines = sample
+    combined, flags = scored
+    others = combined[(combined["risk_score"] > 0) & (combined["entry_id"] != case.entry_id)]
+    broken = Case(others.iloc[0]["entry_id"], "y", others.iloc[0]["tests_fired"], "w")
+    client = llm.client([llm.response(oracle(case, entry, lines)), RuntimeError("socket closed")])
+    run_eval([case, broken], Narrator(client=client), combined, flags, ledger, tmp_path,
+             cases_sha256="a" * 64)
+
+    quiet = llm.client()
+    rows = run_eval([case, broken], Narrator(client=quiet), combined, flags, ledger, tmp_path,
+                    regrade=True, cases_sha256="a" * 64)
+    assert quiet.calls == []
+    assert rows[1]["status"] == "missing"
+    assert "errors.jsonl" in rows[1]["error"]
+    assert "errors.jsonl" in render_markdown(rows, aggregate(rows))
+
+
+def test_a_results_file_with_two_rows_for_one_case_is_refused_not_merged(sample, scored, ledger,
+                                                                        llm, tmp_path):
+    case, prompt, entry, lines = sample
+    combined, flags = scored
+    results = tmp_path / "results.jsonl"
+    run_eval([case], Narrator(client=llm.client([llm.response(oracle(case, entry, lines))])),
+             combined, flags, ledger, tmp_path, cases_sha256="a" * 64)
+    damaged = results.read_text() * 2  # what a hand edit or a bad merge could leave
+    results.write_text(damaged)
+
+    quiet = llm.client()
+    with pytest.raises(RegradeError, match="more than one row"):
+        run_eval([case], Narrator(client=quiet), combined, flags, ledger, tmp_path,
+                 regrade=True, cases_sha256="a" * 64)
+    with pytest.raises(RegradeError, match="more than one row"):
+        run_eval([case], Narrator(client=quiet), combined, flags, ledger, tmp_path,
+                 cases_sha256="a" * 64)  # a resumed run trusts the same file
+    assert quiet.calls == []
+    assert results.read_text() == damaged  # refused, not repaired
 
 
 def test_grader_digest_tracks_the_grading_code_and_its_word_lists(monkeypatch):

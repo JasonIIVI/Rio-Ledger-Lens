@@ -216,6 +216,13 @@ def test_eval_narratives_defaults_to_a_dated_runs_dir_and_regrades_the_newest(
     assert len(client.calls) == 2
     assert "re-graded" in report.read_text()
 
+    # Only the expected refusals become exit 2; anything else is a bug and surfaces.
+    def boom(*args, **kwargs):
+        raise ValueError("boom")
+    monkeypatch.setattr(cli.narrative_eval, "run_eval", boom)
+    with pytest.raises(ValueError, match="boom"):
+        main(argv + ["--regrade"])
+
 
 def test_eval_narratives_grades_the_cases_and_writes_the_report(tmp_path, capsys, monkeypatch,
                                                                  llm):

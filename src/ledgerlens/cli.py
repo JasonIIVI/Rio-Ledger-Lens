@@ -276,7 +276,7 @@ def cmd_eval_narratives(args: argparse.Namespace) -> int:
     except narrative_eval.CasesChangedError as exc:
         print(f"refused: {exc}")
         return 2
-    except (FileNotFoundError, FileExistsError, ValueError) as exc:
+    except (FileNotFoundError, FileExistsError, narrative_eval.RegradeError) as exc:
         print(f"error: {exc}")
         return 2
     except NarrativeError as exc:
