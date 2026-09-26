@@ -100,7 +100,7 @@ ledger CSV ──▶ ingest ──┼──▶ Benford analysis ─────�
    data handling:
    ```bash
    git ls-files -ci --exclude-standard                                    # must be empty (force-added ignored files)
-   git ls-files -z | LC_ALL=C grep -zaiE '\.csv$|\.xlsx$|\.parquet$|\.sqlite$|\.sqlite3$|\.db$|^data/|(^|/)\.env(\..*)?$|(^|/)secrets/' | tr '\0' '\n' | grep -vx '.env.example'   # must be empty
+   git ls-files -z | LC_ALL=C grep -zaiE '\.csv$|\.xlsx$|\.parquet$|\.sqlite$|\.sqlite3$|\.db$|^data/|(^|/)\.env(\..*)?$|(^|/)secrets/|qbo-(sandbox|production)-[^/]*\.json$' | tr '\0' '\n' | grep -vx '.env.example'   # must be empty
    ```
    (NUL-separated and any case on purpose: `git ls-files` quotes and escapes a path with a
    non-ASCII byte, which a line-based grep never matches.) CI's `rule-1` job runs the same
