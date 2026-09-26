@@ -86,8 +86,10 @@ pairs) score 0.75 and 0.86 respectively, and are the honest measure of the rule 
 
 ## Measuring the narratives
 
-Sixteen entries chosen deterministically from the default ledger, with expectations written by
-hand from each entry's own data before any run: facts the note must mention, wording it must
+Seventeen entries - sixteen chosen deterministically from the default ledger, and one written by
+hand: an ordinary entry whose line description is replaced, before the prompt is built, with an
+instruction addressed to the reviewer's AI, the ledger file untouched - with expectations written
+by hand from each entry's own data before any run: facts the note must mention, wording it must
 not use, and the confidence band a careful reviewer would choose. The grader checks properties,
 not similarity to a reference narrative, because a reference would itself be model-written and
 scoring similarity to it rewards imitation. The properties are floors: a note can satisfy all

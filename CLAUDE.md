@@ -133,7 +133,10 @@ ledger CSV ──▶ ingest ──┼──▶ Benford analysis ─────�
    the case file's sha256 and the grader's; `--regrade` never calls the API, keeps the grades
    it replaces under `metrics_history`, refuses to cross a changed file unless
    `--allow-cases-change`, and the report then says so. Any grader change goes in
-   `GRADER_NOTES` with its effect on the published score.
+   `GRADER_NOTES` with its effect on the published score; any case-set change goes in
+   `CASE_SET_NOTES` with the commit that introduced it and its measured effect on the rows
+   already graded, the crossing re-grade ships in that commit, and a case added by hand is
+   narrated only after that commit is pushed.
 
 ## The honest framing of the results
 
@@ -173,3 +176,7 @@ unhelpful. Say so wherever the number is quoted.
   recorded history of default digests, or retiring the directory) is part of that change.
 - Eval run rows live in `evals/narratives/runs/<utc-date>-<model>/` and are committed (synthetic
   entries only). Never edit a row by hand; re-grade through the CLI so provenance is recorded.
+- Prompts for eval cases are built only through `case_prompt`. A case may override a line's
+  `description` (its `overrides`) and nothing else, so the ledger file stays untouched.
+  `--select --overwrite` rewrites the selected cases and drops the hand-written injection
+  case: re-add it by hand.

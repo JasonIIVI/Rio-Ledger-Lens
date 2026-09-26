@@ -751,15 +751,24 @@ def test_committed_rows_were_graded_by_this_grader_against_this_case_file():
     this checkout, the published numbers no longer describe this code.
     """
     rows = [json.loads(line) for line in RUNS_PATH.read_text().splitlines() if line]
-    assert len(rows) == 16
+    cases = load_cases(CASES_PATH)
+    assert len(rows) == len(cases) == 17
+    assert [r["entry_id"] for r in rows] == [c.entry_id for c in cases]
     assert {r["grader_sha256"] for r in rows} == {grader_digest()}
     assert {r["cases_sha256"] for r in rows} == {cases_digest(CASES_PATH)}
-    assert all(r["metrics_history"] for r in rows)
-    # And the grades themselves: this checkout's grader, run on the stored
-    # narrative and prompt, must reproduce every committed metric.
-    cases = {c.entry_id: c for c in load_cases(CASES_PATH)}
-    for r in rows:
-        assert grade(r["narrative"], cases[r["entry_id"]], r["prompt"]) == r["metrics"], r["entry_id"]
+    assert {r["ledger_sha256"] for r in rows} == {DEFAULT_LEDGER_SHA256}
+    # The sixteen selected cases were graded before this grader and this case file
+    # existed and keep those grades; the hand-written case was narrated exactly once,
+    # under both, with its override on the row.
+    for r, case in zip(rows, cases):
+        hand_written = case.archetype == "injection"
+        assert bool(r.get("metrics_history")) != hand_written, r["entry_id"]
+        assert (r.get("overrides") or {}) == case.overrides, r["entry_id"]
+        if hand_written:
+            assert case.overrides and r["usage"]["requests"] == 1
+        # And the grades themselves: this checkout's grader, run on the stored
+        # narrative and prompt, must reproduce every committed metric.
+        assert grade(r["narrative"], case, r["prompt"]) == r["metrics"], r["entry_id"]
 
 
 RUNS_ROOT_PATH = REPO / narrative_eval.RUNS_ROOT
@@ -778,9 +787,7 @@ def test_every_committed_run_was_built_from_the_default_ledger(scored, ledger):
         assert len(rel.parts) == 2 and rel.name in ("results.jsonl", "errors.jsonl"), rel
         for line in path.read_text().splitlines():
             row = json.loads(line)
-            # None: rows from before the field existed; their next re-grade records it
-            # after rebuilding the prompt exactly as this test does.
-            assert row.get("ledger_sha256") in (None, DEFAULT_LEDGER_SHA256), (rel, row["entry_id"])
+            assert row.get("ledger_sha256") == DEFAULT_LEDGER_SHA256, (rel, row["entry_id"])
             case = by_id.get(row["entry_id"]) or Case(
                 row["entry_id"], row["archetype"], row["tests_fired"], "not in the case file")
             assert (row.get("overrides") or {}) == case.overrides, (rel, row["entry_id"])
@@ -995,6 +1002,7 @@ def test_the_report_dates_a_run_by_its_first_and_last_row_and_discloses_override
     combined, flags = scored
     rows = run_eval([case], Narrator(client=llm.client([llm.response(oracle(case, entry, lines))])),
                     combined, flags, ledger, tmp_path, cases_sha256="a" * 64)
+    monkeypatch.setattr(narrative_eval, "CASE_SET_NOTES", ())  # a set that never changed
     single = render_markdown(rows, aggregate(rows))
     assert f"Run: {rows[0]['graded_at']} ·" in single and " to " not in single.splitlines()[2]
     assert "Case set notes" not in single and "line-description override" not in single
