@@ -121,6 +121,12 @@ GRADER_NOTES = (
      "check on any row; the score stayed at 94%."),
 )
 
+#: Changes to what is judged, as opposed to the judge: a case added or
+#: rewritten, with the commit that introduced it and the measured effect on
+#: the rows already graded. Rendered under "Case set notes"; empty until the
+#: case set changes.
+CASE_SET_NOTES: tuple[tuple[str, str], ...] = ()
+
 METRICS = (
     "schema_valid",
     "mentions_required",
@@ -270,6 +276,40 @@ class Case:
     must_not_assert: list[str] = field(default_factory=list)
     expected_confidence: list[str] = field(default_factory=lambda: ["high", "medium", "low"])
     notes: str = ""
+    #: Text substituted into the entry before the prompt is built, on a copy,
+    #: so a case can put words in a line's description (a prompt-injection
+    #: attempt, say) without the ledger changing: {"lines": {"1": {"description": "..."}}}.
+    overrides: dict = field(default_factory=dict)
+
+
+#: The one prompt field a case may replace. Every other field the prompt shows
+#: is repeated by some flag's reason (account names by JET-05/09/11, the user
+#: by JET-02/03/04/12), so replacing it would make the prompt contradict itself.
+OVERRIDABLE_FIELDS = ("description",)
+
+
+def _validate_overrides(case: Case) -> None:
+    """Refuse an override that is not one line of description text on a numbered line."""
+    if not case.overrides:
+        return
+    lines = case.overrides.get("lines") if isinstance(case.overrides, dict) else None
+    if set(case.overrides) != {"lines"} or not isinstance(lines, dict) or not lines:
+        raise ValueError(
+            f'{case.entry_id}: overrides must be {{"lines": {{"<line_no>": {{"description": ...}}}}}}'
+        )
+    for line_no, fields in lines.items():
+        if not str(line_no).isdigit() or not isinstance(fields, dict) or not fields:
+            raise ValueError(
+                f"{case.entry_id}: override line numbers are digits, and each names a field"
+            )
+        for name, text in fields.items():
+            if name not in OVERRIDABLE_FIELDS:
+                raise ValueError(
+                    f"{case.entry_id}: only {', '.join(OVERRIDABLE_FIELDS)} can be overridden, "
+                    f"not {name}"
+                )
+            if not isinstance(text, str) or not text.strip() or "\n" in text or "\r" in text:
+                raise ValueError(f"{case.entry_id}: an override is one non-empty line of text")
 
 
 def load_cases(path: str | Path) -> list[Case]:
@@ -281,7 +321,32 @@ def load_cases(path: str | Path) -> list[Case]:
     for case in cases:
         for pattern in case.must_mention + case.must_not_assert:
             re.compile(pattern)
+        _validate_overrides(case)
     return cases
+
+
+def apply_overrides(case: Case, entry_lines: pd.DataFrame) -> pd.DataFrame:
+    """The entry's lines with the case's overrides applied, on a copy; the ledger is untouched."""
+    if not case.overrides:
+        return entry_lines
+    out = entry_lines.copy()
+    for line_no, fields in case.overrides["lines"].items():
+        mask = out["line_no"] == int(line_no)
+        if not mask.any():
+            raise ValueError(f"{case.entry_id}: no line {line_no} to override")
+        for name, text in fields.items():
+            out.loc[mask, name] = text
+    return out
+
+
+def case_prompt(case: Case, scored: pd.DataFrame, flags: pd.DataFrame, lines: pd.DataFrame) -> str:
+    """The prompt the narrator sees for a case: the entry as the ledger has it, overrides applied.
+
+    The one prompt builder for cases, used by the runner and by the tests that
+    rebuild committed prompts, so the two can never drift.
+    """
+    entry, entry_flags, entry_lines = entry_context(scored, flags, lines, case.entry_id)
+    return build_prompt(entry, entry_flags, apply_overrides(case, entry_lines))
 
 
 def save_cases(
@@ -509,6 +574,13 @@ def aggregate(rows: list[dict]) -> dict:
         if r.get("usage"):
             usage.add(_UsageView(r["usage"]))
     crossed = [r for r in rows if r.get("previous_cases_sha256")]
+    # Every case file a crossed row was graded under before its current one,
+    # earliest first: the recorded origin, then whatever its kept grades name.
+    lineage: list[str] = []
+    for r in crossed:
+        for h in _earlier_case_files(r):
+            if h not in lineage:
+                lineage.append(h)
     regraded = [r for r in graded if r.get("metrics_history")]
     changed = [r for r in regraded
                if (r["metrics_history"][0]["metrics"] or {}).get("passed") != r["metrics"]["passed"]]
@@ -537,9 +609,21 @@ def aggregate(rows: list[dict]) -> dict:
             "rows_with_unkept_grades": len(unkept),
             "first_graded_at": min((r.get("graded_at") or "" for r in unkept), default="") or None,
             "rows_regraded_across_cases": len(crossed),
-            "previous_cases_sha256": sorted({r["previous_cases_sha256"] for r in crossed}),
+            "previous_cases_sha256": lineage,
         },
     }
+
+
+def _earlier_case_files(row: dict) -> list[str]:
+    """The case files one crossed row was graded under before its current one, earliest first."""
+    current = row.get("cases_sha256") or UNRECORDED
+    earlier: list[str] = []
+    for h in [row.get("previous_cases_sha256"),
+              *(m.get("cases_sha256") for m in row.get("metrics_history") or [])]:
+        h = h or UNRECORDED
+        if h != current and h not in earlier:
+            earlier.append(h)
+    return earlier
 
 
 class _UsageView:
@@ -633,7 +717,7 @@ def _regrade(
 #: row carries the same keys, so a reader can treat the list uniformly.
 _ROW_KEYS = (
     "entry_id", "archetype", "tests_fired", "status", "error", "model", "usage", "latency_s",
-    "narrative", "metrics", "prompt", "graded_at", "cases_sha256", "grader_sha256",
+    "narrative", "metrics", "prompt", "overrides", "graded_at", "cases_sha256", "grader_sha256",
     "ledger_sha256",
 )
 
@@ -675,13 +759,13 @@ def _require_rows_from_this_ledger(
                 "--runs-dir"
             )
         try:
-            entry, entry_flags, entry_lines = entry_context(scored, flags, lines, entry_id)
+            rebuilt = case_prompt(by_id[entry_id], scored, flags, lines)
         except KeyError:
             raise LedgerChangedError(
                 f"row {entry_id} is not an entry in this ledger; use the ledger the rows were "
                 "built from, or a fresh --runs-dir"
             ) from None
-        if build_prompt(entry, entry_flags, entry_lines) != row.get("prompt"):
+        if rebuilt != row.get("prompt"):
             raise LedgerChangedError(
                 f"the stored prompt for {entry_id} does not rebuild from this ledger, so the row "
                 "was built from a different ledger or generator; use the ledger it came from, "
@@ -788,8 +872,7 @@ def run_eval(
         if case.entry_id in done:
             rows.append(done[case.entry_id])
             continue
-        entry, entry_flags, entry_lines = entry_context(scored, flags, lines, case.entry_id)
-        prompt = build_prompt(entry, entry_flags, entry_lines)
+        prompt = case_prompt(case, scored, flags, lines)
         narrator.usage = Usage()
         started = time.perf_counter()
         narrative, status, error = None, "ok", None
@@ -811,6 +894,7 @@ def run_eval(
             "narrative": narrative,
             "metrics": grade(narrative, case, prompt) if status != "error" else None,
             "prompt": prompt,
+            "overrides": case.overrides,  # so a reader knows when the prompt is not pure ledger text
             "graded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "cases_sha256": cases_sha256,
             "grader_sha256": grader,
@@ -860,15 +944,15 @@ def _provenance_lines(summary: dict, runs_dir: str | Path | None) -> list[str]:
     crossed = provenance.get("rows_regraded_across_cases") or 0
     if crossed:
         previous = provenance.get("previous_cases_sha256") or []
-        origins = " / ".join(
+        origins = ", then ".join(
             "one whose hash was not recorded (the rows predate provenance tracking)"
             if h == UNRECORDED else f"`{h}`" for h in previous
         )
         lines += [
             "",
-            f"**Provenance note:** {crossed} row(s) were first graded under a different case "
-            f"file - {origins} - and re-graded under the one above. If the expectations differ "
-            "between the two files, the re-graded score is not the original run's score; "
+            f"**Provenance note:** {crossed} row(s) were graded under a different case file "
+            f"before the one above - {origins} - and re-graded under it. If the expectations "
+            "differ between those files, the re-graded score is not the original run's score; "
             "compare the files before reading it as one.",
         ]
     return lines
@@ -911,7 +995,11 @@ def render_markdown(
     """The report that goes in docs/: what was measured, the numbers, every miss,
     the grader's own history, and the baseline the confidence check should be read against."""
     model = next((r["model"] for r in rows if r.get("model")), "unknown")
-    when = max((r["graded_at"] for r in rows if r.get("graded_at")), default="")
+    stamps = sorted(r["graded_at"] for r in rows if r.get("graded_at"))
+    # A resumed run narrates later than the first rows: say so rather than date it all by the last.
+    when = stamps[0] if stamps else ""
+    if stamps and stamps[-1] != stamps[0]:
+        when = f"{stamps[0]} to {stamps[-1]}"
     usage = summary["usage"]
     missing = summary.get("missing") or 0
     lines = [
@@ -936,9 +1024,17 @@ def render_markdown(
         "narratives themselves are kept in the results file for reading. Expectations were written "
         "by hand from the entry's own data, never from a model's output.",
         "",
-        "| Check | Pass rate |",
-        "|---|---:|",
     ]
+    overridden = [r["entry_id"] for r in rows if r.get("overrides")]
+    if overridden:
+        lines += [
+            f"{len(overridden)} case(s) carry a line-description override ({', '.join(overridden)}): "
+            "the text the narrator saw on that line is the case's, not the ledger's, so a "
+            "prompt-injection attempt is tested without touching the ledger; the override is "
+            "recorded on the row.",
+            "",
+        ]
+    lines += ["| Check | Pass rate |", "|---|---:|"]
     labels = {
         "schema_valid": "Contract holds (five keys, non-empty, valid confidence)",
         "mentions_required": "Mentions the required facts (amount, accounts, tests)",
@@ -979,6 +1075,9 @@ def render_markdown(
             lines.append("")
     lines += ["", "## Grader notes", ""]
     lines += [f"- **{date}** - {note}" for date, note in GRADER_NOTES]
+    if CASE_SET_NOTES:
+        lines += ["", "## Case set notes", ""]
+        lines += [f"- **{date}** - {note}" for date, note in CASE_SET_NOTES]
     lines += [
         "",
         "## Cost",
