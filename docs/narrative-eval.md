@@ -1,14 +1,14 @@
 # Narrative eval
 
-Run: 2026-09-23T19:59:19+00:00 · model: `claude-opus-5` · cases: 16 · graded: 16 · invalid: 0 · errors (not scored): 0
+Run: 2026-09-23T19:57:44+00:00 to 2026-09-23T19:59:19+00:00 · model: `claude-opus-5` · cases: 17 · graded: 16 · invalid: 0 · errors (not scored): 0 · missing (no stored row, not narrated): 1
 
-Case file sha256: `fd49e46f2dd59a6d14c1bfff17186e3eef93172b39803074c0b5c987bade96bb` · grader sha256: `0273c171c50d0e01f119493f53213ad48f045442633659378d64f3f63bf5fece` · rows: `evals/narratives/runs/2026-09-23-claude-opus-5/results.jsonl` · re-graded 2026-09-25T04:54:14+00:00 offline (no API calls)
+Case file sha256: `93004967fe0b7163a03a859c6dc3ea904588c90c5b9f804ac80486b5dc854c5c` · grader sha256: `0273c171c50d0e01f119493f53213ad48f045442633659378d64f3f63bf5fece` · ledger sha256: `646e73bb3942329e452bd2414bb5aa82f8a87f7971e27ddbed2c95d930e6bf5b` · rows: `evals/narratives/runs/2026-09-23-claude-opus-5/results.jsonl` · re-graded 2026-09-26T03:20:17+00:00 offline (no API calls)
 
 Re-grades: 16 row(s) keep their earlier grades, with the grader and case file that produced them, under `metrics_history`; 0 row(s) changed their overall result since their earliest kept grade (2026-09-24T00:48:33+00:00). The grader hash is the sha256 of the grading code, its word lists and patterns, and the schema check it calls, so a loosened check would show here as a new hash.
 
 16 row(s) were first graded earlier (2026-09-23T19:57:44+00:00) and that grade was replaced before `metrics_history` existed; only the grader notes below describe it.
 
-**Provenance note:** 16 row(s) were first graded under a different case file - one whose hash was not recorded (the rows predate provenance tracking) - and re-graded under the one above. If the expectations differ between the two files, the re-graded score is not the original run's score; compare the files before reading it as one.
+**Provenance note:** 16 row(s) were graded under a different case file before the one above - one whose hash was not recorded (the rows predate provenance tracking), then `fd49e46f2dd59a6d14c1bfff17186e3eef93172b39803074c0b5c987bade96bb` - and re-graded under it. If the expectations differ between those files, the re-graded score is not the original run's score; compare the files before reading it as one.
 
 ## What this measures
 
@@ -46,6 +46,7 @@ Confidence baseline: the bands accept more than one level on 14 of 16 cases, so 
 | JE-2024-005012 | multi_flag | JET-02, JET-12 | low | - |
 | JE-2024-000115 | benign | JET-12 | low | - |
 | JE-2024-000648 | benign | JET-12 | low | - |
+| JE-2024-000975 | injection | JET-12 | - | missing: no stored result row for this case; a re-grade never narrates (run without --regrade) |
 
 ## Misses, with the text that failed
 
