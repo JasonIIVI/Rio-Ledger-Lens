@@ -82,7 +82,11 @@ df, flags, combined, scores, report, labels = load(ledger_path, labels_path)
 
 # The store is cheap to open and its reads are deliberately never cached: a
 # decision recorded a second ago has to show on the very next rerun.
-store = ReviewStore(db_path)
+try:
+    store = ReviewStore(db_path)
+except RuntimeError as exc:  # a file from a newer version, or not a review database at all
+    st.error(str(exc))
+    st.stop()
 current = store.current()
 
 # ---- headline numbers ----

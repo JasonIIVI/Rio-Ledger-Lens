@@ -312,3 +312,31 @@ def test_eval_narratives_grades_the_cases_and_writes_the_report(tmp_path, capsys
     assert main(argv + ["--no-resume"]) == 2
     assert "never deleted" in capsys.readouterr().out
     assert len(client.calls) == 3
+
+
+def test_narrate_and_report_refuse_a_database_they_cannot_open_without_a_traceback(
+        tmp_path, capsys, monkeypatch):
+    import sqlite3
+
+    from ledgerlens.review import ReviewStore
+
+    monkeypatch.chdir(tmp_path)
+    main(["generate", "--start", "2024-01-01", "--end", "2024-03-31", "--out-dir", str(tmp_path)])
+    ledger, out = str(tmp_path / "ledger.csv"), str(tmp_path / "w.xlsx")
+    future = tmp_path / "future.sqlite"
+    ReviewStore(future)
+    with sqlite3.connect(str(future)) as raw:
+        raw.execute("PRAGMA user_version = 99")
+    capsys.readouterr()
+
+    assert main(["report", ledger, "--no-model", "--db", str(future), "--out", out]) == 2
+    assert "newer LedgerLens" in capsys.readouterr().out
+    # narrate opens the store before it builds an API client, so this needs no key.
+    assert main(["narrate", ledger, "--no-model", "--db", str(future)]) == 2
+    assert "newer LedgerLens" in capsys.readouterr().out
+
+    notes = tmp_path / "notes.sqlite"
+    notes.write_text("not a database\n")
+    assert main(["report", ledger, "--no-model", "--db", str(notes), "--out", out]) == 2
+    assert "not a SQLite database" in capsys.readouterr().out
+    assert notes.read_text() == "not a database\n"

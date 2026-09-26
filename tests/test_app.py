@@ -5,6 +5,7 @@ Streamlit; it is to catch the class of breakage week 2 hit, where a deprecated
 argument silently collapsed every table, and to prove the review loop is wired.
 """
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -145,3 +146,13 @@ def test_dashboard_shows_recorded_decisions_and_the_note_they_saw(data_dir, tmp_
     assert any("escalate 1" in c.value for c in at.caption)
     assert any(f"note #{seen}" in c.value for c in at.caption)
     assert any("Decision history" in m.value for m in at.markdown)
+
+
+def test_the_dashboard_refuses_a_database_it_cannot_read_without_a_traceback(data_dir, tmp_path):
+    db = tmp_path / "review.sqlite"
+    ReviewStore(db)
+    with sqlite3.connect(str(db)) as raw:
+        raw.execute("PRAGMA user_version = 99")
+    at = _run(data_dir, db, reviewer="ana")  # _run asserts the script raised nothing
+    assert any("newer LedgerLens" in e.value for e in at.error)
+    assert not any("Record decision" in b.label for b in at.button)  # stopped before the form

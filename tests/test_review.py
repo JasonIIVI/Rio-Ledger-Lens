@@ -1,9 +1,10 @@
 import sqlite3
+from contextlib import closing
 
 import pandas as pd
 import pytest
 
-from ledgerlens import jets
+from ledgerlens import jets, review
 from ledgerlens.review import (
     DECISIONS,
     REVIEW_STATE_COLUMNS,
@@ -261,6 +262,7 @@ CREATE TABLE decisions (
     decided_at   TEXT    NOT NULL
 );
 CREATE INDEX ix_decisions_entry ON decisions(entry_id);
+CREATE INDEX ix_decisions_time  ON decisions(decided_at);
 CREATE TABLE narratives (
     entry_id            TEXT PRIMARY KEY,
     summary             TEXT,
@@ -319,27 +321,77 @@ def test_a_database_from_before_versioning_is_migrated_on_open(tmp_path):
     assert schema_version(path) == SCHEMA_VERSION
 
 
+# The shape PR #4 wrote, as committed in 50b2fa6: versioned narratives,
+# narrative_id on decisions, the update and delete guards - no REPLACE guards
+# and no stamp. Written out rather than derived from V030_SCHEMA, so a
+# reformat of either literal cannot quietly turn this into a v1 file.
+V2_SCHEMA = """
+CREATE TABLE decisions (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    entry_id     TEXT    NOT NULL,
+    decision     TEXT    NOT NULL CHECK (decision IN ('accept','dismiss','escalate')),
+    reviewer     TEXT    NOT NULL,
+    note         TEXT,
+    risk_score   REAL,
+    model_score  REAL,
+    narrative_id INTEGER REFERENCES narratives(id),
+    decided_at   TEXT    NOT NULL
+);
+CREATE INDEX ix_decisions_entry ON decisions(entry_id);
+CREATE INDEX ix_decisions_time  ON decisions(decided_at);
+CREATE TABLE narratives (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    entry_id            TEXT NOT NULL,
+    summary             TEXT,
+    why_flagged         TEXT,
+    evidence_to_request TEXT,
+    suggested_control   TEXT,
+    confidence          TEXT,
+    model               TEXT,
+    generated_at        TEXT NOT NULL
+);
+CREATE INDEX ix_narratives_entry ON narratives(entry_id);
+CREATE TRIGGER decisions_no_update BEFORE UPDATE ON decisions
+BEGIN SELECT RAISE(ABORT, 'decisions are append-only'); END;
+CREATE TRIGGER decisions_no_delete BEFORE DELETE ON decisions
+BEGIN SELECT RAISE(ABORT, 'decisions are append-only'); END;
+CREATE TRIGGER narratives_no_update BEFORE UPDATE ON narratives
+BEGIN SELECT RAISE(ABORT, 'narratives are append-only'); END;
+CREATE TRIGGER narratives_no_delete BEFORE DELETE ON narratives
+BEGIN SELECT RAISE(ABORT, 'narratives are append-only'); END;
+"""
+
+
 def make_v2_database(path):
     """A file as v0.3.1's predecessor wrote it: versioned narratives, no REPLACE guards, no stamp."""
     conn = sqlite3.connect(str(path))
-    conn.executescript(V030_SCHEMA.replace(
-        "entry_id            TEXT PRIMARY KEY,",
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, entry_id TEXT NOT NULL,",
-    ).replace("decided_at   TEXT    NOT NULL", "narrative_id INTEGER, decided_at TEXT NOT NULL"))
-    conn.executescript("""
-        CREATE TRIGGER decisions_no_update BEFORE UPDATE ON decisions
-        BEGIN SELECT RAISE(ABORT, 'decisions are append-only'); END;
-        INSERT INTO narratives (entry_id, summary, generated_at)
-        VALUES ('JE-1', 'kept', '2026-09-24T00:00:00+00:00');
-    """)
+    conn.executescript(V2_SCHEMA)
+    conn.execute("INSERT INTO narratives (entry_id, summary, generated_at) "
+                 "VALUES ('JE-1', 'kept', '2026-09-24T00:00:00+00:00')")
     conn.commit()
     conn.close()
 
 
+def shape(path):
+    """How the module classifies a file, before any opener touches it."""
+    with closing(sqlite3.connect(str(path))) as conn:
+        return review._schema_version(conn, path)
+
+
+def objects(path):
+    """Column names per table, index names and trigger names: what a migration must reproduce."""
+    with closing(sqlite3.connect(str(path))) as conn:
+        names = {(r[0], r[1]) for r in conn.execute(
+            "SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")}
+        columns = {t: set(review._columns(conn, t)) for t in ("decisions", "narratives")}
+    return names, columns
+
+
 def test_each_older_shape_is_recognised_and_walked_up_to_the_current_version(tmp_path):
-    v2 = tmp_path / "v2.sqlite"
+    v1, v2 = tmp_path / "v1.sqlite", tmp_path / "v2.sqlite"
+    make_v030_database(v1)
     make_v2_database(v2)
-    assert schema_version(v2) == 0  # unstamped, recognised by its shape
+    assert shape(v1) == (1, False) and shape(v2) == (2, False)  # unstamped, recognised by shape
     store = ReviewStore(v2)
     assert schema_version(v2) == SCHEMA_VERSION
     assert store.get_narrative("JE-1")["summary"] == "kept"
@@ -347,13 +399,126 @@ def test_each_older_shape_is_recognised_and_walked_up_to_the_current_version(tmp
         with pytest.raises(sqlite3.IntegrityError, match="append-only"):
             raw.execute("REPLACE INTO narratives (id, entry_id, generated_at) VALUES (1, 'JE-1', 'x')")
 
+    # Whichever version a file started at, it ends with the objects a fresh file has.
+    ReviewStore(v1)
+    fresh = tmp_path / "fresh.sqlite"
+    ReviewStore(fresh)
+    assert objects(v1) == objects(v2) == objects(fresh)
+
     # A file already at the current shape but unstamped is stamped and otherwise untouched.
     current = tmp_path / "current.sqlite"
     ReviewStore(current)
     with sqlite3.connect(str(current)) as raw:
         raw.execute("PRAGMA user_version = 0")
+    assert shape(current) == (3, False)
     ReviewStore(current)
     assert schema_version(current) == SCHEMA_VERSION
+
+
+def test_an_unstamped_current_file_is_read_as_three_whatever_the_current_version_is(
+        tmp_path, monkeypatch):
+    """A file v0.3.1 wrote must walk every later step: the inference is a literal, not the constant."""
+    path = tmp_path / "review.sqlite"
+    ReviewStore(path)
+    with sqlite3.connect(str(path)) as raw:
+        raw.execute("PRAGMA user_version = 0")
+    monkeypatch.setattr(review, "SCHEMA_VERSION", 4)
+    monkeypatch.setitem(review._MIGRATIONS, 3,
+                        lambda conn: "ALTER TABLE narratives ADD COLUMN ledger_id TEXT;\n")
+    assert shape(path) == (3, False)
+    ReviewStore(path)
+    assert schema_version(path) == 4
+    with sqlite3.connect(str(path)) as raw:
+        assert "ledger_id" in review._columns(raw, "narratives")
+
+
+def test_migration_steps_never_read_the_live_schema(tmp_path, monkeypatch):
+    """When a later version adds a column, a v1 file gains it once, in that version's own step."""
+    path = tmp_path / "review.sqlite"
+    make_v030_database(path)
+    future = review.SCHEMA.replace("generated_at        TEXT NOT NULL\n",
+                                   "generated_at        TEXT NOT NULL,\n    ledger_id TEXT\n")
+    assert future != review.SCHEMA
+    monkeypatch.setattr(review, "SCHEMA", future)
+    monkeypatch.setattr(review, "SCHEMA_VERSION", 4)
+    monkeypatch.setitem(review._MIGRATIONS, 3,
+                        lambda conn: "ALTER TABLE narratives ADD COLUMN ledger_id TEXT;\n")
+    store = ReviewStore(path)  # "duplicate column" if step 1 -> 2 had used the live DDL
+    assert schema_version(path) == 4
+    assert store.get_narrative("JE-2")["summary"] == "second"
+    with sqlite3.connect(str(path)) as raw:
+        assert review._columns(raw, "narratives").count("ledger_id") == 1
+
+
+def test_a_dropped_guard_is_put_back_by_a_writer_and_refused_by_a_reader(tmp_path):
+    path = tmp_path / "review.sqlite"
+    ReviewStore(path).record(Decision("JE-1", "accept", "ana"))
+    with sqlite3.connect(str(path)) as raw:
+        raw.execute("DROP TRIGGER decisions_no_update")
+        raw.execute("DROP TRIGGER narratives_no_replace")
+    with pytest.raises(RuntimeError, match="decisions_no_update, narratives_no_replace"):
+        ReviewStore.read_only(path)
+
+    # A writer puts every guard back on open, whatever the stamp says.
+    ReviewStore(path)
+    with sqlite3.connect(str(path)) as raw:
+        assert review._triggers(raw) == set(review.GUARDS)
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            raw.execute("UPDATE decisions SET decision = 'dismiss'")
+    assert ReviewStore.read_only(path).history("JE-1")["decision"].tolist() == ["accept"]
+    assert schema_version(path) == SCHEMA_VERSION
+
+
+def test_a_foreign_or_damaged_file_is_refused_with_a_message(tmp_path):
+    foreign = tmp_path / "places.sqlite"
+    with closing(sqlite3.connect(str(foreign))) as raw:
+        raw.execute("CREATE TABLE moz_places (id INTEGER PRIMARY KEY, url TEXT)")
+        raw.execute("PRAGMA user_version = 3")
+        raw.commit()
+    for opener in (ReviewStore, ReviewStore.read_only):
+        with pytest.raises(RuntimeError, match="not a LedgerLens review database"):
+            opener(foreign)
+    with closing(sqlite3.connect(str(foreign))) as raw:
+        raw.execute("PRAGMA user_version = -1")
+        raw.commit()
+    before = foreign.read_bytes()
+    with pytest.raises(RuntimeError, match="not a LedgerLens review database"):
+        ReviewStore(foreign)
+    assert foreign.read_bytes() == before
+
+    text = tmp_path / "notes.sqlite"
+    text.write_text("this is not a database\n")
+    for opener in (ReviewStore, ReviewStore.read_only):
+        with pytest.raises(RuntimeError, match="not a SQLite database"):
+            opener(text)
+    assert text.read_text() == "this is not a database\n"
+
+    with pytest.raises(RuntimeError, match="cannot be opened|not a SQLite database"):
+        ReviewStore(tmp_path)  # a directory
+
+
+def test_a_writer_that_loses_a_migration_race_carries_on_from_where_the_winner_left_it(
+        tmp_path, monkeypatch):
+    path = tmp_path / "review.sqlite"
+    make_v030_database(path)
+    real, raced = review._MIGRATIONS[1], []
+
+    def stale_step(conn):
+        script = real(conn)      # built from the v1 shape...
+        if not raced:
+            raced.append(True)
+            ReviewStore(path)    # ...while another writer takes the file to the current version
+        return script
+
+    monkeypatch.setitem(review._MIGRATIONS, 1, stale_step)
+    store = ReviewStore(path)    # its stale step fails, rolls back, and it re-reads the file
+    assert raced and schema_version(path) == SCHEMA_VERSION
+    assert store.narrative_ids() == {"JE-1", "JE-2"}
+    assert store.get_narrative("JE-2")["id"] == 2
+    with sqlite3.connect(str(path)) as raw:
+        assert review._triggers(raw) == set(review.GUARDS)
+        names = {r[1] for r in raw.execute("SELECT type, name FROM sqlite_master")}
+    assert "narratives_v1" not in names
 
 
 def test_a_file_from_a_newer_version_is_refused_by_both_openers(tmp_path):

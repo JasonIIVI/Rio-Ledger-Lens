@@ -177,10 +177,16 @@ def cmd_report(args: argparse.Namespace) -> int:
     if args.labels:
         metrics = evaluate.evaluate(flags, load_labels(args.labels), df["entry_id"].unique())
 
-    # Only an existing store is attached: a report must never create an empty
-    # review database as a side effect.
-    store = ReviewStore(args.db) if args.db and Path(args.db).exists() else None
-    if args.db and store is None:
+    # Only an existing store is attached, and read-only: a report must never
+    # create an empty review database, or migrate one, as a side effect.
+    store = None
+    if args.db and Path(args.db).exists():
+        try:
+            store = ReviewStore.read_only(args.db)
+        except RuntimeError as exc:
+            print(f"error: {exc}")
+            return 2
+    elif args.db:
         print(f"No review database at {args.db}; workpaper written without review columns")
 
     path = build_workpaper(
@@ -203,7 +209,11 @@ def cmd_narrate(args: argparse.Namespace) -> int:
         model_scores, _ = score_ledger(df)
         scored = combine(scored, model_scores)
 
-    store = ReviewStore(args.db)
+    try:
+        store = ReviewStore(args.db)
+    except RuntimeError as exc:
+        print(f"error: {exc}")
+        return 2
     skip = set() if args.force else store.narrative_ids()
     narrator = Narrator(model=args.model, max_tokens=args.max_tokens, effort=args.effort)
     try:

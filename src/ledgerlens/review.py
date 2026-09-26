@@ -15,10 +15,11 @@ Three design choices worth stating:
    database enforces this itself: triggers refuse any UPDATE or DELETE on
    either table, and any INSERT that would land on an existing id (which is
    how ``REPLACE INTO`` overwrites a row without firing a delete trigger), so
-   the rule does not depend on every caller going through this module. This
-   is tamper-resistant, not tamper-evident: a writer who drops the triggers
-   and puts them back leaves no trace, and a hash chain would be the next
-   step if that ever matters.
+   the rule does not depend on every caller going through this module. Every
+   read-write open puts back a guard the file has lost, and a read-only open
+   refuses a file that is missing one. This is tamper-resistant, not
+   tamper-evident: a writer who drops the triggers and puts them back leaves
+   no trace, and a hash chain would be the next step if that ever matters.
 2. **The model never writes here.** Narratives are advisory context attached to
    an entry; only a named human sets a decision.
 3. **SQLite, not a CSV.** Concurrent reviewers, transactional writes, and
@@ -51,7 +52,6 @@ REVIEW_STATE_COLUMNS = (
     "narrative_seen_by_reviewer",
 )
 
-#: On its own because the migration below has to create the same table.
 NARRATIVES_TABLE = """
 CREATE TABLE IF NOT EXISTS narratives (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -108,34 +108,103 @@ BEGIN SELECT RAISE(ABORT, 'narratives are append-only'); END;
 
 SCHEMA = TABLES + TRIGGERS
 
+#: The append-only guards a current file must carry. A read-write open puts
+#: back any that went missing; a read-only open refuses a file without them,
+#: since what it holds can no longer be read as a record.
+GUARDS = (
+    "decisions_no_update", "decisions_no_delete", "decisions_no_replace",
+    "narratives_no_update", "narratives_no_delete", "narratives_no_replace",
+)
+
+# A migration step creates the shape of the version it moves a file *to*,
+# from text frozen when that version shipped - never from the live constants
+# above. Otherwise a v1 file would pick up a later version's columns at step
+# 1 -> 2, and the step that adds them would fail on "duplicate column".
+_NARRATIVES_TABLE_V2 = """
+CREATE TABLE IF NOT EXISTS narratives (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    entry_id            TEXT NOT NULL,
+    summary             TEXT,
+    why_flagged         TEXT,
+    evidence_to_request TEXT,
+    suggested_control   TEXT,
+    confidence          TEXT,
+    model               TEXT,
+    generated_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_narratives_entry ON narratives(entry_id);
+"""
+
+_TRIGGERS_V3 = """
+CREATE TRIGGER IF NOT EXISTS decisions_no_update BEFORE UPDATE ON decisions
+BEGIN SELECT RAISE(ABORT, 'decisions are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS decisions_no_delete BEFORE DELETE ON decisions
+BEGIN SELECT RAISE(ABORT, 'decisions are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS narratives_no_update BEFORE UPDATE ON narratives
+BEGIN SELECT RAISE(ABORT, 'narratives are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS narratives_no_delete BEFORE DELETE ON narratives
+BEGIN SELECT RAISE(ABORT, 'narratives are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS decisions_no_replace BEFORE INSERT ON decisions
+WHEN EXISTS (SELECT 1 FROM decisions WHERE id = NEW.id)
+BEGIN SELECT RAISE(ABORT, 'decisions are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS narratives_no_replace BEFORE INSERT ON narratives
+WHEN EXISTS (SELECT 1 FROM narratives WHERE id = NEW.id)
+BEGIN SELECT RAISE(ABORT, 'narratives are append-only'); END;
+"""
+
 
 def _columns(conn: sqlite3.Connection, table: str) -> list[str]:
     return [row[1] for row in conn.execute(f"PRAGMA table_info({table})")]
 
 
-def _has_trigger(conn: sqlite3.Connection, name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = ?", (name,)
-    ).fetchone()
-    return row is not None
+def _triggers(conn: sqlite3.Connection) -> set[str]:
+    return {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'trigger'")}
 
 
-def _schema_version(conn: sqlite3.Connection) -> tuple[int, bool]:
+def _schema_version(conn: sqlite3.Connection, path: Path) -> tuple[int, bool]:
     """The file's schema version, and whether the file says so itself.
 
     Files written before the stamp existed are recognised by their shape.
-    0 means a fresh file with no tables.
+    0 means a fresh file with no tables. A file that is not SQLite, or that
+    carries a stamp but none of this module's tables (another program's
+    database, pointed at by mistake), is refused rather than guessed at.
     """
-    stamped = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    try:
+        stamped = int(conn.execute("PRAGMA user_version").fetchone()[0])
+        decisions = _columns(conn, "decisions")
+        narratives = _columns(conn, "narratives")
+    except sqlite3.DatabaseError as exc:
+        raise RuntimeError(f"{path} is not a SQLite database ({exc})") from exc
     if stamped:
+        if stamped < 0 or not decisions:
+            raise RuntimeError(
+                f"{path} is not a LedgerLens review database (user_version {stamped}"
+                + ("" if decisions else ", no decisions table") + ")"
+            )
         return stamped, True
-    if not _columns(conn, "decisions"):
+    if not decisions:
+        if narratives:
+            raise RuntimeError(
+                f"{path} holds a narratives table but no decisions table, a shape no LedgerLens "
+                "version writes; restore it from a backup rather than opening it here"
+            )
         return 0, False
-    if "id" not in _columns(conn, "narratives") or "narrative_id" not in _columns(conn, "decisions"):
+    if "id" not in narratives or "narrative_id" not in decisions:
         return 1, False
-    if not _has_trigger(conn, "decisions_no_replace"):
+    if "decisions_no_replace" not in _triggers(conn):
         return 2, False
-    return SCHEMA_VERSION, False
+    # Stamping began at 3, so an unstamped file is never newer than that. A
+    # literal on purpose: returning SCHEMA_VERSION here would skip every step
+    # above 3 the day the constant moves.
+    return 3, False
+
+
+def _refuse_newer(version: int, path: Path, verb: str) -> None:
+    if version > SCHEMA_VERSION:
+        raise RuntimeError(
+            f"{path} was written by a newer LedgerLens (schema {version}; this version {verb} "
+            f"{SCHEMA_VERSION}). Upgrade LedgerLens to open it."
+        )
 
 
 def _require_current_schema(conn: sqlite3.Connection, path: Path) -> None:
@@ -144,19 +213,24 @@ def _require_current_schema(conn: sqlite3.Connection, path: Path) -> None:
     A reader never creates or migrates anything, so a file from an earlier
     version, or an empty file, is an error with the fix in the message rather
     than a silent schema write; a file from a later version is refused too,
-    since this code does not know what it holds.
+    since this code does not know what it holds; and so is a current file
+    that has lost an append-only guard, since its history may have been
+    edited and only a read-write open can put the guard back.
     """
-    version, _ = _schema_version(conn)
-    if version > SCHEMA_VERSION:
-        raise RuntimeError(
-            f"{path} was written by a newer LedgerLens (schema {version}; this version reads "
-            f"{SCHEMA_VERSION}). Upgrade LedgerLens to read it."
-        )
+    version, _ = _schema_version(conn, path)
+    _refuse_newer(version, path, "reads")
     if version < SCHEMA_VERSION:
         raise RuntimeError(
             f"{path} is not a current review database (no tables, or an older schema). "
             "Open it once with the dashboard or `ledgerlens narrate` to create or migrate it; "
             "a read-only connection will not."
+        )
+    missing = sorted(set(GUARDS) - _triggers(conn))
+    if missing:
+        raise RuntimeError(
+            f"{path} is missing its append-only guard(s) {', '.join(missing)}, so its history "
+            "may have been edited. Open it once with the dashboard or `ledgerlens narrate` to "
+            "put the guards back; a read-only connection will not."
         )
 
 
@@ -173,7 +247,7 @@ def _v1_to_v2(conn: sqlite3.Connection) -> str:
     if narrative_columns and "id" not in narrative_columns:
         script += (
             "ALTER TABLE narratives RENAME TO narratives_v1;\n"
-            + NARRATIVES_TABLE +
+            + _NARRATIVES_TABLE_V2 +
             "INSERT INTO narratives (entry_id, summary, why_flagged, evidence_to_request, "
             "suggested_control, confidence, model, generated_at) "
             "SELECT entry_id, summary, why_flagged, evidence_to_request, suggested_control, "
@@ -181,7 +255,7 @@ def _v1_to_v2(conn: sqlite3.Connection) -> str:
             "DROP TABLE narratives_v1;\n"
         )
     elif not narrative_columns:
-        script += NARRATIVES_TABLE
+        script += _NARRATIVES_TABLE_V2
     if "narrative_id" not in _columns(conn, "decisions"):
         script += "ALTER TABLE decisions ADD COLUMN narrative_id INTEGER REFERENCES narratives(id);\n"
     return script
@@ -189,7 +263,7 @@ def _v1_to_v2(conn: sqlite3.Connection) -> str:
 
 def _v2_to_v3(conn: sqlite3.Connection) -> str:
     """Enforce append-only in the database: the update, delete and REPLACE guards."""
-    return TRIGGERS
+    return _TRIGGERS_V3
 
 
 #: Each step takes a file from version n to n + 1, as one transaction that
@@ -197,30 +271,40 @@ def _v2_to_v3(conn: sqlite3.Connection) -> str:
 _MIGRATIONS = {1: _v1_to_v2, 2: _v2_to_v3}
 
 
-def _migrate(conn: sqlite3.Connection) -> None:
+def _migrate(conn: sqlite3.Connection, path: Path) -> None:
     """Bring a file up to :data:`SCHEMA_VERSION`, or refuse one from a later version.
 
-    A fresh file gets the whole schema and the stamp. An unstamped file at the
-    current shape is stamped. Anything older walks the steps one at a time.
-    ``executescript`` commits a pending transaction before it runs, which is
-    why each step carries its own BEGIN and COMMIT.
+    A fresh file gets the whole schema and the stamp; an unstamped file at the
+    current shape gets the same script, which creates only what is missing.
+    Anything older walks the steps one at a time. ``executescript`` commits a
+    pending transaction before it runs, which is why each step carries its own
+    BEGIN and COMMIT. Every open then re-runs the schema's IF NOT EXISTS
+    statements: a guard or index the file has lost comes back, and a whole
+    file is left untouched.
     """
-    version, stamped = _schema_version(conn)
-    if version > SCHEMA_VERSION:
-        raise RuntimeError(
-            f"this review database was written by a newer LedgerLens (schema {version}; this "
-            f"version writes {SCHEMA_VERSION}). Upgrade LedgerLens rather than opening it here."
-        )
-    if version == 0:
+    version, stamped = _schema_version(conn, path)
+    _refuse_newer(version, path, "writes")
+    if version in (0, SCHEMA_VERSION) and not stamped:
         conn.executescript(f"BEGIN;\n{SCHEMA}\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;")
-        return
+        version = SCHEMA_VERSION
     while version < SCHEMA_VERSION:
         step = _MIGRATIONS[version](conn)
-        conn.executescript(f"BEGIN;\n{step}\nPRAGMA user_version = {version + 1};\nCOMMIT;")
+        try:
+            conn.executescript(
+                f"BEGIN IMMEDIATE;\n{step}\nPRAGMA user_version = {version + 1};\nCOMMIT;"
+            )
+        except sqlite3.OperationalError:
+            # Two writers can open an old file at once (two dashboards, say),
+            # and the second one's script was built before the first committed.
+            # Re-read what the file is now and carry on from there, or fail.
+            conn.rollback()
+            now, _ = _schema_version(conn, path)
+            if now <= version:
+                raise
+            version = now
+            continue
         version += 1
-    if not stamped:
-        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-        conn.commit()
+    conn.executescript(SCHEMA)
 
 
 @dataclass
@@ -254,12 +338,19 @@ class ReviewStore:
             # No mkdir and no DDL: a reader never creates, migrates or touches the file.
             if not self.path.exists():
                 raise FileNotFoundError(f"no review database at {self.path}")
-            with closing(self._connect()) as conn:
+            with closing(self._open()) as conn:
                 _require_current_schema(conn, self.path)
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with closing(self._connect()) as conn:
-            _migrate(conn)
+        with closing(self._open()) as conn:
+            _migrate(conn, self.path)
+
+    def _open(self) -> sqlite3.Connection:
+        """The first connection: a path that is no database file gets a message, not a traceback."""
+        try:
+            return self._connect()
+        except sqlite3.Error as exc:
+            raise RuntimeError(f"{self.path} cannot be opened as a SQLite database ({exc})") from exc
 
     @classmethod
     def read_only(cls, path: str | Path) -> ReviewStore:
