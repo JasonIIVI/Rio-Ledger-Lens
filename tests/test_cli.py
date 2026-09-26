@@ -405,3 +405,48 @@ def test_narrate_files_each_ledger_under_its_own_identity(tmp_path, capsys, monk
         assert len(ReviewStore(db, ident).narrative_ids()) == 4
     assert ReviewStore(db, identities[0]).ledgers()["ledger_id"].tolist() == sorted(identities)
     assert len(client.calls) == 8
+
+
+def test_narrate_refuses_to_ignore_legacy_rows_unless_told_to(tmp_path, capsys, monkeypatch, llm):
+    """Rows from before ledgers were keyed are adopted or set aside on purpose, never bought again."""
+    import sqlite3
+
+    from ledgerlens import cli
+    from ledgerlens.ingest import ledger_identity, load_csv
+    from ledgerlens.narrate import Narrator
+    from ledgerlens.review import ReviewStore
+
+    monkeypatch.chdir(tmp_path)
+    main(["generate", "--start", "2024-01-01", "--end", "2024-03-31", "--out-dir", str(tmp_path)])
+    ledger, db = str(tmp_path / "ledger.csv"), tmp_path / "review.sqlite"
+    ReviewStore(db, ledger_identity(load_csv(ledger), ledger))
+    with sqlite3.connect(str(db)) as raw:  # a note from before ledgers were keyed
+        raw.execute("INSERT INTO narratives (entry_id, summary, generated_at, ledger_id) VALUES "
+                    "('JE-2024-000001', 'old', '2026-09-23T00:00:00+00:00', 'legacy')")
+    client = llm.client()
+    monkeypatch.setattr(cli, "Narrator", lambda **kw: Narrator(client=client, **kw))
+    capsys.readouterr()
+
+    assert main(["narrate", ledger, "--db", str(db), "--top", "0", "--no-model"]) == 2
+    out = capsys.readouterr().out
+    assert "adopt-legacy" in out and client.calls == []
+    assert main(["adopt-legacy", ledger, "--db", str(tmp_path / "absent.sqlite")]) == 2
+    assert main(["adopt-legacy", ledger, "--db", str(db)]) == 0
+    assert "Adopted 1 narrative(s) and 0 decision(s)" in capsys.readouterr().out
+    assert main(["adopt-legacy", ledger, "--db", str(db)]) == 2
+    assert "already holds" in capsys.readouterr().out
+    assert main(["narrate", ledger, "--db", str(db), "--top", "0", "--no-model"]) == 0
+    assert "Skipped 1" in capsys.readouterr().out
+
+    # Rows for entries this ledger does not have are refused; the ledger may
+    # then start from scratch when told so.
+    other = tmp_path / "other.sqlite"
+    ReviewStore(other, ledger_identity(load_csv(ledger), ledger))
+    with sqlite3.connect(str(other)) as raw:
+        raw.execute("INSERT INTO narratives (entry_id, summary, generated_at, ledger_id) VALUES "
+                    "('JE-9999-000001', 'stray', '2026-09-23T00:00:00+00:00', 'legacy')")
+    assert main(["adopt-legacy", ledger, "--db", str(other)]) == 2
+    assert "not in this ledger" in capsys.readouterr().out
+    assert main(["narrate", ledger, "--db", str(other), "--top", "0", "--no-model",
+                 "--ignore-legacy"]) == 0
+    assert client.calls == []

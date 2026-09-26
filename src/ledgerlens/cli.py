@@ -7,6 +7,7 @@
     ledgerlens report    - write the Excel workpaper
     ledgerlens narrate   - write Claude narratives for the riskiest entries
     ledgerlens eval-narratives - grade the narrative layer against the case set
+    ledgerlens adopt-legacy - file review rows from before ledgers were keyed under a ledger
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ from .ingest import ledger_identity, load_csv, load_labels
 from .model import combine, score_ledger
 from .narrate import DEFAULT_EFFORT, DEFAULT_MAX_TOKENS, DEFAULT_MODEL, NarrativeError, Narrator
 from .report import build_workpaper
-from .review import ReviewStore
+from .review import LEGACY_LEDGER_ID, ReviewStore
 
 
 def _parse_date(text: str) -> date:
@@ -216,6 +217,19 @@ def cmd_narrate(args: argparse.Namespace) -> int:
         print(f"error: {exc}")
         return 2
     print(f"Review database {args.db}, rows keyed by {ledger_id}")
+    # Rows from before ledgers were keyed cannot be told apart from this
+    # ledger's by the file alone. Narrating over them would buy every note
+    # again, so the choice is made explicit: adopt them, or start from scratch.
+    ledgers = store.ledgers()
+    legacy = ledgers[ledgers["ledger_id"] == LEGACY_LEDGER_ID]
+    if not legacy.empty and ledger_id not in set(ledgers["ledger_id"]) and not args.ignore_legacy:
+        print(f"refused: {args.db} holds {int(legacy.iloc[0].narratives)} narrated and "
+              f"{int(legacy.iloc[0].decisions)} decided entries from before review rows were "
+              f"keyed by ledger, and nothing yet for this ledger ({ledger_id}). If they were "
+              f"written for it, run `ledgerlens adopt-legacy {args.ledger} --db {args.db}` first "
+              "(no API calls); otherwise pass --ignore-legacy to start this ledger's notes from "
+              "scratch.")
+        return 2
     skip = set() if args.force else store.narrative_ids()
     narrator = Narrator(model=args.model, max_tokens=args.max_tokens, effort=args.effort)
     try:
@@ -237,6 +251,30 @@ def cmd_narrate(args: argparse.Namespace) -> int:
     elif result.entries_requested == 0:
         print("Nothing to narrate: every flagged entry in range already has a narrative")
     return 0 if result.narratives or result.entries_requested == 0 else 1
+
+
+def cmd_adopt_legacy(args: argparse.Namespace) -> int:
+    """File rows from before review data was keyed by ledger under this ledger."""
+    if not Path(args.db).exists():
+        print(f"error: no review database at {args.db}")
+        return 2
+    df = load_csv(args.ledger)
+    ledger_id = ledger_identity(df, args.ledger)
+    try:
+        store = ReviewStore(args.db, ledger_id)  # migrates a schema-3 file on the way
+        adopted = store.adopt_legacy(entry_ids=df["entry_id"].unique())
+    except RuntimeError as exc:
+        print(f"error: {exc}")
+        return 2
+    except ValueError as exc:
+        print(f"refused: {exc}")
+        return 2
+    if not adopted["narratives"] and not adopted["decisions"]:
+        print(f"Nothing to adopt: {args.db} holds no legacy rows")
+        return 0
+    print(f"Adopted {adopted['narratives']} narrative(s) and {adopted['decisions']} decision(s) "
+          f"into {ledger_id} in {args.db}. The legacy rows stay as they were.")
+    return 0
 
 
 DEFAULT_CASES = str(narrative_eval.CASES_FILE)
@@ -410,7 +448,16 @@ def build_parser() -> argparse.ArgumentParser:
     n.add_argument("--effort", choices=("low", "medium", "high"), default=DEFAULT_EFFORT)
     n.add_argument("--no-model", action="store_true", help="rank by the rule tier only")
     n.add_argument("--force", action="store_true", help="re-narrate entries already cached")
+    n.add_argument("--ignore-legacy", action="store_true",
+                   help="narrate this ledger from scratch even if the database holds rows from "
+                        "before review rows were keyed by ledger")
     n.set_defaults(func=cmd_narrate)
+
+    al = sub.add_parser("adopt-legacy",
+                        help="file review rows from before ledgers were keyed under this ledger")
+    al.add_argument("ledger", help="path to the GL csv the rows were written for")
+    al.add_argument("--db", default="data/review.sqlite", help="review database holding them")
+    al.set_defaults(func=cmd_adopt_legacy)
 
     ev = sub.add_parser("eval-narratives", help="grade the narrative layer against the case set")
     ev.add_argument("ledger", help="path to the GL csv the cases were selected from")

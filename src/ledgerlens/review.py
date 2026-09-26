@@ -29,6 +29,7 @@ Three design choices worth stating:
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterable
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -637,6 +638,80 @@ class ReviewStore:
         """:meth:`ledgers` without the bound ledger: what this file holds that is not shown."""
         ledgers = self.ledgers()
         return ledgers[ledgers["ledger_id"] != self.ledger_id].reset_index(drop=True)
+
+    def adopt_legacy(self, entry_ids: Iterable[str] | None = None) -> dict:
+        """Copy every 'legacy' row into the bound ledger, as new rows.
+
+        Rows from before schema 4 do not say which ledger they were written
+        for; the person running this does. The originals stay (append-only:
+        the copies are the record of the adoption). Narratives are copied
+        first, so each copied decision's ``narrative_id`` points at the copy
+        of the note it recorded; ``generated_at``, ``model``, ``reviewer`` and
+        ``decided_at`` are kept as written. Refused when the bound ledger
+        already holds rows, and when ``entry_ids`` is given and a legacy row
+        names an entry outside it, the surest sign the rows belong to another
+        ledger. Returns the counts and the old-to-new narrative id map.
+        """
+        known = None if entry_ids is None else set(entry_ids)
+        with closing(self._connect()) as conn:
+            # The check and the copy see one file; a second adopter waits, then is refused.
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                mine = conn.execute(
+                    "SELECT (SELECT COUNT(*) FROM narratives WHERE ledger_id = ?) "
+                    "     + (SELECT COUNT(*) FROM decisions WHERE ledger_id = ?)",
+                    (self.ledger_id, self.ledger_id),
+                ).fetchone()[0]
+                if mine:
+                    raise ValueError(
+                        f"ledger {self.ledger_id} already holds {mine} row(s); legacy rows are "
+                        "adopted only into a ledger with none"
+                    )
+                notes = conn.execute(
+                    "SELECT * FROM narratives WHERE ledger_id = ? ORDER BY id", (LEGACY_LEDGER_ID,)
+                ).fetchall()
+                decisions = conn.execute(
+                    "SELECT * FROM decisions WHERE ledger_id = ? ORDER BY id", (LEGACY_LEDGER_ID,)
+                ).fetchall()
+                if known is not None:
+                    strays = sorted({r["entry_id"] for r in notes + decisions} - known)
+                    if strays:
+                        raise ValueError(
+                            f"{len(strays)} legacy row(s) name entries not in this ledger (e.g. "
+                            f"{strays[0]}); they were written for a different ledger"
+                        )
+                remap: dict[int, int] = {}
+                for r in notes:
+                    cur = conn.execute(
+                        "INSERT INTO narratives (ledger_id, entry_id, summary, why_flagged, "
+                        " evidence_to_request, suggested_control, confidence, model, generated_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (self.ledger_id, r["entry_id"], r["summary"], r["why_flagged"],
+                         r["evidence_to_request"], r["suggested_control"], r["confidence"],
+                         r["model"], r["generated_at"]),
+                    )
+                    remap[r["id"]] = int(cur.lastrowid)
+                for r in decisions:
+                    old = r["narrative_id"]
+                    if old is not None and old not in remap:
+                        raise RuntimeError(
+                            f"legacy decision {r['id']} records narrative {old}, which is not a "
+                            "legacy narrative"
+                        )
+                    conn.execute(
+                        "INSERT INTO decisions (ledger_id, entry_id, decision, reviewer, note, "
+                        " risk_score, model_score, narrative_id, decided_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (self.ledger_id, r["entry_id"], r["decision"], r["reviewer"], r["note"],
+                         r["risk_score"], r["model_score"], None if old is None else remap[old],
+                         r["decided_at"]),
+                    )
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
+        return {"ledger_id": self.ledger_id, "narratives": len(notes),
+                "decisions": len(decisions), "narrative_ids": remap}
 
     # --- both together ----------------------------------------------------
 

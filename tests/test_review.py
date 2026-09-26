@@ -702,3 +702,63 @@ def test_a_read_only_store_bound_to_another_ledger_sees_nothing_but_the_counts(t
         {"ledger_id": LEDGER, "narratives": 0, "decisions": 1}]
     with pytest.raises(sqlite3.OperationalError, match="readonly"):
         reader.record(Decision("JE-1", "accept", "ana"))
+
+
+# --- adopting rows from before ledgers were keyed ------------------------------
+
+
+def _legacy_rows(path):
+    """What a migrated v0.3.1 file holds: rows filed under 'legacy', one decision on a note."""
+    with sqlite3.connect(str(path)) as raw:
+        raw.execute("INSERT INTO narratives (id, entry_id, summary, why_flagged, evidence_to_request, "
+                    "suggested_control, confidence, model, generated_at, ledger_id) VALUES "
+                    "(1, 'JE-1', 'first', 'w', 'e', 'c', 'high', 'm', '2026-09-23T09:00:00+00:00', 'legacy')")
+        raw.execute("INSERT INTO narratives (id, entry_id, summary, why_flagged, evidence_to_request, "
+                    "suggested_control, confidence, model, generated_at, ledger_id) VALUES "
+                    "(2, 'JE-2', 'second', 'w', 'a\nb', 'c', 'low', 'm', '2026-09-23T10:00:00+00:00', 'legacy')")
+        raw.execute("INSERT INTO decisions (id, entry_id, decision, reviewer, note, narrative_id, "
+                    "decided_at, ledger_id) VALUES (1, 'JE-1', 'accept', 'ana', 'ok', 1, "
+                    "'2026-09-23T11:00:00+00:00', 'legacy')")
+
+
+def test_adopt_legacy_copies_rows_and_remaps_narrative_ids(tmp_path):
+    path = tmp_path / "review.sqlite"
+    store = ReviewStore(path, LEDGER)
+    _legacy_rows(path)
+    assert store.narrative_ids() == set()
+    adopted = store.adopt_legacy()
+    assert adopted == {"ledger_id": LEDGER, "narratives": 2, "decisions": 1,
+                       "narrative_ids": {1: 3, 2: 4}}
+    assert store.narrative_ids() == {"JE-1", "JE-2"} and store.decided_ids() == {"JE-1"}
+    assert store.history("JE-1")["narrative_id"].tolist() == [3]  # points at the copy of note 1
+    state = store.review_state().set_index("entry_id")
+    assert state.loc["JE-1", "narrative_seen_by_reviewer"] == "yes"
+    assert store.get_narrative("JE-2") == {
+        "id": 4, "entry_id": "JE-2", "summary": "second", "why_flagged": "w",
+        "evidence_to_request": ["a", "b"], "suggested_control": "c", "confidence": "low",
+        "model": "m", "generated_at": "2026-09-23T10:00:00+00:00", "ledger_id": LEDGER,
+    }
+    assert store.ledgers().to_dict("records") == [
+        {"ledger_id": LEDGER, "narratives": 2, "decisions": 1},
+        {"ledger_id": "legacy", "narratives": 2, "decisions": 1},  # the originals stay
+    ]
+    assert store.save_narrative("JE-1", narrative("third")) == 5
+    assert store.record(Decision("JE-2", "dismiss", "ben", narrative_id=4)) == 3
+
+
+def test_adopt_legacy_refuses_rows_that_are_not_this_ledgers_or_a_ledger_that_has_rows(tmp_path):
+    path = tmp_path / "review.sqlite"
+    store = ReviewStore(path, LEDGER)
+    _legacy_rows(path)
+    with pytest.raises(ValueError, match="not in this ledger"):
+        store.adopt_legacy(entry_ids={"JE-1"})  # JE-2 is a stray
+    assert store.ledgers()["ledger_id"].tolist() == ["legacy"]  # nothing written
+    store.adopt_legacy(entry_ids={"JE-1", "JE-2"})
+    with pytest.raises(ValueError, match="already holds"):
+        store.adopt_legacy()
+    assert store.ledgers()["narratives"].tolist() == [2, 2]
+
+    fresh = tmp_path / "fresh.sqlite"
+    assert ReviewStore(fresh, LEDGER).adopt_legacy()["narratives"] == 0  # nothing to adopt
+    with pytest.raises(sqlite3.OperationalError, match="readonly"):
+        ReviewStore.read_only(path, OTHER).adopt_legacy()
