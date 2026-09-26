@@ -57,3 +57,15 @@ regenerates the ledger and fails if precision drops below 0.80 or recall below 0
   `GRADER_NOTES` with what it did to the published score, and the report prints both. A test
   checks that the committed rows carry this checkout's grader hash, so a grader edit only lands
   together with its re-grade (`ledgerlens eval-narratives data/ledger.csv --regrade`).
+- A change to what is judged is disclosed the same way: a case added or rewritten goes in
+  `CASE_SET_NOTES` with the commit that introduced it and its measured effect, the re-grade
+  across the case-file change ships in that commit, and a case written by hand is narrated
+  only after that commit is pushed.
+- The review database's schema is versioned (`PRAGMA user_version`). A schema change is a new
+  numbered migration step in `review.py` built from frozen DDL literals, never from the live
+  constants, so the step keeps doing what it did when it shipped; old-schema fixtures in the
+  tests are DDL in code, never binary files. Review rows are keyed by ledger identity, and
+  nothing reads or writes across that key except `adopt_legacy`.
+- Nothing under the repository ever holds a credential. `.env` (ignored) carries the API key
+  and `QBO_*` settings; QuickBooks tokens go through `connectors/tokens.py` to
+  `~/.config/ledgerlens/`, which refuses any path inside a git checkout.

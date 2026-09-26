@@ -215,6 +215,17 @@ beside the entry, takes the decision, and shows the history; the workpaper and t
 show the note the reviewer actually saw, the latest decision per exception, a flag when a newer
 note exists than the one they read, and whether the note shown is one the reviewer saw at all.
 
+**One database, many ledgers.** Every note and decision is filed under the ledger it belongs
+to: a CSV is identified by a canonical sha256 of its rows, a QuickBooks pull by its realm id
+(written beside the file in `<ledger>.identity.json`), and the store is bound to one identity
+when it opens, so the queue for one ledger never shows another's notes and a decision can
+never attach to the wrong company's entry. Rows written before the key existed (v0.3.x) sit
+under `legacy` after the one-way schema upgrade (back up `data/review.sqlite` first) until
+`ledgerlens adopt-legacy data/ledger.csv --db data/review.sqlite` copies them into that
+ledger; the originals stay. `ledgerlens narrate` refuses to run while only legacy rows exist,
+so a cache is never silently rebuilt at API cost. The dashboard, the workpaper and the MCP
+server say which ledger they are keyed to and how many rows the file holds for others.
+
 **Measuring the notes.** `evals/narratives/cases.json` holds seventeen entries: sixteen chosen
 deterministically from the default ledger - one per injected archetype, three multi-flag
 patterns, and two ordinary entries that only the access-list test caught - and one written by
@@ -268,7 +279,8 @@ re-grade them.
 
 The scored ledger is exposed as an MCP server with six read-only tools: summary, top exceptions
 (filterable by fiscal year, period and tier agreement), one entry in full, search, Benford, and
-review status. "What are the ten riskiest entries in Q4 2025 and why" becomes one tool call
+review status, keyed to the ledger being served with counts of what the same file holds for
+other ledgers. "What are the ten riskiest entries in Q4 2025 and why" becomes one tool call
 that returns every reason, both scores, and the reviewer's note and decision where they exist.
 
 No tool records a decision. That is deliberate: the model explains and suggests, a person
@@ -333,6 +345,10 @@ and reopen Claude Desktop:
       provenance, a narrower grader, and published run rows; then a second round from
       the review of that PR: the `REPLACE` route closed, the dashboard race fixed, a
       re-grade that can never call the API, and the grader's own hash on every row
+- [x] **Pre-QuickBooks hardening** — a versioned review database keyed by ledger
+      (schema migrations, `adopt-legacy`), a hand-written prompt-injection eval case with
+      its expectations committed before its one narration, tokens kept outside the
+      repository, and a CI job that enforces rule 1 (no data or secret file tracked)
 - [ ] **Week 4** — QuickBooks Online connector (sandbox), scheduled re-run via
       GitHub Actions
 
@@ -363,6 +379,11 @@ ruff check src tests app.py  # lint
 CI runs the suite on Python 3.9, 3.11 and 3.12 plus a detection-quality gate. Nothing in
 `narrate.py` or the eval needs a key to be tested: the API is replaced by a fake that returns
 responses shaped like the real ones.
+
+`.env` holds configuration only: the API key and the `QBO_*` client settings. QuickBooks
+tokens are kept by `connectors/tokens.py` under `~/.config/ledgerlens/` (or
+`$LEDGERLENS_TOKEN_DIR`) with mode 600, and the store refuses any path inside a git checkout.
+CI's `rule-1` job fails if a data file, a database, a `.env` or a token file is ever tracked.
 
 ## License
 

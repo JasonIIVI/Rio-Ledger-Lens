@@ -36,7 +36,10 @@ A flag on its own is noise; a flag that somebody looked at, judged, and signed t
 is evidence. Decisions (accept / dismiss / escalate) are recorded by a named reviewer in an
 append-only store: changing your mind adds a decision rather than editing one, because an audit
 trail that can be silently edited is not an audit trail. The workpaper carries the note and the
-latest decision per exception, and the MCP server exposes all of it read-only.
+latest decision per exception, and the MCP server exposes all of it read-only. Every decision
+and note is filed under the ledger it belongs to (a canonical hash of a CSV, or a QuickBooks
+realm id), so one review database can hold several ledgers without a decision ever attaching
+to the wrong company's entry.
 
 ## Scoring
 
