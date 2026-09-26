@@ -24,13 +24,20 @@ def data_dir(tmp_path_factory):
     return out
 
 
+@pytest.fixture(autouse=True)
+def _away_from_the_repo(monkeypatch, tmp_path):
+    """The script's default paths are relative; nothing here may touch the real data/."""
+    monkeypatch.chdir(tmp_path)
+
+
 def _run(data_dir, db, reviewer=""):
     at = AppTest.from_file(str(APP), default_timeout=300)
-    at.run()  # first pass with the default relative paths; may stop early
-    at.text_input(key="ledger_path").set_value(str(data_dir / "ledger.csv"))
-    at.text_input(key="labels_path").set_value(str(data_dir / "labels.csv"))
-    at.text_input(key="db_path").set_value(str(db))
-    at.text_input(key="reviewer").set_value(reviewer)
+    # The inputs are seeded before the first run, so the script never opens its
+    # default data/review.sqlite (a developer's own) on the way to the test's.
+    at.session_state["ledger_path"] = str(data_dir / "ledger.csv")
+    at.session_state["labels_path"] = str(data_dir / "labels.csv")
+    at.session_state["db_path"] = str(db)
+    at.session_state["reviewer"] = reviewer
     at.run()
     assert not at.exception, at.exception
     return at

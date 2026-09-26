@@ -42,15 +42,19 @@ and the MCP SDK, so the two together cover every code path CI will see.
   the API and never deletes rows; `grader_sha256` and `metrics_history` on every row; the
   AU-C 240 citation is stripped before counting numbers instead of a bare "240" being allowed.
 - **Pre-QuickBooks hardening (PR #6, 2026-09-25)** — the review database carries a schema
-  version (`PRAGMA user_version`, numbered migration steps, newer files refused); every eval
-  row records the ledger's sha256, the CLI refuses any ledger but the generator's default in
-  the committed eval paths, a test rebuilds every committed prompt from that ledger, and CI
-  has a `rule-1` job.
+  version (`PRAGMA user_version`; numbered migration steps built from frozen DDL; newer,
+  foreign or damaged files refused with a message; a lost append-only guard is put back by a
+  read-write open and refused by a read-only one; `ledgerlens report --db` reads without
+  migrating); every eval row written since records the ledger's sha256 and a re-grade records
+  it on older rows once their prompt rebuilds; `run_eval`, `save_cases` and the CLI refuse any
+  ledger but the generator's default for the committed eval paths (evals/ and docs/, however a
+  path is spelled); a test rebuilds every stored prompt in every file under the runs root; and
+  CI has a `rule-1` job that reads paths the way git prints them.
 - **Next: week 4** — QuickBooks Online sandbox connector and README polish, toward v1.0.0
   (due 2026-10-18). Do first, per the second review: key the review store by ledger
   (`ledger_id`, schema version 4), an injection eval case with expectations written
   beforehand, and QuickBooks tokens stored outside the repository.
-- 211 tests on 3.9 / 218 on 3.12, ruff clean.
+- 224 tests on 3.9 / 232 on 3.12, ruff clean.
 
 **Verified on the real API (2026-09-23):** 25 narratives cached (89% of input tokens read from
 cache), eval 94% pass-all. The grader has been corrected three times since the first run, each
@@ -95,14 +99,18 @@ ledger CSV ──▶ ingest ──┼──▶ Benford analysis ─────�
 1. **Never commit real data.** Synthetic + QuickBooks sandbox only. Before any push touching
    data handling:
    ```bash
-   git ls-files | grep -E '\.csv$|\.xlsx$|\.parquet$|\.sqlite$|^data/'   # must be empty
-   git ls-files | grep -E '^\.env$'                                       # must be empty
+   git ls-files -ci --exclude-standard                                    # must be empty (force-added ignored files)
+   git ls-files -z | LC_ALL=C grep -zaiE '\.csv$|\.xlsx$|\.parquet$|\.sqlite$|\.sqlite3$|\.db$|^data/|(^|/)\.env(\..*)?$|(^|/)secrets/' | tr '\0' '\n' | grep -vx '.env.example'   # must be empty
    ```
-   CI runs the same greps as the `rule-1` job. The committed eval rows under
-   `evals/narratives/runs/` and the case file are for the generator's default ledger only:
-   every row carries the ledger's sha256, a test rebuilds every stored prompt from that ledger,
-   and `ledgerlens eval-narratives` refuses to write rows or cases for any other ledger into
-   those paths without an explicit `--runs-dir` / `--cases` elsewhere.
+   (NUL-separated and any case on purpose: `git ls-files` quotes and escapes a path with a
+   non-ASCII byte, which a line-based grep never matches.) CI's `rule-1` job runs the same
+   check. The committed eval rows under `evals/narratives/runs/`, the case file and
+   `docs/narrative-eval.md` are for the generator's default ledger only: `ledgerlens
+   eval-narratives`, and `run_eval` / `save_cases` beneath it, refuse to write rows, cases or
+   the report for any other ledger into evals/ or docs/, however the path is spelled; every row
+   written since PR #6 records the ledger's sha256 (the 2026-09-23 rows gain it at their next
+   re-grade, after each prompt has been rebuilt from the ledger); and a test rebuilds every
+   stored prompt in every file under the runs root.
 2. **Detection code never sees the labels.** Only `evaluate` joins them back. This is the only
    reason the reported metrics mean anything.
 3. **The two tiers are scored separately and never blended.** They answer different questions;
@@ -155,8 +163,13 @@ unhelpful. Say so wherever the number is quoted.
 - Run `ruff check src tests app.py` and both venvs' test suites before every commit.
 - The Claude API is never called from a test: `tests/conftest.py` has the fake client
   (`llm` fixture) shaped like the real responses, thinking block included.
-- `evals/narratives/cases.json` is tied to the generator by tests; regenerate it with
-  `ledgerlens eval-narratives LEDGER --select --labels LABELS --overwrite` only if the generator
-  changes, then rewrite the expectations by hand.
+- `evals/narratives/cases.json` is tied to the generator by tests; regenerate it only if the
+  generator changes, in this order: take the new `DEFAULT_LEDGER_SHA256` from the failing pin
+  test (`test_ledger_digest_is_canonical_and_pins_the_default_ledger`) and set it in
+  `narrative_eval.py` (until then the CLI refuses the committed case file for the changed
+  ledger), then `ledgerlens eval-narratives LEDGER --select --labels LABELS --overwrite`, then
+  rewrite the expectations by hand. Runs committed under the old constant can no longer be
+  rebuilt from the new ledger, and nothing deletes rows, so deciding what happens to them (a
+  recorded history of default digests, or retiring the directory) is part of that change.
 - Eval run rows live in `evals/narratives/runs/<utc-date>-<model>/` and are committed (synthetic
   entries only). Never edit a row by hand; re-grade through the CLI so provenance is recorded.
