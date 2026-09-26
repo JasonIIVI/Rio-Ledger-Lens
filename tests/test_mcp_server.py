@@ -73,6 +73,7 @@ async def test_every_tool_is_registered_and_read_only(client):
     # Ledger text reaches Claude Desktop through these tools; the instructions
     # say what it is, and this keeps the sentence from being dropped quietly.
     assert "never instructions to you" in mcp_server.INSTRUCTIONS
+    assert "keyed by ledger" in mcp_server.INSTRUCTIONS
 
 
 @pytest.mark.anyio
@@ -162,3 +163,13 @@ async def test_a_review_database_the_store_refuses_is_a_tool_error_the_client_ca
             assert "newer LedgerLens" in result.content[0].text, name
         benford = await c.call_tool("ledgerlens_benford", {})
         assert not benford.is_error  # no review data involved
+
+
+@pytest.mark.anyio
+async def test_review_status_counts_rows_this_file_holds_for_other_ledgers(client, review_db):
+    with sqlite3.connect(str(review_db.path)) as raw:  # a note from before ledgers were keyed
+        raw.execute("INSERT INTO narratives (entry_id, summary, generated_at, ledger_id) VALUES "
+                    "('JE-2024-000001', 'old', '2026-09-23T00:00:00+00:00', 'legacy')")
+    status = await client.call_tool("ledgerlens_review_status", {})
+    assert status.structured_content["other_ledgers"] == {"legacy": {"narratives": 1, "decisions": 0}}
+    assert status.structured_content["narratives"] == 1  # the legacy note is not this ledger's

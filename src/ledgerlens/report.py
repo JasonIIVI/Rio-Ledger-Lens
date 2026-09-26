@@ -150,9 +150,16 @@ def build_workpaper(
             ]
         if store is not None:
             summary = store.summary()
-            rows += [("", ""), ("Decisions recorded", int(summary["entries"].sum()))]
+            rows += [("", ""), ("Review rows for ledger", store.ledger_id),
+                     ("Decisions recorded", int(summary["entries"].sum()))]
             rows += [(f"  {r.decision}", int(r.entries)) for r in summary.itertuples()]
             rows += [("Narratives cached", int(len(store.narrative_ids())))]
+            others = store.other_ledgers()
+            if not others.empty:
+                # Counted so a reader knows the file is shared; never merged into the numbers above.
+                rows += [("Other ledgers in this database (not shown)",
+                          f"{len(others)} ledger(s): {int(others['narratives'].sum())} narrated, "
+                          f"{int(others['decisions'].sum())} decided entries")]
         for i, (label, value) in enumerate(rows, start=3):
             ws.cell(row=i, column=1, value=label).font = LABEL_FONT
             ws.cell(row=i, column=2, value=value)

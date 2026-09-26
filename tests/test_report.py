@@ -131,3 +131,22 @@ def test_review_columns_show_the_note_the_reviewer_saw(ledger, labels, tmp_path)
 
     summary = " ".join(str(c.value) for row in wb["Summary"].iter_rows() for c in row if c.value)
     assert "Decisions recorded" in summary
+
+
+def test_summary_names_the_ledger_and_counts_other_ledgers(ledger, labels, tmp_path):
+    import sqlite3
+
+    from ledgerlens.review import Decision, ReviewStore
+
+    store = ReviewStore(tmp_path / "review.sqlite", "csv:test")
+    store.record(Decision("JE-2024-000001", "dismiss", "ana"))
+    with sqlite3.connect(str(store.path)) as raw:  # a note from before ledgers were keyed
+        raw.execute("INSERT INTO narratives (entry_id, summary, generated_at, ledger_id) VALUES "
+                    "('JE-2024-000002', 'old', '2026-09-23T00:00:00+00:00', 'legacy')")
+    path, _ = _workpaper(ledger, labels, tmp_path, store=store)
+    wb = openpyxl.load_workbook(path)
+    cells = {row[0].value: row[1].value for row in wb["Summary"].iter_rows() if row[0].value}
+    assert cells["Review rows for ledger"] == "csv:test"
+    assert cells["Decisions recorded"] == 1 and cells["Narratives cached"] == 0
+    assert cells["Other ledgers in this database (not shown)"] == \
+        "1 ledger(s): 1 narrated, 0 decided entries"

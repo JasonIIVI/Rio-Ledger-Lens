@@ -171,3 +171,20 @@ def test_the_dashboard_refuses_a_database_it_cannot_read_without_a_traceback(dat
     at = _run(data_dir, db, reviewer="ana")  # _run asserts the script raised nothing
     assert any("newer LedgerLens" in e.value for e in at.error)
     assert not any("Record decision" in b.label for b in at.button)  # stopped before the form
+
+
+def test_the_sidebar_names_other_ledgers_and_points_at_adopt_legacy(data_dir, tmp_path, identity):
+    db = tmp_path / "review.sqlite"
+    ReviewStore(db, identity)
+    with sqlite3.connect(str(db)) as raw:  # a note from before ledgers were keyed
+        raw.execute("INSERT INTO narratives (entry_id, summary, generated_at, ledger_id) VALUES "
+                    "('JE-2024-000001', 'old', '2026-09-23T00:00:00+00:00', 'legacy')")
+    at = _run(data_dir, db, reviewer="ana")
+    assert any("1 other ledger" in c.value for c in at.caption)
+    assert any("adopt-legacy" in i.value for i in at.info)
+    assert any("note #" not in c.value for c in at.caption)  # the legacy note is not shown as ours
+
+    ReviewStore(db, identity).adopt_legacy()
+    at = _run(data_dir, db, reviewer="ana")
+    assert not any("adopt-legacy" in i.value for i in at.info)  # this ledger has rows now
+    assert any("1 other ledger" in c.value for c in at.caption)  # the originals stay

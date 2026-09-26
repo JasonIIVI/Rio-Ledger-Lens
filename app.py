@@ -22,7 +22,7 @@ from ledgerlens.env import load_dotenv
 from ledgerlens.ingest import ledger_identity, load_csv, load_labels
 from ledgerlens.model import combine, score_ledger
 from ledgerlens.narrate import NarrativeError, Narrator, build_prompt, entry_context
-from ledgerlens.review import DECISIONS, Decision, ReviewStore
+from ledgerlens.review import DECISIONS, LEGACY_LEDGER_ID, Decision, ReviewStore
 
 load_dotenv()
 st.set_page_config(page_title="LedgerLens", layout="wide")
@@ -92,6 +92,18 @@ except RuntimeError as exc:  # a file from a newer version, or not a review data
     st.error(str(exc))
     st.stop()
 st.sidebar.caption(f"Review rows keyed by `{ledger_id}`")
+others = store.other_ledgers()
+if not others.empty:
+    # Surfaced, never shown as this ledger's: a file can hold several ledgers' review.
+    st.sidebar.caption(f"This database also holds rows for {len(others)} other ledger(s): " + ", ".join(
+        f"`{r.ledger_id[:16]}…` ({int(r.narratives)} narrated, {int(r.decisions)} decided)"
+        for r in others.itertuples()))
+    if LEGACY_LEDGER_ID in set(others["ledger_id"]) and ledger_id not in set(store.ledgers()["ledger_id"]):
+        st.sidebar.info(
+            "Rows from before review data was keyed by ledger sit under 'legacy'. If they were "
+            f"written for this ledger, adopt them first: `ledgerlens adopt-legacy {ledger_path} "
+            f"--db {db_path}` (no API calls). Narrating without adopting buys every note again."
+        )
 current = store.current()
 
 # ---- headline numbers ----
