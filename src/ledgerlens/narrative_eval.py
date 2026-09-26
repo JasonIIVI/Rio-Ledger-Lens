@@ -144,6 +144,66 @@ UNRECORDED = "unrecorded"
 #: word for it.
 RUNS_ROOT = Path("evals/narratives/runs")
 
+#: The committed case file and the published report, next to the runs: what
+#: `ledgerlens eval-narratives` writes by default.
+CASES_FILE = Path("evals/narratives/cases.json")
+REPORT_FILE = Path("docs/narrative-eval.md")
+
+#: The directories under the checkout that hold committed eval files. Rule 1
+#: at the point of writing: nothing built from any ledger but the generator's
+#: default may land in them, however the path is spelled.
+COMMITTED_DIRS = ("evals", "docs")
+
+#: The checkout this module was imported from (an editable install); the
+#: current directory covers a run from the repository root. Both are checked.
+_CHECKOUT = Path(__file__).resolve().parents[2]
+
+
+class CommittedPathError(ValueError):
+    """Rows, cases or a report built from another ledger, aimed at a committed path."""
+
+
+class LedgerChangedError(ValueError):
+    """Stored rows were built from a ledger other than the one on hand."""
+
+
+def _within(target: Path, root: Path) -> bool:
+    if target.is_relative_to(root):
+        return True
+    # A case-insensitive disk spells evals/ as EVALS/ too: compare what
+    # exists by identity, not by name.
+    return root.exists() and any(
+        p.exists() and p.samefile(root) for p in (target, *target.parents))
+
+
+def refuse_committed_path(path: str | Path, ledger_sha256: str | None, what: str) -> None:
+    """Refuse a write into a committed eval path unless the ledger is the default one.
+
+    A missing digest counts as "not the default": a caller that cannot say
+    which ledger its text came from does not get to publish it.
+    """
+    if not str(path).strip():
+        raise CommittedPathError(f"{what}: an empty path names no destination")
+    if ledger_sha256 == DEFAULT_LEDGER_SHA256:
+        return
+    target = Path(path).expanduser().resolve()
+    for base in {Path.cwd().resolve(), _CHECKOUT}:
+        for name in COMMITTED_DIRS:
+            root = (base / name).resolve()
+            if _within(target, root):
+                raise CommittedPathError(
+                    f"{what} {target} is under {root}, which is committed and holds files for "
+                    f"the default synthetic ledger only (sha256 {DEFAULT_LEDGER_SHA256[:12]}); "
+                    f"this ledger hashes to {(ledger_sha256 or 'unknown')[:12]}. Name a path "
+                    "outside evals/ and docs/ for it (out/ is gitignored), and never commit "
+                    "rows, cases or reports built from real data."
+                )
+
+
+def _hashes(rows, key: str) -> list[str]:
+    """The distinct values of one provenance hash over rows, in a fixed order."""
+    return sorted({r.get(key) or UNRECORDED for r in rows})
+
 
 def default_runs_dir(model: str, regrade: bool = False, root: str | Path = RUNS_ROOT) -> Path:
     """Where a run's rows go when the caller does not say.
@@ -182,33 +242,51 @@ class ResultsError(ValueError):
 
 #: What `ledgerlens generate` writes with its defaults (seed 20260922), as
 #: :func:`ledger_digest` sees it. The committed runs directory holds rows for
-#: this ledger only; a test ties the constant to the generator.
-DEFAULT_LEDGER_SHA256 = "b08d55f43962fc2c9e02969653c49c98f5a3e8ac1f6bc89d3456ee6dc8275de2"
+#: this ledger only; a test ties the constant to the generator. When the
+#: generator changes on purpose this moves with it: take the new value from
+#: the failing pin test, then regenerate the case file.
+DEFAULT_LEDGER_SHA256 = "646e73bb3942329e452bd2414bb5aa82f8a87f7971e27ddbed2c95d930e6bf5b"
+
+_AMOUNT_COLUMNS = ("debit", "credit")
+_DATE_COLUMNS = ("posting_date", "entered_at")
+_INT_COLUMNS = ("line_no", "fiscal_year", "period")
 
 
-def _canonical(value) -> str:
-    if isinstance(value, float):
-        return f"{value:.2f}"
-    if isinstance(value, pd.Timestamp):
-        return value.isoformat()
-    return str(value)
+def _canonical(column: str, value):
+    """One value as the digest sees it, the same from memory and from a CSV."""
+    if pd.isna(value):
+        return None  # NA, NaT, NaN and (below) an empty string are one token
+    if column in _AMOUNT_COLUMNS:
+        text = f"{float(value):.2f}"  # a whole-dollar int64 column hashes like a float one
+        return "0.00" if text == "-0.00" else text
+    if column in _DATE_COLUMNS:
+        return pd.Timestamp(value).isoformat()
+    if column in _INT_COLUMNS:
+        return int(value)
+    return str(value) or None
 
 
 def ledger_digest(lines: pd.DataFrame) -> str:
     """sha256 of a ledger's content in a canonical form.
 
-    The required columns only, lines in (entry_id, line_no) order, amounts to
-    the cent, dates in ISO form. Not the CSV's bytes: pandas writes floats
+    The required columns only, each row as a JSON list (so a ``|`` or a
+    newline inside a description cannot move a field boundary), amounts to
+    the cent, dates in ISO form, rows sorted as text (so row order and
+    duplicate keys do not matter). Not the CSV's bytes: pandas writes floats
     differently across versions, and the same ledger has to hash the same on
     every Python CI runs. Recorded on every eval row, so a reader can tell
-    which ledger a stored prompt came from - and the CLI refuses to write
-    rows for any other ledger into the committed directory.
+    which ledger a stored prompt came from - and the committed eval paths
+    refuse rows for any other ledger.
     """
     columns = list(REQUIRED_COLUMNS)
-    frame = lines.sort_values(["entry_id", "line_no"], kind="mergesort")[columns]
-    digest = hashlib.sha256("|".join(columns).encode("utf-8") + b"\n")
-    for row in frame.itertuples(index=False):
-        digest.update("|".join(_canonical(v) for v in row).encode("utf-8") + b"\n")
+    rows = sorted(
+        json.dumps([_canonical(c, v) for c, v in zip(columns, row)],
+                   ensure_ascii=False, separators=(",", ":"))
+        for row in lines[columns].itertuples(index=False, name=None)
+    )
+    digest = hashlib.sha256(json.dumps(columns).encode("utf-8") + b"\n")
+    for row in rows:
+        digest.update(row.encode("utf-8") + b"\n")
     return digest.hexdigest()
 
 
@@ -247,7 +325,11 @@ def load_cases(path: str | Path) -> list[Case]:
     return cases
 
 
-def save_cases(cases: list[Case], path: str | Path, generator: dict | None = None) -> Path:
+def save_cases(
+    cases: list[Case], path: str | Path, generator: dict | None = None,
+    ledger_sha256: str | None = None,
+) -> Path:
+    refuse_committed_path(path, ledger_sha256, "the case file")
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -484,9 +566,9 @@ def aggregate(rows: list[dict]) -> dict:
         "rates": rates,
         "usage": asdict(usage),
         "provenance": {
-            "cases_sha256": sorted({r.get("cases_sha256") or UNRECORDED for r in rows}),
-            "grader_sha256": sorted({r.get("grader_sha256") or UNRECORDED for r in graded}),
-            "ledger_sha256": sorted({r.get("ledger_sha256") or UNRECORDED for r in graded}),
+            "cases_sha256": _hashes(rows, "cases_sha256"),
+            "grader_sha256": _hashes(graded, "grader_sha256"),
+            "ledger_sha256": _hashes(graded, "ledger_sha256"),
             "regraded_at": max((r.get("regraded_at") or "" for r in rows), default="") or None,
             "rows_regraded": len(regraded),
             "rows_with_changed_result": len(changed),
@@ -588,26 +670,71 @@ def _regrade(
             row["cases_sha256"] = cases_sha256
 
 
-def _missing_row(case: Case, cases_sha256: str | None, errored: bool = False) -> dict:
-    """The row for a case a re-grade found nothing stored for. Never written to disk.
+#: Every key of a stored row, in the order run_eval writes them. A missing
+#: row carries the same keys, so a reader can treat the list uniformly.
+_ROW_KEYS = (
+    "entry_id", "archetype", "tests_fired", "status", "error", "model", "usage", "latency_s",
+    "narrative", "metrics", "prompt", "graded_at", "cases_sha256", "grader_sha256",
+    "ledger_sha256",
+)
 
-    Same keys as a graded row, so a reader can treat the list uniformly.
-    """
+
+def _missing_row(case: Case, cases_sha256: str | None, errored: bool = False) -> dict:
+    """The row for a case a re-grade found nothing stored for. Never written to disk."""
     why = "no stored result row for this case; a re-grade never narrates (run without --regrade)"
     if errored:
         why += " (the narrator failed on it: see errors.jsonl)"
-    return {
+    row = dict.fromkeys(_ROW_KEYS)
+    row.update({
         "entry_id": case.entry_id, "archetype": case.archetype, "tests_fired": case.tests_fired,
-        "status": "missing", "error": why,
-        "model": None, "usage": None, "latency_s": None, "narrative": None, "metrics": None,
-        "prompt": None, "graded_at": None, "cases_sha256": cases_sha256, "grader_sha256": None,
-        "ledger_sha256": None,
-    }
+        "status": "missing", "error": why, "cases_sha256": cases_sha256,
+    })
+    return row
+
+
+def _require_rows_from_this_ledger(
+    done: dict[str, dict], cases: list[Case], scored: pd.DataFrame, flags: pd.DataFrame,
+    lines: pd.DataFrame, ledger_sha256: str,
+) -> None:
+    """Prove each stored row's prompt came from the ledger on hand, then record its digest.
+
+    A resumed run reuses stored rows and a re-grade rewrites them, so both
+    have to know the rows belong to this ledger: a row that names another
+    ledger, or whose prompt does not rebuild from this one, is refused rather
+    than blended in. A re-grade is also where rows written before
+    ``ledger_sha256`` existed gain it, once their prompt has matched.
+    """
+    by_id = {c.entry_id: c for c in cases}
+    for entry_id, row in done.items():
+        if entry_id not in by_id:
+            continue  # a re-grade refuses these earlier; a resume carries them untouched
+        recorded = row.get("ledger_sha256")
+        if recorded and recorded != ledger_sha256:
+            raise LedgerChangedError(
+                f"row {entry_id} records ledger sha256 {recorded[:12]}, but this ledger hashes "
+                f"to {ledger_sha256[:12]}; use the ledger the rows were built from, or a fresh "
+                "--runs-dir"
+            )
+        try:
+            entry, entry_flags, entry_lines = entry_context(scored, flags, lines, entry_id)
+        except KeyError:
+            raise LedgerChangedError(
+                f"row {entry_id} is not an entry in this ledger; use the ledger the rows were "
+                "built from, or a fresh --runs-dir"
+            ) from None
+        if build_prompt(entry, entry_flags, entry_lines) != row.get("prompt"):
+            raise LedgerChangedError(
+                f"the stored prompt for {entry_id} does not rebuild from this ledger, so the row "
+                "was built from a different ledger or generator; use the ledger it came from, "
+                "or a fresh --runs-dir"
+            )
+        row["ledger_sha256"] = ledger_sha256
 
 
 def _regrade_run(
     cases: list[Case], results_path: Path, cases_sha256: str | None,
     allow_cases_change: bool, resume: bool,
+    scored: pd.DataFrame, flags: pd.DataFrame, lines: pd.DataFrame, ledger_sha256: str,
 ) -> list[dict]:
     """Re-score stored rows and nothing else: no narrator is in reach here."""
     if not resume:
@@ -627,6 +754,7 @@ def _regrade_run(
             "longer belong to a case to another --runs-dir"
         )
     errored = {r["entry_id"] for r in _read_jsonl(results_path.with_name("errors.jsonl"))}
+    _require_rows_from_this_ledger(done, cases, scored, flags, lines, ledger_sha256)
     _regrade(done, cases, cases_sha256, allow_cases_change)
     _write_rows(results_path, done.values())
     return [done[c.entry_id] if c.entry_id in done
@@ -645,7 +773,6 @@ def run_eval(
     regrade: bool = False,
     cases_sha256: str | None = None,
     allow_cases_change: bool = False,
-    ledger_sha256: str | None = None,
 ) -> list[dict]:
     """Run the real narrator over every case and grade the result.
 
@@ -658,21 +785,27 @@ def run_eval(
     directory with nothing stored is an error rather than a paid run.
 
     Every row records ``cases_sha256``, the case file it was graded against,
-    and ``ledger_sha256``, the ledger its prompt was built from (see
-    :func:`ledger_digest`). A re-grade under a different case file is refused
-    unless ``allow_cases_change``
-    says otherwise, and then the row keeps the hash it was first graded under
-    so the report can disclose it. Applying a grader fix leaves no such mark;
-    editing expectations after seeing the output cannot avoid one.
+    and ``ledger_sha256``, the digest of ``lines``, the ledger its prompt was
+    built from (see :func:`ledger_digest`; a re-grade rebuilds each stored
+    prompt from ``lines`` before it records the digest on rows that predate
+    it). A re-grade under a different case file is refused unless
+    ``allow_cases_change`` says otherwise, and then the row keeps the hash it
+    was first graded under so the report can disclose it. Applying a grader
+    fix leaves no such mark; editing expectations after seeing the output
+    cannot avoid one.
 
     Stored rows are never deleted: a run that does not resume into a
     directory that already holds rows is refused, so a worse result cannot
-    be quietly replaced by a better one.
+    be quietly replaced by a better one. A committed directory (under the
+    checkout's evals/ or docs/) is refused for any ledger but the default.
     """
+    ledger_sha256 = ledger_digest(lines)
+    refuse_committed_path(out_dir, ledger_sha256, "the runs directory")
     out_dir = Path(out_dir)
     results_path, errors_path = out_dir / "results.jsonl", out_dir / "errors.jsonl"
     if regrade:
-        return _regrade_run(cases, results_path, cases_sha256, allow_cases_change, resume)
+        return _regrade_run(cases, results_path, cases_sha256, allow_cases_change, resume,
+                            scored, flags, lines, ledger_sha256)
     out_dir.mkdir(parents=True, exist_ok=True)
     if not resume:
         for path in (results_path, errors_path):
@@ -682,6 +815,10 @@ def run_eval(
                     "--runs-dir (stored rows are never deleted)"
                 )
     done = _stored_rows(results_path) if resume else {}
+    if done:
+        # Stored rows are reused as they are, so they must be this ledger's:
+        # a run that stopped half-way must not resume on a different export.
+        _require_rows_from_this_ledger(done, cases, scored, flags, lines, ledger_sha256)
     grader = None
     if any(c.entry_id not in done for c in cases):
         _ = narrator.client  # a missing key fails here, once, not once per case as "invalid"
@@ -730,15 +867,12 @@ def run_eval(
 def _provenance_lines(summary: dict, runs_dir: str | Path | None) -> list[str]:
     """Which case file graded these rows, where the rows are, and any crossing."""
     provenance = summary.get("provenance") or {}
-    hashes = provenance.get("cases_sha256") or []
-    parts = ["Case file sha256: " + (
-        " / ".join(f"`{h}`" for h in hashes) if hashes else UNRECORDED)]
-    graders = provenance.get("grader_sha256") or []
-    parts.append("grader sha256: " + (
-        " / ".join(f"`{h}`" for h in graders) if graders else UNRECORDED))
-    ledgers = provenance.get("ledger_sha256") or []
-    parts.append("ledger sha256: " + (
-        " / ".join(f"`{h}`" for h in ledgers) if ledgers else UNRECORDED))
+    parts = []
+    for label, key in (("Case file sha256", "cases_sha256"), ("grader sha256", "grader_sha256"),
+                       ("ledger sha256", "ledger_sha256")):
+        hashes = provenance.get(key) or []
+        parts.append(f"{label}: " + (
+            " / ".join(f"`{h}`" for h in hashes) if hashes else UNRECORDED))
     if runs_dir:
         parts.append(f"rows: `{Path(runs_dir).as_posix()}/results.jsonl`")
     if provenance.get("regraded_at"):
@@ -833,7 +967,11 @@ def render_markdown(
         "",
         "## What this measures",
         "",
-        "Each case is a flagged entry from the default synthetic ledger. The real narrator writes "
+        ("Each case is a flagged entry from the default synthetic ledger. "
+         if (summary.get("provenance") or {}).get("ledger_sha256") == [DEFAULT_LEDGER_SHA256]
+         else "Each case is a flagged entry from the ledger whose sha256 is shown above, which "
+              "is not the default synthetic ledger. ")
+        + "The real narrator writes "
         "the note; the grader checks properties a reviewer would check before trusting it. These "
         "are floors, not a quality score: a note can pass every check and still be dull, so the "
         "narratives themselves are kept in the results file for reading. Expectations were written "

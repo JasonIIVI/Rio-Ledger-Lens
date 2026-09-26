@@ -179,17 +179,20 @@ def test_eval_narratives_select_writes_a_skeleton_and_will_not_clobber_it(tmp_pa
 
 
 def test_eval_narratives_defaults_to_a_dated_runs_dir_and_regrades_the_newest(
-        tmp_path, capsys, monkeypatch, llm, raw_ledger):
+        tmp_path, capsys, monkeypatch, llm):
     from ledgerlens import cli
+    from ledgerlens.ingest import load_csv
     from ledgerlens.narrate import DEFAULT_MODEL, Narrator
 
     monkeypatch.chdir(tmp_path)
-    # The default runs directory is for the default ledger only, so this test
-    # writes the generator's default output (as `ledgerlens generate` would).
-    lines, labels_frame = raw_ledger
-    lines.to_csv(tmp_path / "ledger.csv", index=False)
-    labels_frame.to_csv(tmp_path / "labels.csv", index=False)
+    main(["generate", "--start", "2024-01-01", "--end", "2024-06-30",
+          "--out-dir", str(tmp_path)])
     ledger, labels = str(tmp_path / "ledger.csv"), str(tmp_path / "labels.csv")
+    # The default runs directory is for the default ledger only. Declaring this
+    # six-month ledger to be it keeps the test off the 10,000-line one (the pin
+    # test covers the real constant, CSV round trip included).
+    monkeypatch.setattr(cli.narrative_eval, "DEFAULT_LEDGER_SHA256",
+                        cli.narrative_eval.ledger_digest(load_csv(ledger)))
     cases, report = tmp_path / "cases.json", tmp_path / "report.md"
     main(["eval-narratives", ledger, "--select", "--labels", labels, "--cases", str(cases)])
     capsys.readouterr()
@@ -231,6 +234,7 @@ def test_eval_narratives_keeps_other_ledgers_out_of_the_committed_paths(tmp_path
                                                                        monkeypatch, llm):
     """Rule 1 at the point of writing: another ledger needs its own --runs-dir and --cases."""
     from ledgerlens import cli
+    from ledgerlens.ingest import load_csv
     from ledgerlens.narrate import Narrator
 
     monkeypatch.chdir(tmp_path)
@@ -255,11 +259,39 @@ def test_eval_narratives_keeps_other_ledgers_out_of_the_committed_paths(tmp_path
     out = capsys.readouterr().out
     assert "default synthetic ledger" in out and "runs" in out
     assert client.calls == [] and not (tmp_path / "evals").exists()
+    # Nor does spelling a committed path out, an empty one, or the report's default.
+    for spelled in (["--runs-dir", "evals/narratives/runs/2026-10-01-claude-x"],
+                    ["--runs-dir", "./evals/narratives/runs/x"], ["--runs-dir", "docs"]):
+        assert main(argv + spelled) == 2, spelled
+        assert "committed" in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        main(argv + ["--runs-dir", ""])
+    capsys.readouterr()
+    no_out = [a for a in argv if a not in ("--out", str(tmp_path / "r.md"))]
+    assert main(no_out + ["--runs-dir", str(tmp_path / "runs")]) == 2  # docs/narrative-eval.md
+    assert "the report" in capsys.readouterr().out
+    assert main(["eval-narratives", ledger, "--select", "--labels", labels,
+                 "--cases", "./evals/narratives/cases.json", "--overwrite"]) == 2
+    capsys.readouterr()
+    assert client.calls == []
+    assert not (tmp_path / "evals").exists() and not (tmp_path / "docs").exists()
+
     assert main(argv + ["--runs-dir", str(tmp_path / "runs")]) == 0
     out = capsys.readouterr().out
     assert "not the default synthetic ledger" in out
     rows = [json.loads(line) for line in (tmp_path / "runs" / "results.jsonl").read_text().splitlines()]
-    assert len(rows) == 2 and all(len(r["ledger_sha256"]) == 64 for r in rows)
+    digest = cli.narrative_eval.ledger_digest(load_csv(ledger))
+    assert digest != cli.narrative_eval.DEFAULT_LEDGER_SHA256
+    assert len(rows) == 2 and all(r["ledger_sha256"] == digest for r in rows)
+    assert "not the default synthetic ledger" in (tmp_path / "r.md").read_text()
+
+
+def test_eval_narratives_rejects_a_limit_below_one(capsys):
+    """--limit 0 must not mean "every case", which is a paid run."""
+    with pytest.raises(SystemExit) as refused:
+        main(["eval-narratives", "x.csv", "--limit", "0"])
+    assert refused.value.code == 2
+    assert "at least 1" in capsys.readouterr().err
 
 
 def test_eval_narratives_grades_the_cases_and_writes_the_report(tmp_path, capsys, monkeypatch,
