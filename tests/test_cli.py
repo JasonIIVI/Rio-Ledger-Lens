@@ -290,6 +290,21 @@ def test_eval_narratives_keeps_other_ledgers_out_of_the_committed_paths(tmp_path
     assert "not the default synthetic ledger" in (tmp_path / "r.md").read_text()
 
 
+def test_eval_narratives_names_a_missing_or_damaged_case_file(tmp_path, capsys):
+    """Run from a directory that is not the checkout, the default case path is missing: a
+    message and exit 2, not a traceback; a file that is not a case set likewise."""
+    main(["generate", "--start", "2024-01-01", "--end", "2024-06-30",
+          "--out-dir", str(tmp_path)])
+    capsys.readouterr()
+    common = ["eval-narratives", str(tmp_path / "ledger.csv"),
+              "--runs-dir", str(tmp_path / "runs"), "--out", str(tmp_path / "report.md")]
+    assert main(common + ["--cases", str(tmp_path / "missing.json")]) == 2
+    assert "case file not found" in capsys.readouterr().out
+    (tmp_path / "damaged.json").write_text("{not json")
+    assert main(common + ["--cases", str(tmp_path / "damaged.json")]) == 2
+    assert "damaged.json" in capsys.readouterr().out
+
+
 def test_eval_narratives_rejects_a_limit_below_one(capsys):
     """--limit 0 must not mean "every case", which is a paid run."""
     with pytest.raises(SystemExit) as refused:

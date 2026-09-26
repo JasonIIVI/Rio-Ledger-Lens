@@ -336,7 +336,15 @@ def cmd_eval_narratives(args: argparse.Namespace) -> int:
               "expected_confidence by hand before running.")
         return 0
 
-    cases = narrative_eval.load_cases(args.cases)
+    try:
+        cases = narrative_eval.load_cases(args.cases)
+    except FileNotFoundError:
+        print(f"error: case file not found: {args.cases} (run from the repository root, or pass "
+              "--cases PATH)")
+        return 2
+    except ValueError as exc:  # not JSON, or a case the loader refuses (it says which)
+        print(f"error: {args.cases}: {exc}")
+        return 2
     problems = narrative_eval.check_cases(cases, scored)
     if problems:
         print("The case set is stale for this ledger:")
