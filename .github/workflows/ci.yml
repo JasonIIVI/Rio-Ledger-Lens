@@ -36,21 +36,45 @@ jobs:
         run: pytest -q --cov=ledgerlens --cov-report=term-missing
 
   # Rule 1 in CLAUDE.md: no ledgers, labels, workpapers, review databases or
-  # secrets are ever committed. The committed eval rows are covered by a test
-  # in the test job, which rebuilds every stored prompt from the default
-  # synthetic ledger.
+  # secrets are ever committed. This checks file names in the final tree; the
+  # committed eval rows are covered by a test in the test job, which rebuilds
+  # every stored prompt under evals/narratives/runs/ from the default synthetic
+  # ledger. Paths are read NUL-separated because git quotes and escapes any
+  # name with a non-ASCII byte, which would defeat a line-based grep.
   rule-1:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
       - name: No data or secret files are tracked
+        shell: bash
         run: |
-          bad=$(git ls-files | grep -E '\.csv$|\.xlsx$|\.parquet$|\.sqlite$|^data/|^\.env$' || true)
-          if [ -n "$bad" ]; then
-            echo "$bad" | sed 's/^/::error::tracked data or secret file: /'
-            exit 1
+          set -euo pipefail
+          export LC_ALL=C   # match bytes: grep in a UTF-8 locale skips lines holding invalid UTF-8
+          pattern='\.csv$|\.xlsx$|\.parquet$|\.sqlite$|^data/|^\.env$|\.sqlite3$|\.db$|(^|/)\.env(\..*)?$|(^|/)secrets/'
+          tmp=$(mktemp -d)
+
+          # On its own line so a git failure fails the step instead of reading as "no match".
+          git ls-files -z > "$tmp/tracked"
+          # Tracked files that .gitignore would ignore, i.e. force-added with `git add -f`.
+          git ls-files -z --cached --ignored --exclude-standard > "$tmp/bad"
+          # Tracked files matching the rule-1 patterns, any case; grep exit 1 = no match, >1 = error.
+          rc=0
+          grep -zaiE -e "$pattern" "$tmp/tracked" >> "$tmp/bad" || rc=$?
+          if [ "$rc" -gt 1 ]; then
+            echo "::error::rule-1 check could not run: grep exited $rc"
+            exit 2
           fi
+
+          sort -zu "$tmp/bad" > "$tmp/bad.sorted"
+          n=0
+          while IFS= read -r -d '' f; do
+            case $f in .env.example|*/.env.example) continue ;; esac  # re-included by .gitignore on purpose
+            f=${f//'%'/%25}; f=${f//$'\r'/%0D}; f=${f//$'\n'/%0A}    # one annotation per path
+            printf '::error::tracked data or secret file: %s\n' "$f"
+            n=$((n + 1))
+          done < "$tmp/bad.sorted"
+          if [ "$n" -gt 0 ]; then exit 1; fi
           echo "rule 1 holds: no data or secret files tracked"
 
   # Proves the documented numbers in the README are reproducible from a clean
