@@ -112,6 +112,7 @@ def test_narrate_without_a_key_explains_and_fails(tmp_path, capsys, monkeypatch)
 
 def test_narrate_caches_narratives_and_moves_on_next_time(tmp_path, capsys, monkeypatch, llm):
     from ledgerlens import cli
+    from ledgerlens.ingest import ledger_identity, load_csv
     from ledgerlens.narrate import Narrator
     from ledgerlens.review import ReviewStore
 
@@ -123,27 +124,29 @@ def test_narrate_caches_narratives_and_moves_on_next_time(tmp_path, capsys, monk
     monkeypatch.setattr(cli, "Narrator", lambda **kw: Narrator(client=client, **kw))
     db = tmp_path / "review.sqlite"
     ledger = str(tmp_path / "ledger.csv")
+    ident = ledger_identity(load_csv(ledger), ledger)
 
     assert main(["narrate", ledger, "--db", str(db), "--top", "4", "--no-model"]) == 0
     out = capsys.readouterr().out
     assert "Narrated 4/4" in out
     assert "read from cache" in out
-    assert len(ReviewStore(db).narrative_ids()) == 4
+    assert len(ReviewStore(db, ident).narrative_ids()) == 4
     assert client.calls[0]["output_config"]["effort"] == "medium"
 
     # Cached entries are skipped, so the next run narrates the next four down.
     assert main(["narrate", ledger, "--db", str(db), "--top", "4", "--no-model"]) == 0
     assert "Skipped 4" in capsys.readouterr().out
-    assert len(ReviewStore(db).narrative_ids()) == 8
+    assert len(ReviewStore(db, ident).narrative_ids()) == 8
     assert len(client.calls) == 8
 
     # --force redoes the top four instead of moving on.
     assert main(["narrate", ledger, "--db", str(db), "--top", "4", "--no-model", "--force"]) == 0
-    assert len(ReviewStore(db).narrative_ids()) == 8
+    assert len(ReviewStore(db, ident).narrative_ids()) == 8
     assert len(client.calls) == 12
 
 
 def test_report_attaches_an_existing_review_db_only(tmp_path, capsys):
+    from ledgerlens.ingest import ledger_identity, load_csv
     from ledgerlens.review import Decision, ReviewStore
 
     main(["generate", "--start", "2024-01-01", "--end", "2024-06-30",
@@ -155,8 +158,9 @@ def test_report_attaches_an_existing_review_db_only(tmp_path, capsys):
     assert "without review columns" in capsys.readouterr().out
     assert not missing.exists()  # a report must not create a review database
 
-    db = tmp_path / "review.sqlite"
-    ReviewStore(db).record(Decision("JE-2024-000001", "dismiss", "ana"))
+    db, csv = tmp_path / "review.sqlite", str(tmp_path / "ledger.csv")
+    ReviewStore(db, ledger_identity(load_csv(csv), csv)).record(
+        Decision("JE-2024-000001", "dismiss", "ana"))
     code = main(["report", str(tmp_path / "ledger.csv"), "--no-model", "--db", str(db),
                  "--out", str(tmp_path / "b.xlsx")])
     assert code == 0
@@ -356,7 +360,7 @@ def test_narrate_and_report_refuse_a_database_they_cannot_open_without_a_traceba
     main(["generate", "--start", "2024-01-01", "--end", "2024-03-31", "--out-dir", str(tmp_path)])
     ledger, out = str(tmp_path / "ledger.csv"), str(tmp_path / "w.xlsx")
     future = tmp_path / "future.sqlite"
-    ReviewStore(future)
+    ReviewStore(future, "csv:" + "a" * 64)
     with sqlite3.connect(str(future)) as raw:
         raw.execute("PRAGMA user_version = 99")
     capsys.readouterr()
@@ -372,3 +376,32 @@ def test_narrate_and_report_refuse_a_database_they_cannot_open_without_a_traceba
     assert main(["report", ledger, "--no-model", "--db", str(notes), "--out", out]) == 2
     assert "not a SQLite database" in capsys.readouterr().out
     assert notes.read_text() == "not a database\n"
+
+
+def test_narrate_files_each_ledger_under_its_own_identity(tmp_path, capsys, monkeypatch, llm):
+    """Two ledgers that share entry ids share one database and never each other's notes."""
+    from ledgerlens import cli
+    from ledgerlens.ingest import ledger_identity, load_csv
+    from ledgerlens.narrate import Narrator
+    from ledgerlens.review import ReviewStore
+
+    monkeypatch.chdir(tmp_path)
+    client = llm.client()
+    monkeypatch.setattr(cli, "Narrator", lambda **kw: Narrator(client=client, **kw))
+    db = tmp_path / "review.sqlite"
+    ledgers = []
+    for end in ("2024-03-31", "2024-06-30"):
+        out = tmp_path / end
+        main(["generate", "--start", "2024-01-01", "--end", end, "--out-dir", str(out)])
+        ledgers.append(str(out / "ledger.csv"))
+    capsys.readouterr()
+    for ledger in ledgers:
+        assert main(["narrate", ledger, "--db", str(db), "--top", "4", "--no-model"]) == 0
+        out = capsys.readouterr().out
+        assert "Skipped" not in out  # the second ledger's run starts from nothing of its own
+    identities = [ledger_identity(load_csv(path), path) for path in ledgers]
+    assert identities[0] != identities[1]
+    for ident in identities:
+        assert len(ReviewStore(db, ident).narrative_ids()) == 4
+    assert ReviewStore(db, identities[0]).ledgers()["ledger_id"].tolist() == sorted(identities)
+    assert len(client.calls) == 8

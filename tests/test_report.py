@@ -70,7 +70,7 @@ def _note(summary, confidence="medium"):
 def test_review_columns_show_the_note_the_reviewer_saw(ledger, labels, tmp_path):
     from ledgerlens.review import Decision, ReviewStore
 
-    store = ReviewStore(tmp_path / "review.sqlite")
+    store = ReviewStore(tmp_path / "review.sqlite", "csv:test")
     flags = jets.run_all(ledger)
     scored = jets.score_entries(ledger, flags)
     top, second, third, fourth, fifth = scored[scored["risk_score"] > 0]["entry_id"].iloc[:5]

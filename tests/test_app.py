@@ -24,6 +24,14 @@ def data_dir(tmp_path_factory):
     return out
 
 
+@pytest.fixture(scope="module")
+def identity(data_dir):
+    """What the dashboard binds its store to for this ledger."""
+    from ledgerlens.ingest import ledger_identity, load_csv
+
+    return ledger_identity(load_csv(data_dir / "ledger.csv"), data_dir / "ledger.csv")
+
+
 @pytest.fixture(autouse=True)
 def _away_from_the_repo(monkeypatch, tmp_path):
     """The script's default paths are relative; nothing here may touch the real data/."""
@@ -43,7 +51,7 @@ def _run(data_dir, db, reviewer=""):
     return at
 
 
-def test_dashboard_renders_the_queue_and_the_review_loop(data_dir, tmp_path):
+def test_dashboard_renders_the_queue_and_the_review_loop(data_dir, tmp_path, identity):
     db = tmp_path / "review.sqlite"
     at = _run(data_dir, db, reviewer="ana")
 
@@ -72,8 +80,7 @@ def _click_record(at):
     assert not at.exception, at.exception
 
 
-def test_a_decision_records_the_note_the_reviewer_read_not_one_written_meanwhile(data_dir,
-                                                                                   tmp_path):
+def test_a_decision_records_the_note_the_reviewer_read_not_one_written_meanwhile(data_dir, tmp_path, identity):
     """A submit reruns the script, so the note is fetched again at that moment.
 
     If a version was written in between, the decision must not claim the
@@ -82,7 +89,7 @@ def test_a_decision_records_the_note_the_reviewer_read_not_one_written_meanwhile
     db = tmp_path / "review.sqlite"
     at = _run(data_dir, db, reviewer="ana")
     picked = at.selectbox(key="picked").value
-    store = ReviewStore(db)
+    store = ReviewStore(db, identity)
     first = store.save_narrative(picked, _note("what ana read"), model="claude-test")
     at.run()
     assert any(f"note #{first}" in c.value for c in at.caption)
@@ -101,12 +108,12 @@ def test_a_decision_records_the_note_the_reviewer_read_not_one_written_meanwhile
     assert history["narrative_id"].tolist() == [second]
 
 
-def test_a_refusal_keeps_the_draft_and_the_next_click_records_it(data_dir, tmp_path):
+def test_a_refusal_keeps_the_draft_and_the_next_click_records_it(data_dir, tmp_path, identity):
     """No note on screen, a note written before the submit: refused, nothing lost."""
     db = tmp_path / "review.sqlite"
     at = _run(data_dir, db, reviewer="ana")
     picked = at.selectbox(key="picked").value
-    store = ReviewStore(db)
+    store = ReviewStore(db, identity)
     written = store.save_narrative(picked, _note("written before the submit"), model="claude-test")
 
     _submit(at, "Escalate", "checked the purchase order")
@@ -126,21 +133,21 @@ def test_a_refusal_keeps_the_draft_and_the_next_click_records_it(data_dir, tmp_p
     assert at.radio(key=f"choice-{picked}").value == "accept"
 
 
-def test_a_decision_with_no_note_on_screen_records_none(data_dir, tmp_path):
+def test_a_decision_with_no_note_on_screen_records_none(data_dir, tmp_path, identity):
     db = tmp_path / "review.sqlite"
     at = _run(data_dir, db, reviewer="ana")
     picked = at.selectbox(key="picked").value
     _submit(at, decision="Dismiss", note="routine")
-    history = ReviewStore(db).history(picked)
+    history = ReviewStore(db, identity).history(picked)
     assert history["decision"].tolist() == ["dismiss"]
     assert history["narrative_id"].isna().all()
 
 
-def test_dashboard_shows_recorded_decisions_and_the_note_they_saw(data_dir, tmp_path):
+def test_dashboard_shows_recorded_decisions_and_the_note_they_saw(data_dir, tmp_path, identity):
     db = tmp_path / "review.sqlite"
     first = _run(data_dir, db, reviewer="ana")
     picked = first.selectbox(key="picked").value
-    store = ReviewStore(db)
+    store = ReviewStore(db, identity)
     seen = store.save_narrative(picked, {
         "summary": "A note.", "why_flagged": "w", "evidence_to_request": ["x"],
         "suggested_control": "c", "confidence": "low",
@@ -152,12 +159,13 @@ def test_dashboard_shows_recorded_decisions_and_the_note_they_saw(data_dir, tmp_
     assert decided.value == "1"
     assert any("escalate 1" in c.value for c in at.caption)
     assert any(f"note #{seen}" in c.value for c in at.caption)
+    assert any(identity in c.value for c in at.caption)  # the sidebar names the ledger
     assert any("Decision history" in m.value for m in at.markdown)
 
 
-def test_the_dashboard_refuses_a_database_it_cannot_read_without_a_traceback(data_dir, tmp_path):
+def test_the_dashboard_refuses_a_database_it_cannot_read_without_a_traceback(data_dir, tmp_path, identity):
     db = tmp_path / "review.sqlite"
-    ReviewStore(db)
+    ReviewStore(db, identity)
     with sqlite3.connect(str(db)) as raw:
         raw.execute("PRAGMA user_version = 99")
     at = _run(data_dir, db, reviewer="ana")  # _run asserts the script raised nothing

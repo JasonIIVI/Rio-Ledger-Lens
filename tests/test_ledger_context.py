@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from ledgerlens.ingest import ledger_identity
 from ledgerlens.ledger_context import ENV_LEDGER, ENV_REVIEW_DB, LedgerContext, records
 from ledgerlens.review import Decision, ReviewStore
 
@@ -76,7 +77,7 @@ def test_review_data_is_read_but_a_database_is_never_created(small_ledger, tmp_p
     assert not db.exists()
 
     entry_id = context.top_exceptions(limit=1)["entries"][0]["entry_id"]
-    store = ReviewStore(db)
+    store = ReviewStore(db, context.ledger_id)
     seen = store.save_narrative(entry_id, {"summary": "s", "why_flagged": "w",
                                            "evidence_to_request": ["e"],
                                            "suggested_control": "c", "confidence": "low"}, model="m")
@@ -124,9 +125,9 @@ def test_review_data_is_read_but_a_database_is_never_created(small_ledger, tmp_p
     # workpaper gives, because both read ReviewStore.review_state.
     second = context.top_exceptions(limit=2)["entries"][1]["entry_id"]
     with sqlite3.connect(str(db)) as raw:
-        raw.execute("INSERT INTO decisions (entry_id, decision, reviewer, note, decided_at) "
-                    "VALUES (?, 'accept', 'ben', 'checked', '2026-01-01T00:00:00+00:00')",
-                    (second,))
+        raw.execute("INSERT INTO decisions (entry_id, decision, reviewer, note, decided_at, "
+                    "ledger_id) VALUES (?, 'accept', 'ben', 'checked', "
+                    "'2026-01-01T00:00:00+00:00', ?)", (second, context.ledger_id))
     after = store.save_narrative(second, {"summary": "later", "why_flagged": "w",
                                           "evidence_to_request": ["e"],
                                           "suggested_control": "c", "confidence": "low"}, model="m")
@@ -146,14 +147,14 @@ def test_review_data_is_read_but_a_database_is_never_created(small_ledger, tmp_p
 def test_the_review_database_is_opened_read_only(small_ledger, tmp_path):
     ledger, _ = small_ledger
     db = tmp_path / "review.sqlite"
-    ReviewStore(db).record(Decision("JE-2024-000001", "dismiss", "ana"))
+    ReviewStore(db, ledger_identity(ledger)).record(Decision("JE-2024-000001", "dismiss", "ana"))
     context = LedgerContext(ledger, review_db=db).load()
 
     store = context._store()
     assert store.is_read_only
     with pytest.raises(sqlite3.OperationalError, match="readonly"):
         store.record(Decision("JE-2024-000002", "accept", "ana"))
-    assert ReviewStore(db).decided_ids() == {"JE-2024-000001"}
+    assert ReviewStore(db, ledger_identity(ledger)).decided_ids() == {"JE-2024-000001"}
 
     # An empty file is reported, not given a schema.
     empty = tmp_path / "empty.sqlite"
@@ -202,3 +203,19 @@ def test_records_are_plain_json(context):
     rows = records(context.combined.head(2), ("entry_id", "posting_date", "entry_amount"))
     assert isinstance(rows[0]["posting_date"], str)
     assert isinstance(rows[0]["entry_amount"], float)
+
+
+def test_the_context_binds_the_store_to_the_ledger_it_serves(ledger, small_ledger, tmp_path):
+    db = tmp_path / "review.sqlite"
+    small, _ = small_ledger
+    big = LedgerContext(ledger, review_db=db).load()
+    little = LedgerContext(small, review_db=db).load()
+    assert big.ledger_id == ledger_identity(ledger) and little.ledger_id == ledger_identity(small)
+    assert big.ledger_id != little.ledger_id
+    shared = "JE-2024-000001"  # both generators start numbering here
+    ReviewStore(db, big.ledger_id).record(Decision(shared, "dismiss", "ana"))
+    assert big.review_status()["decided"] == 1
+    status = little.review_status()
+    assert status["decided"] == 0 and status["ledger_id"] == little.ledger_id
+    assert status["other_ledgers"] == {big.ledger_id: {"narratives": 0, "decisions": 1}}
+    assert LedgerContext(small, review_db=db, ledger_id="qbo:1").load().ledger_id == "qbo:1"

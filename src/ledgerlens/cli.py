@@ -22,7 +22,7 @@ from . import evaluate, jets, narrative_eval
 from .benford import benford_test, segmented_benford
 from .env import load_dotenv
 from .generate import generate_ledger
-from .ingest import load_csv, load_labels
+from .ingest import ledger_identity, load_csv, load_labels
 from .model import combine, score_ledger
 from .narrate import DEFAULT_EFFORT, DEFAULT_MAX_TOKENS, DEFAULT_MODEL, NarrativeError, Narrator
 from .report import build_workpaper
@@ -182,7 +182,7 @@ def cmd_report(args: argparse.Namespace) -> int:
     store = None
     if args.db and Path(args.db).exists():
         try:
-            store = ReviewStore.read_only(args.db)
+            store = ReviewStore.read_only(args.db, ledger_identity(df, args.ledger))
         except RuntimeError as exc:
             print(f"error: {exc}")
             return 2
@@ -209,11 +209,13 @@ def cmd_narrate(args: argparse.Namespace) -> int:
         model_scores, _ = score_ledger(df)
         scored = combine(scored, model_scores)
 
+    ledger_id = ledger_identity(df, args.ledger)
     try:
-        store = ReviewStore(args.db)
+        store = ReviewStore(args.db, ledger_id)
     except RuntimeError as exc:
         print(f"error: {exc}")
         return 2
+    print(f"Review database {args.db}, rows keyed by {ledger_id}")
     skip = set() if args.force else store.narrative_ids()
     narrator = Narrator(model=args.model, max_tokens=args.max_tokens, effort=args.effort)
     try:

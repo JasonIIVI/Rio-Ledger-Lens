@@ -14,6 +14,7 @@ pytest.importorskip("mcp")
 from mcp import Client  # noqa: E402
 
 from ledgerlens import mcp_server  # noqa: E402
+from ledgerlens.ingest import ledger_identity  # noqa: E402
 from ledgerlens.ledger_context import LedgerContext  # noqa: E402
 from ledgerlens.review import Decision, ReviewStore  # noqa: E402
 
@@ -33,13 +34,14 @@ def review_db(small_ledger, tmp_path):
     """A real store with the riskiest entry narrated and decided."""
     ledger, _ = small_ledger
     top = LedgerContext(ledger).load().top_exceptions(limit=1)["entries"][0]["entry_id"]
-    store = ReviewStore(tmp_path / "review.sqlite")
+    ledger_id = ledger_identity(ledger)
+    store = ReviewStore(tmp_path / "review.sqlite", ledger_id)
     seen = store.save_narrative(top, {
         "summary": "A note.", "why_flagged": "w", "evidence_to_request": ["x"],
         "suggested_control": "c", "confidence": "low",
     }, model="claude-test")
     store.record(Decision(top, "escalate", "ana", "needs a senior", narrative_id=seen))
-    return SimpleNamespace(path=store.path, entry_id=top, narrative_id=seen)
+    return SimpleNamespace(path=store.path, entry_id=top, narrative_id=seen, ledger_id=ledger_id)
 
 
 @pytest.fixture
@@ -125,6 +127,9 @@ async def test_explain_entry_returns_the_note_and_the_decision_from_the_store(cl
     assert status.structured_content["exists"] is True
     assert status.structured_content["decided"] == 1
     assert status.structured_content["narratives"] == 1
+    assert status.structured_content["ledger_id"] == review_db.ledger_id
+    assert status.structured_content["other_ledgers"] == {}
+    assert detail["narrative"]["ledger_id"] == review_db.ledger_id
 
 
 @pytest.mark.anyio
@@ -137,7 +142,8 @@ async def test_the_server_opens_the_review_database_read_only(client, review_db)
         store.record(Decision(review_db.entry_id, "accept", "ana"))
     with pytest.raises(sqlite3.OperationalError, match="readonly"):
         store.save_narrative(review_db.entry_id, {"summary": "x"})
-    assert ReviewStore(review_db.path).history(review_db.entry_id)["decision"].tolist() == ["escalate"]
+    assert ReviewStore(review_db.path, review_db.ledger_id).history(
+        review_db.entry_id)["decision"].tolist() == ["escalate"]
 
 
 @pytest.mark.anyio

@@ -20,7 +20,7 @@ import pandas as pd
 
 from . import jets
 from .benford import benford_test, segmented_benford
-from .ingest import load_csv
+from .ingest import ledger_identity, load_csv
 from .model import combine, score_ledger
 from .narrate import entry_context
 from .review import ReviewStore
@@ -87,10 +87,14 @@ class LedgerContext:
         ledger: str | Path | pd.DataFrame,
         review_db: str | Path | None = None,
         model_top_pct: float = 0.02,
+        ledger_id: str | None = None,
     ) -> None:
         self._ledger = ledger
         self.review_db = Path(review_db) if review_db else None
         self.model_top_pct = model_top_pct
+        #: The identity the review store is bound to; computed from the ledger
+        #: at load unless the caller names it (a QuickBooks pull's ``qbo:<realm>``).
+        self.ledger_id = ledger_id
         self.lines: pd.DataFrame | None = None
         self.flags: pd.DataFrame | None = None
         self.combined: pd.DataFrame | None = None
@@ -111,7 +115,10 @@ class LedgerContext:
         """Run both tiers. Idempotent; the first call is the expensive one."""
         if self.loaded:
             return self
-        df = self._ledger if isinstance(self._ledger, pd.DataFrame) else load_csv(self._ledger)
+        from_file = not isinstance(self._ledger, pd.DataFrame)
+        df = load_csv(self._ledger) if from_file else self._ledger
+        if self.ledger_id is None:
+            self.ledger_id = ledger_identity(df, self._ledger if from_file else None)
         flags = jets.run_all(df)
         scored = jets.score_entries(df, flags)
         model_scores, report = score_ledger(df)
@@ -122,7 +129,8 @@ class LedgerContext:
 
     def _store(self) -> ReviewStore | None:
         if self.review_db is not None and self.review_db.exists():
-            return ReviewStore.read_only(self.review_db)
+            self.load()
+            return ReviewStore.read_only(self.review_db, self.ledger_id)
         return None
 
     def _attach_review(self, rows: list[dict]) -> list[dict]:
@@ -291,16 +299,23 @@ class LedgerContext:
         if store is None:
             return {
                 "review_db": str(self.review_db) if self.review_db else None,
-                "exists": False, "flagged": flagged, "decided": 0, "outstanding": flagged,
-                "by_decision": {}, "narratives": 0,
+                "exists": False, "ledger_id": self.ledger_id, "flagged": flagged, "decided": 0,
+                "outstanding": flagged, "by_decision": {}, "narratives": 0, "other_ledgers": {},
             }
         summary = store.summary()
         return {
             "review_db": str(self.review_db),
             "exists": True,
+            "ledger_id": self.ledger_id,
             "flagged": flagged,
             "decided": len(store.decided_ids()),
             "outstanding": int(len(store.outstanding(self.combined))),
             "by_decision": {str(r.decision): int(r.entries) for r in summary.itertuples()},
             "narratives": len(store.narrative_ids()),
+            # Rows this file holds for other ledgers, 'legacy' included: counted,
+            # never shown as this ledger's.
+            "other_ledgers": {
+                str(r.ledger_id): {"narratives": int(r.narratives), "decisions": int(r.decisions)}
+                for r in store.other_ledgers().itertuples()
+            },
         }

@@ -19,7 +19,7 @@ import streamlit as st
 from ledgerlens import evaluate, jets
 from ledgerlens.benford import benford_test
 from ledgerlens.env import load_dotenv
-from ledgerlens.ingest import load_csv, load_labels
+from ledgerlens.ingest import ledger_identity, load_csv, load_labels
 from ledgerlens.model import combine, score_ledger
 from ledgerlens.narrate import NarrativeError, Narrator, build_prompt, entry_context
 from ledgerlens.review import DECISIONS, Decision, ReviewStore
@@ -33,12 +33,15 @@ DATA = Path("data")
 @st.cache_data(show_spinner=False)
 def load(ledger_path: str, labels_path: str):
     df = load_csv(ledger_path)
+    # Computed here so it is cached with the frame it describes: the store is
+    # bound to the ledger on screen, never to a stale one.
+    ledger_id = ledger_identity(df, ledger_path)
     flags = jets.run_all(df)
     scored = jets.score_entries(df, flags)
     scores, report = score_ledger(df)
     combined = combine(scored, scores)
     labels = load_labels(labels_path) if Path(labels_path).exists() else None
-    return df, flags, combined, scores, report, labels
+    return df, flags, combined, scores, report, labels, ledger_id
 
 
 def md(text: str) -> str:
@@ -78,15 +81,17 @@ if not Path(ledger_path).exists():
     st.warning("No ledger found. Run `ledgerlens generate` first.")
     st.stop()
 
-df, flags, combined, scores, report, labels = load(ledger_path, labels_path)
+df, flags, combined, scores, report, labels, ledger_id = load(ledger_path, labels_path)
 
 # The store is cheap to open and its reads are deliberately never cached: a
-# decision recorded a second ago has to show on the very next rerun.
+# decision recorded a second ago has to show on the very next rerun. It is
+# bound to this ledger's identity, so another ledger's notes never show here.
 try:
-    store = ReviewStore(db_path)
+    store = ReviewStore(db_path, ledger_id)
 except RuntimeError as exc:  # a file from a newer version, or not a review database at all
     st.error(str(exc))
     st.stop()
+st.sidebar.caption(f"Review rows keyed by `{ledger_id}`")
 current = store.current()
 
 # ---- headline numbers ----
