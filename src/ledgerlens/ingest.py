@@ -8,15 +8,100 @@ hands off to :func:`prepare`.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import re
 from pathlib import Path
 
 import pandas as pd
 
 from .schema import DERIVED_COLUMNS, REQUIRED_COLUMNS, is_us_holiday
 
+#: Written beside a ledger by a source that knows what the ledger is (a
+#: QuickBooks pull): the review store then keys its rows by that identity
+#: rather than by the CSV's digest, which a re-pull would change.
+IDENTITY_SUFFIX = ".identity.json"
+_QBO_ID = re.compile(r"^qbo:[A-Za-z0-9][A-Za-z0-9_.-]*$")
+
+_AMOUNT_COLUMNS = ("debit", "credit")
+_DATE_COLUMNS = ("posting_date", "entered_at")
+_INT_COLUMNS = ("line_no", "fiscal_year", "period")
+
 
 class SchemaError(ValueError):
     """Raised when an extract is missing columns the tests depend on."""
+
+
+class IdentityError(ValueError):
+    """An identity sidecar exists but cannot be trusted."""
+
+
+def _canonical(column: str, value):
+    """One value as the digest sees it, the same from memory and from a CSV."""
+    if pd.isna(value):
+        return None  # NA, NaT, NaN and (below) an empty string are one token
+    if column in _AMOUNT_COLUMNS:
+        text = f"{float(value):.2f}"  # a whole-dollar int64 column hashes like a float one
+        return "0.00" if text == "-0.00" else text
+    if column in _DATE_COLUMNS:
+        return pd.Timestamp(value).isoformat()
+    if column in _INT_COLUMNS:
+        return int(value)
+    return str(value) or None
+
+
+def ledger_digest(lines: pd.DataFrame) -> str:
+    """sha256 of a prepared ledger's content in a canonical form.
+
+    The required columns only, each row as a JSON list (so a ``|`` or a
+    newline inside a description cannot move a field boundary), amounts to
+    the cent, dates in ISO form, rows sorted as text (so row order and
+    duplicate keys do not matter). Not the CSV's bytes: pandas writes floats
+    differently across versions, and the same ledger has to hash the same on
+    every Python CI runs. Every eval row records it, and it is half of a
+    ledger's identity in the review store (see :func:`ledger_identity`), so
+    a change to this form is a schema-level event: it renames every ledger.
+    """
+    columns = list(REQUIRED_COLUMNS)
+    rows = sorted(
+        json.dumps([_canonical(c, v) for c, v in zip(columns, row)],
+                   ensure_ascii=False, separators=(",", ":"))
+        for row in lines[columns].itertuples(index=False, name=None)
+    )
+    digest = hashlib.sha256(json.dumps(columns).encode("utf-8") + b"\n")
+    for row in rows:
+        digest.update(row.encode("utf-8") + b"\n")
+    return digest.hexdigest()
+
+
+def identity_path(ledger_path: str | Path) -> Path:
+    """Where a ledger's identity sidecar sits: ``data/ledger.identity.json`` beside the CSV."""
+    return Path(ledger_path).with_suffix(IDENTITY_SUFFIX)
+
+
+def ledger_identity(lines: pd.DataFrame, path: str | Path | None = None) -> str:
+    """The key the review store files this ledger's notes and decisions under.
+
+    ``csv:<sha256>`` of the prepared frame's canonical form, or the id named
+    by a sidecar beside the file (``qbo:<realm_id>``, written by a
+    QuickBooks pull, stable across re-pulls). A sidecar that exists but is
+    malformed is an error, never a fallback: filing a QuickBooks ledger's
+    review under a CSV digest would split its history in two.
+    """
+    if path is not None:
+        sidecar = identity_path(path)
+        if sidecar.exists():
+            try:
+                payload = json.loads(sidecar.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                raise IdentityError(f"{sidecar} cannot be read as JSON ({exc})") from exc
+            ledger_id = payload.get("ledger_id") if isinstance(payload, dict) else None
+            if not isinstance(ledger_id, str) or not _QBO_ID.match(ledger_id):
+                raise IdentityError(
+                    f'{sidecar} must hold {{"ledger_id": "qbo:<realm_id>"}}, got {ledger_id!r}'
+                )
+            return ledger_id
+    return "csv:" + ledger_digest(lines)
 
 
 def validate(df: pd.DataFrame) -> None:

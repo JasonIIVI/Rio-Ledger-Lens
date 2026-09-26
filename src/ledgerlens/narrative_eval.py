@@ -40,6 +40,7 @@ from pathlib import Path
 import pandas as pd
 
 from . import narrate
+from .ingest import ledger_digest
 from .narrate import (
     NarrativeError,
     Narrator,
@@ -48,7 +49,7 @@ from .narrate import (
     entry_context,
     validate,
 )
-from .schema import REQUIRED_COLUMNS, AnomalyType
+from .schema import AnomalyType
 
 #: Wording that turns a question into a finding. Case-insensitive regexes over
 #: the whole note. A floor, not a ceiling: a note can be assertive without any
@@ -246,48 +247,6 @@ class ResultsError(ValueError):
 #: generator changes on purpose this moves with it: take the new value from
 #: the failing pin test, then regenerate the case file.
 DEFAULT_LEDGER_SHA256 = "646e73bb3942329e452bd2414bb5aa82f8a87f7971e27ddbed2c95d930e6bf5b"
-
-_AMOUNT_COLUMNS = ("debit", "credit")
-_DATE_COLUMNS = ("posting_date", "entered_at")
-_INT_COLUMNS = ("line_no", "fiscal_year", "period")
-
-
-def _canonical(column: str, value):
-    """One value as the digest sees it, the same from memory and from a CSV."""
-    if pd.isna(value):
-        return None  # NA, NaT, NaN and (below) an empty string are one token
-    if column in _AMOUNT_COLUMNS:
-        text = f"{float(value):.2f}"  # a whole-dollar int64 column hashes like a float one
-        return "0.00" if text == "-0.00" else text
-    if column in _DATE_COLUMNS:
-        return pd.Timestamp(value).isoformat()
-    if column in _INT_COLUMNS:
-        return int(value)
-    return str(value) or None
-
-
-def ledger_digest(lines: pd.DataFrame) -> str:
-    """sha256 of a ledger's content in a canonical form.
-
-    The required columns only, each row as a JSON list (so a ``|`` or a
-    newline inside a description cannot move a field boundary), amounts to
-    the cent, dates in ISO form, rows sorted as text (so row order and
-    duplicate keys do not matter). Not the CSV's bytes: pandas writes floats
-    differently across versions, and the same ledger has to hash the same on
-    every Python CI runs. Recorded on every eval row, so a reader can tell
-    which ledger a stored prompt came from - and the committed eval paths
-    refuse rows for any other ledger.
-    """
-    columns = list(REQUIRED_COLUMNS)
-    rows = sorted(
-        json.dumps([_canonical(c, v) for c, v in zip(columns, row)],
-                   ensure_ascii=False, separators=(",", ":"))
-        for row in lines[columns].itertuples(index=False, name=None)
-    )
-    digest = hashlib.sha256(json.dumps(columns).encode("utf-8") + b"\n")
-    for row in rows:
-        digest.update(row.encode("utf-8") + b"\n")
-    return digest.hexdigest()
 
 
 def cases_digest(path: str | Path) -> str:
