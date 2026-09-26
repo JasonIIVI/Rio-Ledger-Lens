@@ -138,3 +138,21 @@ async def test_the_server_opens_the_review_database_read_only(client, review_db)
     with pytest.raises(sqlite3.OperationalError, match="readonly"):
         store.save_narrative(review_db.entry_id, {"summary": "x"})
     assert ReviewStore(review_db.path).history(review_db.entry_id)["decision"].tolist() == ["escalate"]
+
+
+@pytest.mark.anyio
+async def test_a_review_database_the_store_refuses_is_a_tool_error_the_client_can_read(
+        small_ledger, review_db):
+    """The store's message (upgrade, or not a review database) has to reach Claude Desktop."""
+    with sqlite3.connect(str(review_db.path)) as raw:
+        raw.execute("PRAGMA user_version = 99")
+    ledger, _ = small_ledger
+    mcp_server.use_context(LedgerContext(ledger, review_db=review_db.path))
+    async with Client(mcp_server.mcp, raise_exceptions=True) as c:
+        for name, args in (("ledgerlens_review_status", {}), ("ledgerlens_summary", {}),
+                           ("ledgerlens_explain_entry", {"entry_id": review_db.entry_id})):
+            result = await c.call_tool(name, args)
+            assert result.is_error, name
+            assert "newer LedgerLens" in result.content[0].text, name
+        benford = await c.call_tool("ledgerlens_benford", {})
+        assert not benford.is_error  # no review data involved

@@ -2,15 +2,18 @@
 
 import hashlib
 import inspect
+import io
 import json
 import re
 import subprocess
 import sys
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from ledgerlens import jets, narrate, narrative_eval
+from ledgerlens.ingest import load_csv, prepare
 from ledgerlens.model import combine, score_ledger
 from ledgerlens.narrate import (
     SYSTEM_PROMPT,
@@ -21,11 +24,14 @@ from ledgerlens.narrate import (
 )
 from ledgerlens.narrative_eval import (
     CITATIONS,
+    DEFAULT_LEDGER_SHA256,
     GRADER_NOTES,
     METRICS,
     UNRECORDED,
     Case,
     CasesChangedError,
+    CommittedPathError,
+    LedgerChangedError,
     RegradeError,
     ResultsError,
     aggregate,
@@ -35,8 +41,10 @@ from ledgerlens.narrative_eval import (
     default_runs_dir,
     grade,
     grader_digest,
+    ledger_digest,
     load_cases,
     numbers_in,
+    refuse_committed_path,
     render_markdown,
     run_eval,
     save_cases,
@@ -423,6 +431,54 @@ def test_the_grader_hash_is_never_computed_at_import(monkeypatch):
         grader_digest()
 
 
+def test_ledger_digest_is_canonical_and_pins_the_default_ledger(ledger, raw_ledger):
+    """Row order, float formatting and the CSV round trip do not change it; a cent does."""
+    assert ledger_digest(ledger) == DEFAULT_LEDGER_SHA256
+    assert ledger_digest(ledger.sample(frac=1, random_state=3)) == DEFAULT_LEDGER_SHA256
+    lines, _ = raw_ledger  # what `ledgerlens generate` writes, read back as the CLI reads it
+    assert ledger_digest(load_csv(io.StringIO(lines.to_csv(index=False)))) == DEFAULT_LEDGER_SHA256
+    changed = ledger.copy()
+    changed.loc[changed.index[0], "debit"] += 0.01
+    assert ledger_digest(changed) != DEFAULT_LEDGER_SHA256
+
+
+def _lines(**overrides):
+    base = {
+        "entry_id": ["JE-1", "JE-1"], "line_no": [1, 2],
+        "posting_date": ["2024-01-02", "2024-01-02"], "entered_at": ["2024-01-02 09:00:00"] * 2,
+        "fiscal_year": [2024, 2024], "period": [1, 1],
+        "account_code": ["1000", "4000"], "account_name": ["Cash", "Sales"],
+        "account_type": ["Asset", "Revenue"], "description": ["Rent", "Rent"],
+        "debit": [100.0, 0.0], "credit": [0.0, 100.0], "source": ["Manual"] * 2,
+        "created_by": ["u1"] * 2,
+    }
+    base.update(overrides)
+    return pd.DataFrame(base)
+
+
+def _via_csv(frame):
+    return load_csv(io.StringIO(frame.to_csv(index=False)))
+
+
+def test_ledger_digest_is_the_same_from_memory_and_csv_and_never_collides_on_a_separator():
+    """A QuickBooks pull and its CSV export must hash alike; two ledgers must never hash alike."""
+    assert ledger_digest(prepare(_lines(debit=[100, 0], credit=[0, 100]))) == \
+        ledger_digest(prepare(_lines()))  # whole-dollar int64 amounts, float amounts
+    blank = _lines(description=["", "Rent"])
+    assert ledger_digest(prepare(blank)) == ledger_digest(_via_csv(blank))  # "" and <NA>
+    zeros = _lines(account_code=["0100", "4000"])
+    assert ledger_digest(prepare(zeros)) == ledger_digest(_via_csv(zeros))  # leading zeros kept
+    assert _via_csv(zeros)["account_code"].tolist() == ["0100", "4000"]
+    piped = prepare(_lines(account_name=["Cash|Asset", "Sales"], account_type=["Operating", "Revenue"]))
+    shifted = prepare(_lines(account_name=["Cash", "Sales"], account_type=["Asset|Operating", "Revenue"]))
+    assert ledger_digest(piped) != ledger_digest(shifted)
+    folded = prepare(_lines(entry_id=["JE-1", "JE-2"], created_by=["u1\nJE-2", "u1"]))
+    assert ledger_digest(folded) != ledger_digest(prepare(_lines(entry_id=["JE-1", "JE-2"])))
+    twins = prepare(_lines(line_no=[1, 1], account_code=["1000", "1000"], account_name=["Cash"] * 2,
+                           account_type=["Asset"] * 2, debit=[100.0, 50.0], credit=[0.0, 0.0]))
+    assert ledger_digest(twins) == ledger_digest(twins.iloc[::-1])  # duplicate keys, either order
+
+
 def test_cases_digest_is_the_sha256_of_the_file_bytes(tmp_path):
     path = tmp_path / "cases.json"
     path.write_text('{"cases": []}')
@@ -441,6 +497,7 @@ def test_rows_carry_the_case_file_hash_and_a_regrade_will_not_cross_a_change_qui
                     cases_sha256=same)
     assert rows[0]["cases_sha256"] == same
     assert rows[0]["grader_sha256"] == GRADER
+    assert rows[0]["ledger_sha256"] == DEFAULT_LEDGER_SHA256  # computed from the frame itself
     assert json.loads(results.read_text().splitlines()[0])["cases_sha256"] == same
 
     # A grader fix under the same file re-grades freely and leaves no case-file
@@ -484,6 +541,8 @@ def test_rows_carry_the_case_file_hash_and_a_regrade_will_not_cross_a_change_qui
     report = render_markdown(rows, summary, runs_dir=tmp_path)
     assert edited in report and same in report and GRADER in report
     assert "Provenance note" in report and "results.jsonl" in report
+    assert "ledger sha256: `" + DEFAULT_LEDGER_SHA256 + "`" in report
+    assert "from the default synthetic ledger" in report
     assert ("1 row(s) changed their overall result since their earliest kept grade "
             f"({rows[0]['graded_at']})") in report
     assert "since first graded" not in report
@@ -649,7 +708,8 @@ def test_run_eval_fails_once_without_a_key(sample, scored, ledger, monkeypatch, 
 
 # --- the committed case set -----------------------------------------------------
 
-CASES_PATH = Path(__file__).resolve().parents[1] / "evals" / "narratives" / "cases.json"
+REPO = Path(__file__).resolve().parents[1]
+CASES_PATH = REPO / narrative_eval.CASES_FILE
 
 
 def test_committed_case_set_matches_the_default_ledger(scored, labels):
@@ -666,8 +726,7 @@ def test_committed_case_set_matches_the_default_ledger(scored, labels):
             assert test_id in case.must_mention, (case.entry_id, test_id)
 
 
-RUNS_PATH = (Path(__file__).resolve().parents[1] / "evals" / "narratives" / "runs"
-             / "2026-09-23-claude-opus-5" / "results.jsonl")
+RUNS_PATH = REPO / narrative_eval.RUNS_ROOT / "2026-09-23-claude-opus-5" / "results.jsonl"
 
 
 def test_committed_rows_were_graded_by_this_grader_against_this_case_file():
@@ -688,6 +747,28 @@ def test_committed_rows_were_graded_by_this_grader_against_this_case_file():
         assert grade(r["narrative"], cases[r["entry_id"]], r["prompt"]) == r["metrics"], r["entry_id"]
 
 
+RUNS_ROOT_PATH = REPO / narrative_eval.RUNS_ROOT
+
+
+def test_every_committed_run_was_built_from_the_default_ledger(scored, ledger):
+    """Rule 1 for the published rows: every file under the runs root is a run's results or
+    errors file, and each stored prompt is rebuilt from the generator's default output and must
+    match, so no other ledger's text can sit in this directory."""
+    combined, flags = scored
+    files = sorted(p for p in RUNS_ROOT_PATH.rglob("*") if p.is_file() and not p.name.startswith("."))
+    assert files
+    for path in files:
+        rel = path.relative_to(RUNS_ROOT_PATH)
+        assert len(rel.parts) == 2 and rel.name in ("results.jsonl", "errors.jsonl"), rel
+        for line in path.read_text().splitlines():
+            row = json.loads(line)
+            # None: rows from before the field existed; their next re-grade records it
+            # after rebuilding the prompt exactly as this test does.
+            assert row.get("ledger_sha256") in (None, DEFAULT_LEDGER_SHA256), (rel, row["entry_id"])
+            entry, entry_flags, lines = entry_context(combined, flags, ledger, row["entry_id"])
+            assert build_prompt(entry, entry_flags, lines) == row["prompt"], (rel, row["entry_id"])
+
+
 def test_committed_expectations_are_satisfiable_from_the_prompt(scored, ledger):
     """Every required fact is in the entry's own prompt, so a faithful note can pass."""
     combined, flags = scored
@@ -696,3 +777,102 @@ def test_committed_expectations_are_satisfiable_from_the_prompt(scored, ledger):
         prompt = build_prompt(entry, entry_flags, lines)
         for pattern in case.must_mention:
             assert re.search(pattern, prompt, re.I), (case.entry_id, pattern)
+
+
+# --- rule 1 at the point of writing -------------------------------------------
+
+
+def test_committed_paths_refuse_any_ledger_but_the_default_however_they_are_spelled(
+        tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    other = "f" * 64
+    committed = (
+        "evals/narratives/cases.json", "./evals/narratives/cases.json",
+        str(tmp_path / "evals" / "narratives" / "cases.json"),
+        "evals/narratives/runs/2026-10-01-claude-x", "evals/elsewhere.json",
+        "docs/narrative-eval.md",
+    )
+    for spelled in committed:
+        with pytest.raises(CommittedPathError, match="committed"):
+            refuse_committed_path(spelled, other, "the case file")
+        with pytest.raises(CommittedPathError):
+            refuse_committed_path(spelled, None, "the case file")  # unknown provenance too
+        refuse_committed_path(spelled, DEFAULT_LEDGER_SHA256, "the case file")  # the default may
+    for allowed in ("out/runs", str(tmp_path / "elsewhere" / "runs"), "data/qbo-runs"):
+        refuse_committed_path(allowed, other, "the runs directory")
+    with pytest.raises(CommittedPathError, match="empty"):
+        refuse_committed_path("", other, "the runs directory")
+    (tmp_path / "evals").mkdir()
+    (tmp_path / "probe").mkdir()
+    if (tmp_path / "PROBE").exists():  # a case-insensitive disk: spelling must not matter
+        with pytest.raises(CommittedPathError):
+            refuse_committed_path("EVALS/narratives/cases.json", other, "the case file")
+
+
+def test_save_cases_and_run_eval_refuse_a_committed_destination_for_another_ledger(
+        sample, scored, small_ledger, llm, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    case, *_ = sample
+    combined, flags = scored
+    with pytest.raises(CommittedPathError):
+        save_cases([case], "evals/narratives/cases.json", ledger_sha256="f" * 64)
+    with pytest.raises(CommittedPathError):
+        save_cases([case], "evals/narratives/cases.json")  # no digest: refused as well
+    small, _ = small_ledger
+    quiet = llm.client()
+    with pytest.raises(CommittedPathError):
+        run_eval([case], Narrator(client=quiet), combined, flags, small,
+                 tmp_path / "evals" / "narratives" / "runs" / "x", cases_sha256="a" * 64)
+    assert quiet.calls == [] and not (tmp_path / "evals").exists()
+    # The default ledger may write there; another one may write anywhere else.
+    save_cases([case], "evals/narratives/cases.json", ledger_sha256=DEFAULT_LEDGER_SHA256)
+    assert (tmp_path / "evals" / "narratives" / "cases.json").exists()
+    save_cases([case], tmp_path / "out" / "cases.json", ledger_sha256="f" * 64)
+
+
+def test_missing_rows_have_every_key_a_graded_row_has(sample, scored, ledger, llm, tmp_path):
+    case, prompt, entry, lines = sample
+    combined, flags = scored
+    rows = run_eval([case], Narrator(client=llm.client([llm.response(oracle(case, entry, lines))])),
+                    combined, flags, ledger, tmp_path, cases_sha256="a" * 64)
+    assert tuple(rows[0]) == narrative_eval._ROW_KEYS
+    assert set(narrative_eval._missing_row(case, "a" * 64)) == set(narrative_eval._ROW_KEYS)
+
+
+def test_a_regrade_records_the_ledger_once_each_prompt_rebuilds_and_refuses_other_rows(
+        sample, scored, ledger, llm, tmp_path):
+    case, prompt, entry, lines = sample
+    combined, flags = scored
+    results = tmp_path / "results.jsonl"
+    run_eval([case], Narrator(client=llm.client([llm.response(oracle(case, entry, lines))])),
+             combined, flags, ledger, tmp_path, cases_sha256="a" * 64)
+    stored = json.loads(results.read_text())
+    assert stored["ledger_sha256"] == DEFAULT_LEDGER_SHA256
+
+    del stored["ledger_sha256"]  # a row from before the field existed (the 2026-09-23 run)
+    results.write_text(json.dumps(stored) + "\n")
+    quiet = llm.client()
+    rows = run_eval([case], Narrator(client=quiet), combined, flags, ledger, tmp_path,
+                    regrade=True, cases_sha256="a" * 64)
+    assert quiet.calls == []
+    assert rows[0]["ledger_sha256"] == DEFAULT_LEDGER_SHA256
+    assert json.loads(results.read_text())["ledger_sha256"] == DEFAULT_LEDGER_SHA256
+
+    stored["ledger_sha256"] = "f" * 64  # a row that names another ledger
+    results.write_text(json.dumps(stored) + "\n")
+    before = results.read_text()
+    with pytest.raises(LedgerChangedError, match="records ledger sha256"):
+        run_eval([case], Narrator(client=quiet), combined, flags, ledger, tmp_path,
+                 regrade=True, cases_sha256="a" * 64)
+    with pytest.raises(LedgerChangedError, match="records ledger sha256"):  # a resume too
+        run_eval([case], Narrator(client=quiet), combined, flags, ledger, tmp_path,
+                 cases_sha256="a" * 64)
+    assert quiet.calls == [] and results.read_text() == before
+
+    stored["ledger_sha256"] = DEFAULT_LEDGER_SHA256
+    stored["prompt"] = stored["prompt"].replace("- line 1:", "- line 9:")  # not this ledger's text
+    results.write_text(json.dumps(stored) + "\n")
+    with pytest.raises(LedgerChangedError, match="does not rebuild"):
+        run_eval([case], Narrator(client=quiet), combined, flags, ledger, tmp_path,
+                 regrade=True, cases_sha256="a" * 64)
+    assert quiet.calls == []

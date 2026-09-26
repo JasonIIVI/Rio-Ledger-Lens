@@ -23,7 +23,9 @@ data/*.xlsx
 out/
 *.xlsx
 # Narrative eval run rows are deliberately committed under evals/narratives/runs/
-# (synthetic entries only) so a reader can re-grade a run.
+# (the default synthetic ledger only: the eval refuses other ledgers anywhere under
+# evals/ or docs/, and a test rebuilds every stored prompt from that ledger) so a
+# reader can re-grade a run.
 
 # Secrets — QuickBooks tokens, API keys
 .env

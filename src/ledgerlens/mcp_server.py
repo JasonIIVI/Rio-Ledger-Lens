@@ -76,13 +76,23 @@ def _ctx() -> LedgerContext:
     return _context.load()
 
 
+def _call(method: str, **kwargs: Any) -> dict[str, Any]:
+    """Run one context method; a review database the store refuses (a file from a newer
+    version, or not a review database at all) becomes a tool error whose text reaches the
+    client, rather than an unexpected exception the SDK reports without its message."""
+    try:
+        return getattr(_ctx(), method)(**kwargs)
+    except RuntimeError as exc:
+        raise ToolError(str(exc)) from exc
+
+
 @mcp.tool(title="Ledger summary", annotations=READ_ONLY)
 def ledgerlens_summary() -> dict[str, Any]:
     """Population size, flag counts by test, how the two tiers agree, and review progress.
 
     Call this first; it tells you which fiscal years exist and how much has been reviewed.
     """
-    return _ctx().summary()
+    return _call("summary")
 
 
 @mcp.tool(title="Top exceptions", annotations=READ_ONLY)
@@ -100,9 +110,9 @@ def ledgerlens_top_exceptions(
     and narrative_seen_by_reviewer (yes / no / unknown: whether the note shown is one the
     reviewer read).
     """
-    return _ctx().top_exceptions(
-        limit=limit, fiscal_year=fiscal_year, period_from=period_from, period_to=period_to,
-        agreement=agreement,
+    return _call(
+        "top_exceptions", limit=limit, fiscal_year=fiscal_year, period_from=period_from,
+        period_to=period_to, agreement=agreement,
     )
 
 
@@ -116,7 +126,7 @@ def ledgerlens_explain_entry(
     decision history. Raises a tool error if the id is unknown.
     """
     try:
-        return _ctx().explain_entry(entry_id.strip())
+        return _call("explain_entry", entry_id=entry_id.strip())
     except KeyError as exc:
         raise ToolError(str(exc.args[0])) from exc
 
@@ -134,9 +144,9 @@ def ledgerlens_search_entries(
     """Entries matching simple filters, riskiest first. Unlike top_exceptions this includes
     entries no test flagged, so it answers "what did user X post to account Y".
     """
-    return _ctx().search_entries(
-        account_code=account_code, created_by=created_by, source=source, min_amount=min_amount,
-        fiscal_year=fiscal_year, period=period, limit=limit,
+    return _call(
+        "search_entries", account_code=account_code, created_by=created_by, source=source,
+        min_amount=min_amount, fiscal_year=fiscal_year, period=period, limit=limit,
     )
 
 
@@ -156,7 +166,7 @@ def ledgerlens_review_status() -> dict[str, Any]:
     """How far the human review has got: flagged, decided, outstanding, counts by decision, and
     how many entries have a cached narrative.
     """
-    return _ctx().review_status()
+    return _call("review_status")
 
 
 def main(argv: list[str] | None = None) -> int:

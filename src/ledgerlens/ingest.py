@@ -62,8 +62,13 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def load_csv(path: str | Path) -> pd.DataFrame:
-    """Read a GL CSV from disk and prepare it."""
-    df = pd.read_csv(path)
+    """Read a GL CSV from disk and prepare it.
+
+    Text columns are read as text: an account code such as 0100 must come
+    back as the string it is, not as the integer 100.
+    """
+    text = {column: "string" for column, kind in REQUIRED_COLUMNS.items() if kind == "string"}
+    df = pd.read_csv(path, dtype=text)
     return prepare(df)
 
 

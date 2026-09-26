@@ -177,10 +177,16 @@ def cmd_report(args: argparse.Namespace) -> int:
     if args.labels:
         metrics = evaluate.evaluate(flags, load_labels(args.labels), df["entry_id"].unique())
 
-    # Only an existing store is attached: a report must never create an empty
-    # review database as a side effect.
-    store = ReviewStore(args.db) if args.db and Path(args.db).exists() else None
-    if args.db and store is None:
+    # Only an existing store is attached, and read-only: a report must never
+    # create an empty review database, or migrate one, as a side effect.
+    store = None
+    if args.db and Path(args.db).exists():
+        try:
+            store = ReviewStore.read_only(args.db)
+        except RuntimeError as exc:
+            print(f"error: {exc}")
+            return 2
+    elif args.db:
         print(f"No review database at {args.db}; workpaper written without review columns")
 
     path = build_workpaper(
@@ -203,7 +209,11 @@ def cmd_narrate(args: argparse.Namespace) -> int:
         model_scores, _ = score_ledger(df)
         scored = combine(scored, model_scores)
 
-    store = ReviewStore(args.db)
+    try:
+        store = ReviewStore(args.db)
+    except RuntimeError as exc:
+        print(f"error: {exc}")
+        return 2
     skip = set() if args.force else store.narrative_ids()
     narrator = Narrator(model=args.model, max_tokens=args.max_tokens, effort=args.effort)
     try:
@@ -227,24 +237,61 @@ def cmd_narrate(args: argparse.Namespace) -> int:
     return 0 if result.narratives or result.entries_requested == 0 else 1
 
 
+DEFAULT_CASES = str(narrative_eval.CASES_FILE)
+
+
+def _positive_int(text: str) -> int:
+    value = int(text)
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"must be at least 1, got {value}")
+    return value
+
+
+def _path_arg(text: str) -> str:
+    if not text.strip():
+        raise argparse.ArgumentTypeError("an empty path names no destination")
+    return text
+
+
 def cmd_eval_narratives(args: argparse.Namespace) -> int:
     """Run the narrative eval and write the report, or select a fresh case skeleton."""
+    if args.select and not args.labels:
+        print("--select needs --labels: the label file decides which entries to test")
+        return 2
     df = load_csv(args.ledger)
+    # Rule 1 at the point of writing, before anything is scored: the committed
+    # case file, runs directory and report are for the generator's default
+    # output and nothing else, however a path is spelled.
+    ledger_sha256 = narrative_eval.ledger_digest(df)
+    default_ledger = ledger_sha256 == narrative_eval.DEFAULT_LEDGER_SHA256
+    try:
+        if args.select:
+            narrative_eval.refuse_committed_path(args.cases, ledger_sha256, "the case file")
+        else:
+            runs_dir = (Path(args.runs_dir) if args.runs_dir is not None
+                        else narrative_eval.default_runs_dir(args.model, regrade=args.regrade))
+            narrative_eval.refuse_committed_path(runs_dir, ledger_sha256, "the runs directory")
+            narrative_eval.refuse_committed_path(args.out, ledger_sha256, "the report")
+    except narrative_eval.CommittedPathError as exc:
+        print(f"refused: {exc}")
+        return 2
+    except FileNotFoundError as exc:
+        print(f"error: {exc}")
+        return 2
+
     flags = jets.run_all(df)
     scored = jets.score_entries(df, flags)
     model_scores, _ = score_ledger(df)
     scored = combine(scored, model_scores)
 
     if args.select:
-        if not args.labels:
-            print("--select needs --labels: the label file decides which entries to test")
-            return 2
         if Path(args.cases).exists() and not args.overwrite:
             print(f"{args.cases} exists; --overwrite replaces it (hand-written expectations "
                   "would be lost)")
             return 2
         cases = narrative_eval.select_cases(scored, flags, load_labels(args.labels))
-        path = narrative_eval.save_cases(cases, args.cases, generator={"ledger": args.ledger})
+        path = narrative_eval.save_cases(cases, args.cases, generator={"ledger": args.ledger},
+                                         ledger_sha256=ledger_sha256)
         print(f"Wrote {len(cases)} case skeleton(s) to {path}. Add must_mention and "
               "expected_confidence by hand before running.")
         return 0
@@ -255,16 +302,13 @@ def cmd_eval_narratives(args: argparse.Namespace) -> int:
         print("The case set is stale for this ledger:")
         for problem in problems:
             print("  " + problem)
+        if args.cases == DEFAULT_CASES and not default_ledger:
+            print(f"({DEFAULT_CASES} belongs to the default synthetic ledger; select cases for "
+                  "this ledger with --select --labels LABELS --cases PATH, outside evals/)")
         return 2
-    if args.limit:
+    if args.limit is not None:
         cases = cases[:args.limit]
     cases_sha256 = narrative_eval.cases_digest(args.cases)
-    try:
-        runs_dir = Path(args.runs_dir) if args.runs_dir else narrative_eval.default_runs_dir(
-            args.model, regrade=args.regrade)
-    except FileNotFoundError as exc:
-        print(f"error: {exc}")
-        return 2
 
     narrator = Narrator(model=args.model, max_tokens=args.max_tokens, effort=args.effort)
     try:
@@ -273,7 +317,8 @@ def cmd_eval_narratives(args: argparse.Namespace) -> int:
             regrade=args.regrade, cases_sha256=cases_sha256,
             allow_cases_change=args.allow_cases_change,
         )
-    except narrative_eval.CasesChangedError as exc:
+    except (narrative_eval.CasesChangedError, narrative_eval.CommittedPathError,
+            narrative_eval.LedgerChangedError) as exc:
         print(f"refused: {exc}")
         return 2
     except (FileNotFoundError, FileExistsError, narrative_eval.RegradeError,
@@ -299,7 +344,8 @@ def cmd_eval_narratives(args: argparse.Namespace) -> int:
     if summary["missing"]:
         print(f"{summary['missing']} case(s) have no stored row and were not narrated: a "
               "re-grade never calls the API. Run without --regrade to narrate them.")
-    print(f"Case file sha256 {cases_sha256}")
+    print(f"Case file sha256 {cases_sha256}; ledger sha256 {ledger_sha256}"
+          + ("" if default_ledger else " (not the default synthetic ledger)"))
     print(f"Report written to {out}; per-case rows in {runs_dir}")
     return 0 if summary["graded"] and not summary["errors"] and not summary["missing"] else 1
 
@@ -366,15 +412,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     ev = sub.add_parser("eval-narratives", help="grade the narrative layer against the case set")
     ev.add_argument("ledger", help="path to the GL csv the cases were selected from")
-    ev.add_argument("--cases", default="evals/narratives/cases.json")
-    ev.add_argument("--out", default="docs/narrative-eval.md", help="markdown report")
-    ev.add_argument("--runs-dir",
+    ev.add_argument("--cases", type=_path_arg, default=DEFAULT_CASES)
+    ev.add_argument("--out", type=_path_arg, default=str(narrative_eval.REPORT_FILE),
+                    help="markdown report")
+    ev.add_argument("--runs-dir", type=_path_arg,
                     help="per-case jsonl rows (default: evals/narratives/runs/<utc-date>-<model>, "
                          "or the newest such directory with --regrade)")
     ev.add_argument("--model", default=DEFAULT_MODEL)
     ev.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS)
     ev.add_argument("--effort", choices=("low", "medium", "high"), default=DEFAULT_EFFORT)
-    ev.add_argument("--limit", type=int, help="grade only the first N cases")
+    ev.add_argument("--limit", type=_positive_int, help="grade only the first N cases")
     mode = ev.add_mutually_exclusive_group()
     mode.add_argument("--no-resume", action="store_true",
                       help="re-run every case into a fresh --runs-dir (stored rows are never "
