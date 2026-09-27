@@ -35,6 +35,11 @@ def sample(**overrides) -> Tokens:
     return Tokens(**{**base.to_dict(), **overrides})
 
 
+def realm_one(**overrides) -> Tokens:
+    """A record for the file TokenStore.for_realm("sandbox", "1", ...) names."""
+    return sample(**{"realm_id": "1", **overrides})
+
+
 @pytest.fixture
 def outside(tmp_path):
     """A directory no git repository contains, which is the only kind the store accepts."""
@@ -59,15 +64,15 @@ def test_round_trip_writes_a_private_file_in_a_private_directory(outside):
 
 def test_a_failed_rename_leaves_the_old_file_and_no_temp_behind(outside, monkeypatch):
     store = TokenStore.for_realm("sandbox", "1", outside)
-    store.save(sample())
+    store.save(realm_one())
 
     def full(src, dst):
         raise OSError("disk full")
 
     monkeypatch.setattr(tokens_module.os, "replace", full)
     with pytest.raises(OSError, match="disk full"):
-        store.save(sample(access_token="ACCESS-2"))
-    assert store.load() == sample()
+        store.save(realm_one(access_token="ACCESS-2"))
+    assert store.load() == realm_one()
     assert [p.name for p in outside.iterdir()] == ["qbo-sandbox-1.json"]
 
 
@@ -107,7 +112,8 @@ def test_a_differently_cased_spelling_of_the_checkout_is_still_refused():
 
 
 def test_env_file_names_are_refused(outside):
-    for name in (".env", ".env.local", ".env.qbo"):
+    # Any case: on a case-insensitive disk '.ENV' is the .env beside it.
+    for name in (".env", ".env.local", ".env.qbo", ".ENV", ".Env", ".ENV.local"):
         with pytest.raises(TokenStoreError, match=r"\.env"):
             TokenStore(outside / name)
 
@@ -140,7 +146,7 @@ def test_repr_and_str_never_show_a_token():
 
 def test_a_file_others_can_read_is_refused_not_fixed(outside):
     store = TokenStore.for_realm("sandbox", "1", outside)
-    store.save(sample())
+    store.save(realm_one())
     os.chmod(store.path, 0o644)
     with pytest.raises(TokenStoreError, match="600"):
         store.load()
@@ -151,13 +157,13 @@ def test_a_shared_directory_is_refused_before_anything_is_written(outside):
     outside.mkdir()
     os.chmod(outside, 0o755)
     with pytest.raises(TokenStoreError, match="700"):
-        TokenStore.for_realm("sandbox", "1", outside).save(sample())
+        TokenStore.for_realm("sandbox", "1", outside).save(realm_one())
     assert not any(outside.iterdir())
 
 
 def test_a_damaged_file_is_an_error_that_names_the_file(outside):
     store = TokenStore.for_realm("sandbox", "1", outside)
-    store.save(sample())
+    store.save(realm_one())
     store.path.write_text("{not json")  # keeps the mode
     with pytest.raises(TokenStoreError, match="not a token file"):
         store.load()
@@ -204,3 +210,34 @@ def test_the_ignore_rules_cover_token_files_and_their_temps_but_not_fixtures():
                  "data/qbo-sandbox-1.json", "data/qbo-ledger.identity.json"):
         assert ignored(name), name
     assert not ignored("tests/fixtures/qbo/pull/020-post-query-account.json")
+
+
+@pytest.mark.parametrize("record, why", [
+    (lambda: realm_one(environment="Sandbox"), "Sandbox"),
+    (lambda: realm_one(refresh_token=""), "non-empty strings"),
+    (lambda: realm_one(expires_at="soon"), "ISO 8601"),
+    (lambda: realm_one(realm_id="../x"), "realm id"),
+    (lambda: sample(realm_id="999", environment="production"), "production realm 999"),
+    (lambda: realm_one(environment="production"), "production realm 1"),
+])
+def test_save_writes_only_a_record_load_accepts_for_the_realm_the_file_names(outside, record, why):
+    """A code exchange is single-use: a record that cannot be read back is lost tokens, and
+    one realm's tokens filed under another's name would pull the wrong company's books."""
+    store = TokenStore.for_realm("sandbox", "1", outside)
+    with pytest.raises(TokenStoreError, match=why) as refused:
+        store.save(record())
+    assert str(store.path) in str(refused.value)
+    assert not outside.exists() or not any(outside.iterdir())
+
+
+def test_load_refuses_a_record_for_another_realm_than_the_file_names(outside):
+    TokenStore.for_realm("production", "999", outside).save(
+        sample(realm_id="999", environment="production"))
+    (outside / "qbo-production-999.json").rename(outside / "qbo-sandbox-1.json")
+    with pytest.raises(TokenStoreError, match="for sandbox realm 1, the record for production realm 999"):
+        TokenStore.for_realm("sandbox", "1", outside).load()
+    # A file named some other way is not bound to a realm: its record is taken as written.
+    custom = TokenStore(outside / "tokens.json")
+    assert custom.expected is None
+    custom.save(sample())
+    assert custom.load() == sample()
