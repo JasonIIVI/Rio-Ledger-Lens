@@ -159,11 +159,24 @@ def test_report_attaches_an_existing_review_db_only(tmp_path, capsys):
     assert not missing.exists()  # a report must not create a review database
 
     db, csv = tmp_path / "review.sqlite", str(tmp_path / "ledger.csv")
-    ReviewStore(db, ledger_identity(load_csv(csv), csv)).record(
-        Decision("JE-2024-000001", "dismiss", "ana"))
+    ident = ledger_identity(load_csv(csv), csv)
+    ReviewStore(db, ident).record(Decision("JE-2024-000001", "dismiss", "ana"))
+    other = ReviewStore(db, "csv:" + "b" * 64)  # another ledger's decisions, same file
+    for entry in ("JE-2024-000001", "JE-2024-000002"):
+        other.record(Decision(entry, "escalate", "bo"))
     code = main(["report", str(tmp_path / "ledger.csv"), "--no-model", "--db", str(db),
                  "--out", str(tmp_path / "b.xlsx")])
     assert code == 0
+    # The workpaper's review section is this ledger's, and the other ledger is only counted.
+    import openpyxl
+
+    sheet = openpyxl.load_workbook(tmp_path / "b.xlsx")["Summary"]
+    summary = {row[0].value: row[1].value for row in sheet.iter_rows() if row[0].value}
+    assert summary["Review rows for ledger"] == ident
+    assert summary["Decisions recorded"] == 1
+    assert summary["  dismiss"] == 1 and "  escalate" not in summary
+    assert summary["Other ledgers in this database (not shown)"] == (
+        "1 ledger(s): 0 narrated, 2 decided entries")
 
 
 def test_eval_narratives_select_writes_a_skeleton_and_will_not_clobber_it(tmp_path, capsys):
@@ -433,6 +446,8 @@ def test_narrate_and_report_refuse_a_database_they_cannot_open_without_a_traceba
     # narrate opens the store before it builds an API client, so this needs no key.
     assert main(["narrate", ledger, "--no-model", "--db", str(future)]) == 2
     assert "newer LedgerLens" in capsys.readouterr().out
+    assert main(["adopt-legacy", ledger, "--db", str(future)]) == 2
+    assert "newer LedgerLens" in capsys.readouterr().out
 
     notes = tmp_path / "notes.sqlite"
     notes.write_text("not a database\n")
@@ -490,9 +505,15 @@ def test_narrate_refuses_to_ignore_legacy_rows_unless_told_to(tmp_path, capsys, 
     monkeypatch.setattr(cli, "Narrator", lambda **kw: Narrator(client=client, **kw))
     capsys.readouterr()
 
-    assert main(["narrate", ledger, "--db", str(db), "--top", "0", "--no-model"]) == 2
+    # The refusal comes before anything is narrated: asked for four notes, it buys none.
+    assert main(["narrate", ledger, "--db", str(db), "--top", "4", "--no-model"]) == 2
     out = capsys.readouterr().out
     assert "adopt-legacy" in out and client.calls == []
+    assert ReviewStore(db, ledger_identity(load_csv(ledger), ledger)).narrative_ids() == set()
+    fresh = tmp_path / "fresh.sqlite"
+    ReviewStore(fresh, ledger_identity(load_csv(ledger), ledger))
+    assert main(["adopt-legacy", ledger, "--db", str(fresh)]) == 0  # no legacy rows at all
+    assert "Nothing to adopt" in capsys.readouterr().out
     assert main(["adopt-legacy", ledger, "--db", str(tmp_path / "absent.sqlite")]) == 2
     assert main(["adopt-legacy", ledger, "--db", str(db)]) == 0
     assert "Adopted 1 narrative(s) and 0 decision(s)" in capsys.readouterr().out
@@ -510,9 +531,10 @@ def test_narrate_refuses_to_ignore_legacy_rows_unless_told_to(tmp_path, capsys, 
                     "('JE-9999-000001', 'stray', '2026-09-23T00:00:00+00:00', 'legacy')")
     assert main(["adopt-legacy", ledger, "--db", str(other)]) == 2
     assert "not in this ledger" in capsys.readouterr().out
-    assert main(["narrate", ledger, "--db", str(other), "--top", "0", "--no-model",
+    assert main(["narrate", ledger, "--db", str(other), "--top", "1", "--no-model",
                  "--ignore-legacy"]) == 0
-    assert client.calls == []
+    assert len(client.calls) == 1  # told to start from scratch, it narrates
+    assert len(ReviewStore(other, ledger_identity(load_csv(ledger), ledger)).narrative_ids()) == 1
 
 
 @pytest.mark.parametrize("payload", ['{"ledger_id": "qbo 123"}', ""])

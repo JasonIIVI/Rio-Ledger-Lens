@@ -74,6 +74,8 @@ def test_review_data_is_read_but_a_database_is_never_created(small_ledger, tmp_p
     status = context.review_status()
     assert status["exists"] is False
     assert status["outstanding"] == status["flagged"]
+    assert status["ledger_id"] == context.ledger_id == ledger_identity(ledger)
+    assert status["other_ledgers"] == {}
     assert not db.exists()
 
     entry_id = context.top_exceptions(limit=1)["entries"][0]["entry_id"]

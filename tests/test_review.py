@@ -670,6 +670,8 @@ def test_two_ledgers_sharing_an_entry_id_never_see_each_others_rows(tmp_path):
     assert b.narrative_ids() == set() and b.decided_ids() == set()
     assert b.current().empty and b.history("JE-2024-000001").empty
     assert b.review_state().empty and b.narratives_frame().empty
+    assert b.narratives_frame(latest_only=False).empty
+    assert b.narrative_history("JE-2024-000001").empty
     assert b.narrative_versions("JE-2024-000001") == []
     with pytest.raises(ValueError, match="not a narrative for entry JE-2024-000001"):
         b.record(Decision("JE-2024-000001", "dismiss", "ben", narrative_id=note))  # a's note

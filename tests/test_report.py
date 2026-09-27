@@ -140,13 +140,24 @@ def test_summary_names_the_ledger_and_counts_other_ledgers(ledger, labels, tmp_p
 
     store = ReviewStore(tmp_path / "review.sqlite", "csv:test")
     store.record(Decision("JE-2024-000001", "dismiss", "ana"))
-    with sqlite3.connect(str(store.path)) as raw:  # a note from before ledgers were keyed
-        raw.execute("INSERT INTO narratives (entry_id, summary, generated_at, ledger_id) VALUES "
-                    "('JE-2024-000002', 'old', '2026-09-23T00:00:00+00:00', 'legacy')")
     path, _ = _workpaper(ledger, labels, tmp_path, store=store)
-    wb = openpyxl.load_workbook(path)
-    cells = {row[0].value: row[1].value for row in wb["Summary"].iter_rows() if row[0].value}
+    cells = _summary_cells(path)
+    assert "Other ledgers in this database (not shown)" not in cells  # nothing else in the file
+
+    with sqlite3.connect(str(store.path)) as raw:  # notes from before ledgers were keyed
+        for entry in ("JE-2024-000002", "JE-2024-000003", "JE-2024-000004"):
+            raw.execute("INSERT INTO narratives (entry_id, summary, generated_at, ledger_id) "
+                        "VALUES (?, 'old', '2026-09-23T00:00:00+00:00', 'legacy')", (entry,))
+    ReviewStore(store.path, "csv:b").record(Decision("JE-2024-000009", "accept", "bo"))
+    path, _ = _workpaper(ledger, labels, tmp_path, store=store)
+    cells = _summary_cells(path)
     assert cells["Review rows for ledger"] == "csv:test"
     assert cells["Decisions recorded"] == 1 and cells["Narratives cached"] == 0
+    # Summed over the other ledgers, not counted: two ledgers, three notes, one decision.
     assert cells["Other ledgers in this database (not shown)"] == \
-        "1 ledger(s): 1 narrated, 0 decided entries"
+        "2 ledger(s): 3 narrated, 1 decided entries"
+
+
+def _summary_cells(path):
+    wb = openpyxl.load_workbook(path)
+    return {row[0].value: row[1].value for row in wb["Summary"].iter_rows() if row[0].value}
