@@ -157,7 +157,9 @@ ledger CSV ──▶ ingest ──┼──▶ Benford analysis ─────�
    `GRADER_NOTES` with its effect on the published score; any case-set change goes in
    `CASE_SET_NOTES` with the commit that introduced it and its measured effect on the rows
    already graded, the crossing re-grade ships in that commit, and a case added by hand is
-   narrated only after that commit is pushed.
+   narrated only after that commit is pushed. A case's `overrides` are part of the prompt its
+   note answered, so a narrated case's override is frozen: new text means a fresh runs
+   directory (or another entry's case), never a re-grade, and the eval refuses to cross it.
 
 ## The honest framing of the results
 

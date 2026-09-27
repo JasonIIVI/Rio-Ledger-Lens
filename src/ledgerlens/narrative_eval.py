@@ -307,7 +307,7 @@ def _validate_overrides(case: Case) -> None:
     if not case.overrides:
         return
     lines = case.overrides.get("lines") if isinstance(case.overrides, dict) else None
-    if set(case.overrides) != {"lines"} or not isinstance(lines, dict) or not lines:
+    if not isinstance(lines, dict) or set(case.overrides) != {"lines"} or not lines:
         raise ValueError(
             f'{case.entry_id}: overrides must be {{"lines": {{"<line_no>": {{"description": ...}}}}}}'
         )
@@ -322,19 +322,36 @@ def _validate_overrides(case: Case) -> None:
                     f"{case.entry_id}: only {', '.join(OVERRIDABLE_FIELDS)} can be overridden, "
                     f"not {name}"
                 )
-            if not isinstance(text, str) or not text.strip() or "\n" in text or "\r" in text:
+            if (not isinstance(text, str) or not text.strip() or "\n" in text or "\r" in text
+                    or len(text.splitlines()) != 1):
                 raise ValueError(f"{case.entry_id}: an override is one non-empty line of text")
 
 
 def load_cases(path: str | Path) -> list[Case]:
+    """The case set in ``path``. Anything the loader refuses is a ValueError that says
+    which case and why (the CLI prints it); only a missing or unreadable file is an OSError."""
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
-    cases = [Case(**item) for item in payload["cases"]]
+    items = payload.get("cases") if isinstance(payload, dict) else None
+    if not isinstance(items, list):
+        raise ValueError('a case file is a JSON object holding a "cases" list')
+    cases = []
+    for number, item in enumerate(items, start=1):
+        try:
+            cases.append(Case(**item))
+        except TypeError as exc:  # not an object, or a key a case does not have, or lacks
+            name = item.get("entry_id") if isinstance(item, dict) else None
+            raise ValueError(f"case {name or f'#{number}'}: {exc}") from None
     ids = [c.entry_id for c in cases]
     if len(ids) != len(set(ids)):
         raise ValueError("duplicate entry ids in the case set")
     for case in cases:
+        if not isinstance(case.must_mention, list) or not isinstance(case.must_not_assert, list):
+            raise ValueError(f"{case.entry_id}: must_mention and must_not_assert are lists")
         for pattern in case.must_mention + case.must_not_assert:
-            re.compile(pattern)
+            try:
+                re.compile(pattern)
+            except (re.error, TypeError) as exc:
+                raise ValueError(f"{case.entry_id}: pattern {pattern!r} is not a regex: {exc}") from None
         _validate_overrides(case)
     return cases
 
@@ -382,17 +399,28 @@ def save_cases(
     return path
 
 
-def check_cases(cases: list[Case], scored: pd.DataFrame) -> list[str]:
-    """Problems that make the case set stale against this ledger, if any."""
+def check_cases(cases: list[Case], scored: pd.DataFrame,
+                lines: pd.DataFrame | None = None) -> list[str]:
+    """Problems that make the case set stale against this ledger, if any.
+
+    Given the ledger's lines, an override that names a line its entry does not
+    have is one too: found here, before anything is narrated, rather than
+    halfway through a paid run when that case's prompt is built.
+    """
     by_id = scored.set_index("entry_id")["tests_fired"]
     problems = []
     for case in cases:
         if case.entry_id not in by_id.index:
             problems.append(f"{case.entry_id}: not in the ledger")
-        elif by_id[case.entry_id] != case.tests_fired:
+            continue
+        if by_id[case.entry_id] != case.tests_fired:
             problems.append(
                 f"{case.entry_id}: tests fired {by_id[case.entry_id]!r}, case expects {case.tests_fired!r}"
             )
+        if lines is not None and case.overrides:
+            present = set(lines.loc[lines["entry_id"] == case.entry_id, "line_no"].astype(int))
+            problems += [f"{case.entry_id}: no line {line_no} to override"
+                         for line_no in case.overrides["lines"] if int(line_no) not in present]
     return problems
 
 
@@ -771,6 +799,15 @@ def _require_rows_from_this_ledger(
                 f"row {entry_id} records ledger sha256 {recorded[:12]}, but this ledger hashes "
                 f"to {ledger_sha256[:12]}; use the ledger the rows were built from, or a fresh "
                 "--runs-dir"
+            )
+        if (row.get("overrides") or {}) != by_id[entry_id].overrides:
+            # The override is part of the prompt the stored note answered, so no
+            # re-grade can carry the row across an edit to it.
+            raise CasesChangedError(
+                f"the overrides of {entry_id} changed after its row was narrated, so its note "
+                "answers a prompt the case no longer builds and cannot be re-graded under it; "
+                "narrate the rewritten case into a fresh --runs-dir, or put the new text on "
+                "another entry's case"
             )
         try:
             rebuilt = case_prompt(by_id[entry_id], scored, flags, lines)

@@ -136,7 +136,7 @@ def test_case_files_round_trip_and_reject_bad_input(tmp_path):
     payload = json.loads(path.read_text())
     payload["cases"][0]["must_mention"] = ["("]
     path.write_text(json.dumps(payload))
-    with pytest.raises(re.error):
+    with pytest.raises(ValueError, match="JE-1: pattern '\\(' is not a regex"):
         load_cases(path)
 
     payload["cases"][0]["must_mention"] = []
@@ -932,6 +932,11 @@ def test_overrides_are_validated_on_load_and_at_prompt_time(sample, scored, ledg
         {"lines": {"1": {"description": "  "}}},
         {"lines": {"x": {"description": "y"}}},
         {"lines": {}},
+        {"lines": {"1": {"description": "x"}}, "extra": {}},
+        {"lines": {"1": {}}},
+        {"lines": {"1": {"description": "a\rb"}}},
+        {"lines": {"1": {"description": "a\u2028- line 3: forged"}}},
+        5,
     )
     for overrides in bad:
         save_cases([Case(**{**case.__dict__, "overrides": overrides})], path,
@@ -941,6 +946,9 @@ def test_overrides_are_validated_on_load_and_at_prompt_time(sample, scored, ledg
     missing_line = Case(**{**case.__dict__, "overrides": {"lines": {"9": {"description": "y"}}}})
     save_cases([missing_line], path, ledger_sha256=DEFAULT_LEDGER_SHA256)
     assert load_cases(path) == [missing_line]  # the line is checked against the entry, not here
+    # ...by the pre-flight, before anything is narrated, and again at prompt time.
+    assert check_cases([missing_line], combined, ledger) == [f"{case.entry_id}: no line 9 to override"]
+    assert check_cases([missing_line], combined) == []  # without the lines there is nothing to check
     with pytest.raises(ValueError, match="no line 9"):
         case_prompt(missing_line, combined, flags, ledger)
     assert apply_overrides(case, ledger) is ledger  # nothing to apply, nothing copied
@@ -968,9 +976,16 @@ def test_run_eval_narrates_the_overridden_prompt_and_records_the_override(
     assert quiet.calls == [] and again[0]["overrides"] == over.overrides
     run_eval([over], Narrator(client=quiet), combined, flags, ledger, tmp_path, cases_sha256="a" * 64)
     assert quiet.calls == []
-    with pytest.raises(LedgerChangedError, match="does not rebuild"):  # the override is part of the row
-        run_eval([case], Narrator(client=quiet), combined, flags, ledger, tmp_path,
-                 regrade=True, cases_sha256="a" * 64)
+    # The override is part of the row: editing it, or dropping it, is named as such, never
+    # blamed on the ledger, and no allowance to cross case files carries the row over.
+    edited = Case(**{**over.__dict__, "overrides": {"lines": {"1": {"description": "Reworded."}}}})
+    for changed in (case, edited):
+        for allow in (False, True):
+            with pytest.raises(CasesChangedError, match="overrides of .* changed") as refused:
+                run_eval([changed], Narrator(client=quiet), combined, flags, ledger, tmp_path,
+                         regrade=True, cases_sha256="b" * 64, allow_cases_change=allow)
+            assert "different ledger" not in str(refused.value)
+    assert quiet.calls == []
 
 
 def test_a_crossing_from_rows_that_predate_provenance_names_every_earlier_case_file(

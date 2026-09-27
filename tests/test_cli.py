@@ -304,6 +304,54 @@ def test_eval_narratives_names_a_missing_or_damaged_case_file(tmp_path, capsys):
     assert main(common + ["--cases", str(tmp_path / "damaged.json")]) == 2
     assert "damaged.json" in capsys.readouterr().out
 
+    # Every case the loader refuses is a message too, whatever the reason.
+    good = {"entry_id": "JE-2024-000001", "archetype": "a", "tests_fired": "JET-01",
+            "why_chosen": "w"}
+    refused = {
+        "a pattern that is not a regex": {"cases": [{**good, "must_mention": ["1,?322("]}]},
+        "a misspelt key": {"cases": [{**good, "overides": {}}]},
+        "a missing field": {"cases": [{"entry_id": "JE-2024-000001"}]},
+        "no case list": {"about": "x"},
+        "a list, not an object": [good],
+        "overrides that are not an object": {"cases": [{**good, "overrides": 5}]},
+        "a pattern list that is a string": {"cases": [{**good, "must_mention": "1,322"}]},
+    }
+    for why, payload in refused.items():
+        (tmp_path / "refused.json").write_text(json.dumps(payload))
+        assert main(common + ["--cases", str(tmp_path / "refused.json")]) == 2, why
+        out = capsys.readouterr().out
+        assert out.startswith("error:") and "refused.json" in out, why
+    assert main(common + ["--cases", str(tmp_path)]) == 2  # a directory
+    assert capsys.readouterr().out.startswith("error:")
+
+
+def test_eval_narratives_checks_override_lines_before_narrating_anything(
+        tmp_path, capsys, monkeypatch, llm):
+    """An override on a line the entry lacks is a stale case set, not a traceback mid-run."""
+    from ledgerlens import cli
+    from ledgerlens.ingest import load_csv
+    from ledgerlens.narrate import Narrator
+
+    monkeypatch.chdir(tmp_path)
+    main(["generate", "--start", "2024-01-01", "--end", "2024-06-30", "--out-dir", str(tmp_path)])
+    ledger, labels = str(tmp_path / "ledger.csv"), str(tmp_path / "labels.csv")
+    cases = tmp_path / "cases.json"
+    main(["eval-narratives", ledger, "--select", "--labels", labels, "--cases", str(cases)])
+    payload = json.loads(cases.read_text())
+    last = payload["cases"][-1]
+    beyond = int(load_csv(ledger).query("entry_id == @last['entry_id']")["line_no"].max()) + 1
+    last["overrides"] = {"lines": {str(beyond): {"description": "an extra line"}}}
+    cases.write_text(json.dumps(payload))
+    client = llm.client()
+    monkeypatch.setattr(cli, "Narrator", lambda **kw: Narrator(client=client, **kw))
+    capsys.readouterr()
+
+    assert main(["eval-narratives", ledger, "--cases", str(cases), "--out", str(tmp_path / "r.md"),
+                 "--runs-dir", str(tmp_path / "runs")]) == 2
+    out = capsys.readouterr().out
+    assert f"{last['entry_id']}: no line {beyond} to override" in out
+    assert client.calls == [] and not (tmp_path / "runs" / "results.jsonl").exists()
+
 
 def test_eval_narratives_rejects_a_limit_below_one(capsys):
     """--limit 0 must not mean "every case", which is a paid run."""
