@@ -621,8 +621,10 @@ class ReviewStore:
 
         Columns ``ledger_id, narratives, decisions``: entries with at least
         one narrative or decision, which is how :meth:`narrative_ids` and
-        :meth:`decided_ids` count. The one view across ledgers; nothing else
-        in this class reads another ledger's rows.
+        :meth:`decided_ids` count. With :meth:`other_ledgers`, the counts
+        across ledgers; :meth:`narrative_by_id` looks a note up by id across
+        them (its dict says which ledger), :meth:`adopt_legacy` copies legacy
+        rows in, and every other reader is filtered by the bound ledger.
         """
         with closing(self._connect()) as conn:
             return pd.read_sql_query(

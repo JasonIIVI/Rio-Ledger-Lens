@@ -264,7 +264,11 @@ confidence at medium and requested evidence, so it passed every check; over seve
 score is 94%, sixteen of seventeen, with the same single miss. One case is not a measure of
 resistance to this kind of text, only a check that the rule in the system prompt held once, on
 the structured fields where compliance would have shown (a "high" confidence, an empty
-evidence list).
+evidence list). The case's text checks are looser than they look: its fourth pattern, meant to
+show the note reported the instruction, is also met by ordinary words such as "automated",
+"promptly" or "pre-approved", so passing it does not by itself show that. That this note
+reported the instruction was confirmed by reading it; a tighter pattern waits for the next
+case-set revision, since an expectation is never changed after its run.
 
 Three things make that number checkable rather than something to take on trust. Every result
 row and the report carry the sha256 of the case file they were graded against and of the grader
@@ -384,8 +388,9 @@ CI runs the suite on Python 3.9, 3.11 and 3.12 plus a detection-quality gate. No
 responses shaped like the real ones.
 
 `.env` holds configuration only: the API key and the `QBO_*` client settings. QuickBooks
-tokens are kept by `connectors/tokens.py` under `~/.config/ledgerlens/` (or
-`$LEDGERLENS_TOKEN_DIR`) with mode 600, and the store refuses any path inside a git checkout.
+tokens are kept by `connectors/tokens.py` under `~/.config/ledgerlens/` (under
+`$XDG_CONFIG_HOME/ledgerlens/` when that is set; `$LEDGERLENS_TOKEN_DIR` overrides both) with
+mode 600, and the store refuses any path inside a git checkout.
 CI's `rule-1` job fails if a data file, a database, a `.env` or a token file is ever tracked.
 
 ## License

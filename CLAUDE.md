@@ -25,8 +25,8 @@ and the MCP SDK, so the two together cover every code path CI will see.
 
 ## Current state
 
-- **v0.3.1** on `main` (PR #5 squash-merged and tagged 2026-09-25; v0.3.0 was PR #2 on
-  2026-09-23). Weeks 1–3 complete:
+- **v0.4.0** on `main` once `week4/hardening` is squash-merged and tagged (v0.3.1 was PR #5 on
+  2026-09-25; v0.3.0 was PR #2 on 2026-09-23). Weeks 1–3 complete:
   narratives, review loop, dashboard integration, MCP server, narrative eval, `@claude` workflow.
 - **Review follow-up on `main`** (PR #4, 2026-09-24) — the first `@claude` review's findings:
   narratives are versioned and each decision records the note it saw (`narrative_id`);
@@ -62,13 +62,18 @@ and the MCP SDK, so the two together cover every code path CI will see.
   a line description replaced through the case's `overrides` before the prompt is built,
   expectations committed and pushed before its one narration, the crossing re-grade in the
   same commit, `CASE_SET_NOTES` in the report (17 cases, 94%). And `connectors/tokens.py`,
-  which keeps QuickBooks tokens outside any checkout with mode 600.
+  which keeps QuickBooks tokens outside any checkout with mode 600. A multi-agent review before
+  the merge confirmed 29 findings (one medium: a dashboard write before `adopt-legacy` shut the
+  legacy rows out for good), all fixed on the branch: the dashboard's writes wait for adoption
+  or "start from scratch", a malformed sidecar is a message on every surface, the eval checks
+  override lines before narrating, the token store writes only records `load()` accepts for its
+  file's realm, and tests that could not fail were tightened (checked with mutants).
 - **Next** — the QuickBooks Online sandbox connector (`week4/qbo-connector`: OAuth2 through
   the token store, JournalEntry entity + General Ledger report → `ingest.prepare`,
   `ledgerlens qbo-auth` / `pull-qbo`, recorded-JSON fixtures, no network in tests), then the
   weekly scheduled Action, the README final pass and v1.0.0 (due 2026-10-18). Week 5 breaks
   the circularity in the detection numbers.
-- 270 tests on 3.9 / 279 on 3.12, ruff clean.
+- 308 tests on 3.9 / 318 on 3.12, ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
@@ -108,7 +113,7 @@ ledger CSV ──▶ ingest ──┼──▶ Benford analysis ─────�
 | `ledger_context.py` | read-only query layer (summary, top exceptions, explain, search, Benford, review status); opens the review DB `mode=ro`, bound to the ledger's identity; 3.9-safe |
 | `mcp_server.py` | MCP registration over `ledger_context` (v2 SDK, stdio); needs 3.10+ |
 | `env.py` | dependency-free `.env` loader |
-| `connectors/tokens.py` | QuickBooks token store: `~/.config/ledgerlens/qbo-<environment>-<realm>.json` (or `$LEDGERLENS_TOKEN_DIR`), mode 600, refuses any path inside a git checkout; stdlib |
+| `connectors/tokens.py` | QuickBooks token store: `~/.config/ledgerlens/qbo-<environment>-<realm>.json` (`$XDG_CONFIG_HOME/ledgerlens/` when set; `$LEDGERLENS_TOKEN_DIR` overrides both), mode 600, a record only for the realm its file names, refuses any path inside a git checkout; stdlib |
 | `cli.py` | `generate` / `test` / `score` / `benford` / `report` / `narrate` / `adopt-legacy` / `eval-narratives` |
 | `app.py` | Streamlit dashboard: queue, note, decision form, history |
 
@@ -126,8 +131,9 @@ ledger CSV ──▶ ingest ──┼──▶ Benford analysis ─────�
    `docs/narrative-eval.md` are for the generator's default ledger only: `ledgerlens
    eval-narratives`, and `run_eval` / `save_cases` beneath it, refuse to write rows, cases or
    the report for any other ledger into evals/ or docs/, however the path is spelled; every row
-   written since PR #6 records the ledger's sha256 (the 2026-09-23 rows gain it at their next
-   re-grade, after each prompt has been rebuilt from the ledger); and a test rebuilds every
+   written since PR #6 records the ledger's sha256 (the 2026-09-23 rows gained it in the
+   offline re-grade across the injection case's addition, once each prompt had been rebuilt
+   from the ledger); and a test rebuilds every
    stored prompt in every file under the runs root.
 2. **Detection code never sees the labels.** Only `evaluate` joins them back. This is the only
    reason the reported metrics mean anything.
@@ -207,5 +213,5 @@ unhelpful. Say so wherever the number is quoted.
   DDL literals, never from the live constants, so the step keeps doing what it did when it
   shipped; old-schema fixtures in the tests are DDL in code, never binary files.
 - `.env` holds configuration only (the API key, `QBO_*` client settings). QuickBooks tokens go
-  through `connectors/tokens.py` to `~/.config/ledgerlens/`, which refuses any path inside a
+  through `connectors/tokens.py` to `~/.config/ledgerlens/` (`$XDG_CONFIG_HOME/ledgerlens/` when that is set; `$LEDGERLENS_TOKEN_DIR` overrides both), which refuses any path inside a
   git checkout.

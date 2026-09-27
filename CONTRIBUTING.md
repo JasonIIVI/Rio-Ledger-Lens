@@ -66,8 +66,10 @@ regenerates the ledger and fails if precision drops below 0.80 or recall below 0
 - The review database's schema is versioned (`PRAGMA user_version`). A schema change is a new
   numbered migration step in `review.py` built from frozen DDL literals, never from the live
   constants, so the step keeps doing what it did when it shipped; old-schema fixtures in the
-  tests are DDL in code, never binary files. Review rows are keyed by ledger identity, and
-  nothing reads or writes across that key except `adopt_legacy`.
+  tests are DDL in code, never binary files. Review rows are keyed by ledger identity: nothing
+  writes across that key except `adopt_legacy`, `ledgers()` / `other_ledgers()` only count
+  across it, and `narrative_by_id` looks a note up by id across it and says which ledger it
+  belongs to; every other reader is filtered by the bound ledger.
 - Nothing under the repository ever holds a credential. `.env` (ignored) carries the API key
   and `QBO_*` settings; QuickBooks tokens go through `connectors/tokens.py` to
-  `~/.config/ledgerlens/`, which refuses any path inside a git checkout.
+  `~/.config/ledgerlens/` (`$XDG_CONFIG_HOME/ledgerlens/` when that is set; `$LEDGERLENS_TOKEN_DIR` overrides both), which refuses any path inside a git checkout.
