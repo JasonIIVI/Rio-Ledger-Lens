@@ -222,9 +222,12 @@ when it opens, so the queue for one ledger never shows another's notes and a dec
 never attach to the wrong company's entry. Rows written before the key existed (v0.3.x) sit
 under `legacy` after the one-way schema upgrade (back up `data/review.sqlite` first) until
 `ledgerlens adopt-legacy data/ledger.csv --db data/review.sqlite` copies them into that
-ledger; the originals stay. `ledgerlens narrate` refuses to run while only legacy rows exist,
-so a cache is never silently rebuilt at API cost. The dashboard, the workpaper and the MCP
-server say which ledger they are keyed to and how many rows the file holds for others.
+ledger; the originals stay. Adoption copies only into a ledger that has no rows yet, so until
+it runs, `ledgerlens narrate` refuses (`--ignore-legacy` starts the ledger from scratch on
+purpose) and the dashboard holds back its note and decision buttons unless the reviewer ticks
+"start from scratch": a cache is never silently rebuilt at API cost. Run `adopt-legacy` right
+after upgrading. The dashboard, the workpaper and the MCP server say which ledger they are
+keyed to and how many rows the file holds for others.
 
 **Measuring the notes.** `evals/narratives/cases.json` holds seventeen entries: sixteen chosen
 deterministically from the default ledger - one per injected archetype, three multi-flag

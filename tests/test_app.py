@@ -173,18 +173,66 @@ def test_the_dashboard_refuses_a_database_it_cannot_read_without_a_traceback(dat
     assert not any("Record decision" in b.label for b in at.button)  # stopped before the form
 
 
+def _legacy_note_on_screen(data_dir, db, identity):
+    """A file holding one note from before ledgers were keyed, for the entry the dashboard shows."""
+    picked = _run(data_dir, db, reviewer="ana").selectbox(key="picked").value
+    with sqlite3.connect(str(db)) as raw:
+        raw.execute("INSERT INTO narratives (entry_id, summary, why_flagged, evidence_to_request, "
+                    "suggested_control, confidence, generated_at, ledger_id) VALUES "
+                    "(?, 'old', 'w', '[\"x\"]', 'c', 'low', '2026-09-23T00:00:00+00:00', 'legacy')",
+                    (picked,))
+    assert identity not in set(ReviewStore(db, identity).ledgers()["ledger_id"])
+    return picked
+
+
+def _record_button(at):
+    return next(b for b in at.button if "Record decision" in b.label)
+
+
 def test_the_sidebar_names_other_ledgers_and_points_at_adopt_legacy(data_dir, tmp_path, identity):
     db = tmp_path / "review.sqlite"
-    ReviewStore(db, identity)
-    with sqlite3.connect(str(db)) as raw:  # a note from before ledgers were keyed
-        raw.execute("INSERT INTO narratives (entry_id, summary, generated_at, ledger_id) VALUES "
-                    "('JE-2024-000001', 'old', '2026-09-23T00:00:00+00:00', 'legacy')")
+    picked = _legacy_note_on_screen(data_dir, db, identity)
     at = _run(data_dir, db, reviewer="ana")
+    assert at.selectbox(key="picked").value == picked
     assert any("1 other ledger" in c.value for c in at.caption)
-    assert any("adopt-legacy" in i.value for i in at.info)
-    assert any("note #" not in c.value for c in at.caption)  # the legacy note is not shown as ours
+    assert any("adopt-legacy" in w.value for w in at.sidebar.warning)
+    # The legacy note is for the entry on screen, and it is not shown as this ledger's.
+    assert not any("note #" in c.value for c in at.caption)
+    assert any("No narrative yet for this entry." in c.value for c in at.caption)
 
     ReviewStore(db, identity).adopt_legacy()
     at = _run(data_dir, db, reviewer="ana")
-    assert not any("adopt-legacy" in i.value for i in at.info)  # this ledger has rows now
+    assert not any("adopt-legacy" in w.value for w in at.sidebar.warning)  # this ledger has rows now
     assert any("1 other ledger" in c.value for c in at.caption)  # the originals stay
+    assert any("note #" in c.value for c in at.caption)  # the adopted copy is this ledger's note
+    assert not _record_button(at).disabled
+
+
+def test_no_write_can_shut_the_legacy_rows_out_before_a_choice_is_made(
+        data_dir, tmp_path, identity, monkeypatch):
+    """adopt_legacy copies only into a ledger with no rows: one note or decision
+    written here first would make the legacy notes unadoptable and narrate would buy
+    them again. Both write buttons wait until the rows are adopted or declined."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "not-a-real-key")  # so only the legacy rows disable it
+    db = tmp_path / "review.sqlite"
+    _legacy_note_on_screen(data_dir, db, identity)
+    at = _run(data_dir, db, reviewer="ana")
+    assert _record_button(at).disabled
+    assert next(b for b in at.button if b.label == "Write narrative").disabled
+    assert any("from scratch" in c.value for c in at.caption)
+    assert identity not in set(ReviewStore(db, identity).ledgers()["ledger_id"])
+    assert ReviewStore(db, identity).adopt_legacy()["narratives"] == 1  # still adoptable
+
+
+def test_starting_from_scratch_is_an_explicit_choice(data_dir, tmp_path, identity):
+    db = tmp_path / "review.sqlite"
+    picked = _legacy_note_on_screen(data_dir, db, identity)
+    at = _run(data_dir, db, reviewer="ana")
+    at.sidebar.checkbox(key=f"start-fresh-{identity}").check()
+    at.run()
+    assert not _record_button(at).disabled
+
+    _submit(at, "Dismiss", "looked fine")
+    assert ReviewStore(db, identity).history(picked)["decision"].tolist() == ["dismiss"]
+    at = _run(data_dir, db, reviewer="ana")
+    assert not any("adopt-legacy" in w.value for w in at.sidebar.warning)  # the choice is made

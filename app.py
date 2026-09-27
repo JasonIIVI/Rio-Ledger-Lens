@@ -98,12 +98,23 @@ if not others.empty:
     st.sidebar.caption(f"This database also holds rows for {len(others)} other ledger(s): " + ", ".join(
         f"`{r.ledger_id[:16]}…` ({int(r.narratives)} narrated, {int(r.decisions)} decided)"
         for r in others.itertuples()))
-    if LEGACY_LEDGER_ID in set(others["ledger_id"]) and ledger_id not in set(store.ledgers()["ledger_id"]):
-        st.sidebar.info(
-            "Rows from before review data was keyed by ledger sit under 'legacy'. If they were "
-            f"written for this ledger, adopt them first: `ledgerlens adopt-legacy {ledger_path} "
-            f"--db {db_path}` (no API calls). Narrating without adopting buys every note again."
-        )
+# adopt_legacy copies only into a ledger with no rows, so on a file upgraded
+# from before ledgers were keyed, the first note or decision written here would
+# shut the legacy rows out for good, and `ledgerlens narrate` would then buy
+# every note again. Writes therefore wait for a choice, as narrate's refusal
+# does: adopt the rows from the command line, or start this ledger over.
+writes_blocked = False
+if LEGACY_LEDGER_ID in set(others["ledger_id"]) and ledger_id not in set(store.ledgers()["ledger_id"]):
+    st.sidebar.warning(
+        "Rows from before review data was keyed by ledger sit under 'legacy', and this ledger "
+        "has none yet. If they were written for it, adopt them first: `ledgerlens adopt-legacy "
+        f"{ledger_path} --db {db_path}` (no API calls). A note or a decision recorded here first "
+        "would make adopting them impossible, and narrating would buy every note again."
+    )
+    writes_blocked = not st.sidebar.checkbox(
+        "Start this ledger's review from scratch", key=f"start-fresh-{ledger_id}",
+        help="The dashboard's --ignore-legacy: the legacy rows stay where they are, unadopted.",
+    )
 current = store.current()
 
 # ---- headline numbers ----
@@ -204,7 +215,8 @@ with tab_queue:
             st.caption("No narrative yet for this entry.")
         has_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
         if st.button("Rewrite narrative" if narrative else "Write narrative",
-                     disabled=not has_key, key=f"narrate-{picked}"):
+                     disabled=not has_key or writes_blocked,
+                     key=f"narrate-{picked}") and not writes_blocked:
             try:
                 with st.spinner("Asking Claude..."):
                     narrator = Narrator()
@@ -236,10 +248,14 @@ with tab_queue:
                               format_func=str.capitalize, key=choice_key)
             note = st.text_area("Note", placeholder="What you checked, or why this is fine.",
                                 key=note_key)
-            submitted = st.form_submit_button("Record decision", disabled=not reviewer)
-        if not reviewer:
+            submitted = st.form_submit_button("Record decision",
+                                              disabled=not reviewer or writes_blocked)
+        if writes_blocked:
+            st.caption("Adopt the legacy rows first, or choose to start this ledger's review "
+                       "from scratch (see the sidebar).")
+        elif not reviewer:
             st.caption("Enter your name in the sidebar to record a decision.")
-        if submitted:
+        if submitted and not writes_blocked:
             latest_id = narrative["id"] if narrative else None
             # A form submits once per click, and this guard absorbs a double click:
             # an append-only log should not carry an accidental duplicate.

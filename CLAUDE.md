@@ -55,8 +55,9 @@ and the MCP SDK, so the two together cover every code path CI will see.
   (schema version 4: `ledger_id` on both tables; the identity is `csv:<ledger sha256>` or
   `qbo:<realm id>` from a `<ledger>.identity.json` sidecar; a store is bound to one identity
   and every read and write is filtered by it; rows from before the key sit under `legacy`
-  until `ledgerlens adopt-legacy LEDGER --db …` copies them, `narrate` refuses to run while
-  only legacy rows exist unless `--ignore-legacy`, and the dashboard, the workpaper and
+  until `ledgerlens adopt-legacy LEDGER --db …` copies them into a ledger with no rows yet;
+  until then `narrate` refuses unless `--ignore-legacy` and the dashboard's write buttons wait
+  for adoption or an explicit "start from scratch", and the dashboard, the workpaper and
   `review_status` say what other ledgers a file holds). A hand-written injection eval case:
   a line description replaced through the case's `overrides` before the prompt is built,
   expectations committed and pushed before its one narration, the crossing re-grade in the

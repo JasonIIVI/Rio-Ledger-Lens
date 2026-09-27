@@ -234,8 +234,10 @@ def _require_current_schema(conn: sqlite3.Connection, path: Path) -> None:
     if version < SCHEMA_VERSION:
         raise RuntimeError(
             f"{path} is not a current review database (no tables, or an older schema). "
-            "Open it once with the dashboard or `ledgerlens narrate` to create or migrate it; "
-            "a read-only connection will not."
+            "An empty file gets its tables from `ledgerlens narrate` or the dashboard; an older "
+            f"one should be backed up, then migrated with `ledgerlens adopt-legacy LEDGER --db "
+            f"{path}`, which also files its rows from before ledgers were keyed under that ledger "
+            "(no API calls). A read-only connection will not migrate it."
         )
     missing = sorted(set(GUARDS) - _triggers(conn))
     if missing:
