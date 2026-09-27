@@ -6,6 +6,7 @@ import json
 import os
 import stat
 import subprocess
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -104,11 +105,28 @@ def test_this_checkout_is_refused_wherever_the_path_points_inside_it():
 
 
 def test_a_differently_cased_spelling_of_the_checkout_is_still_refused():
+    if not (REPO_ROOT / ".git").exists():
+        pytest.skip("not a git checkout")
     swapped = REPO_ROOT.with_name(REPO_ROOT.name.swapcase())
     if swapped == REPO_ROOT or not swapped.exists():
         pytest.skip("case-sensitive filesystem: the other spelling names nothing")
     with pytest.raises(TokenStoreError, match="inside the git repository"):
         TokenStore(swapped / "qbo-sandbox-1.json")
+
+
+def test_a_symlink_or_relative_path_into_a_checkout_is_refused(outside, monkeypatch):
+    """repository_root resolves the path first: a link from elsewhere, or a bare file
+    name typed inside a checkout, still names a place inside it."""
+    checkout = outside / "repo"
+    (checkout / "sub").mkdir(parents=True)
+    (checkout / ".git").mkdir()
+    (outside / "elsewhere").mkdir()
+    (outside / "elsewhere" / "link").symlink_to(checkout / "sub")
+    with pytest.raises(TokenStoreError, match="inside the git repository"):
+        TokenStore(outside / "elsewhere" / "link" / "qbo-sandbox-1.json")
+    monkeypatch.chdir(checkout / "sub")
+    with pytest.raises(TokenStoreError, match="inside the git repository"):
+        TokenStore("qbo-sandbox-1.json")
 
 
 def test_env_file_names_are_refused(outside):
@@ -144,18 +162,21 @@ def test_repr_and_str_never_show_a_token():
     assert "4620816365" in text and "<redacted>" in text
 
 
-def test_a_file_others_can_read_is_refused_not_fixed(outside):
+@pytest.mark.parametrize("mode", [0o644, 0o640, 0o620, 0o604, 0o602])
+def test_a_file_others_can_read_is_refused_not_fixed(outside, mode):
+    """Any group or other bit, one class at a time, so a narrowed mask cannot pass."""
     store = TokenStore.for_realm("sandbox", "1", outside)
     store.save(realm_one())
-    os.chmod(store.path, 0o644)
+    os.chmod(store.path, mode)
     with pytest.raises(TokenStoreError, match="600"):
         store.load()
-    assert stat.S_IMODE(store.path.stat().st_mode) == 0o644
+    assert stat.S_IMODE(store.path.stat().st_mode) == mode
 
 
-def test_a_shared_directory_is_refused_before_anything_is_written(outside):
+@pytest.mark.parametrize("mode", [0o755, 0o750, 0o770, 0o705, 0o707])
+def test_a_shared_directory_is_refused_before_anything_is_written(outside, mode):
     outside.mkdir()
-    os.chmod(outside, 0o755)
+    os.chmod(outside, mode)
     with pytest.raises(TokenStoreError, match="700"):
         TokenStore.for_realm("sandbox", "1", outside).save(realm_one())
     assert not any(outside.iterdir())
@@ -181,6 +202,25 @@ def test_a_damaged_file_is_an_error_that_names_the_file(outside):
         store.load()
 
 
+_GOOD = realm_one().to_dict()
+
+
+@pytest.mark.parametrize("record", [
+    None, 5, [], "tokens",
+    {**_GOOD, "access_token": None}, {**_GOOD, "refresh_token": ""}, {**_GOOD, "realm_id": 1},
+    {**_GOOD, "refresh_expires_at": "never"}, {**_GOOD, "obtained_at": "garbage"},
+    {**_GOOD, "colour": "blue"}, {k: v for k, v in _GOOD.items() if k != "expires_at"},
+], ids=["null", "number", "list", "string", "null token", "empty token", "int realm",
+        "bad refresh expiry", "bad obtained_at", "extra key", "missing key"])
+def test_each_defect_in_a_record_is_refused_and_names_the_file(outside, record):
+    store = TokenStore.for_realm("sandbox", "1", outside)
+    store.save(realm_one())
+    store.path.write_text(json.dumps(record))  # keeps the mode
+    with pytest.raises(TokenStoreError) as refused:
+        store.load()
+    assert str(store.path) in str(refused.value)
+
+
 def test_expiry_honours_the_skew_and_reads_naive_and_zulu_timestamps_as_utc():
     tokens = sample()
     assert tokens.expires_at == "2026-09-26T13:00:00+00:00"
@@ -197,6 +237,28 @@ def test_expiry_honours_the_skew_and_reads_naive_and_zulu_timestamps_as_utc():
     zulu = sample(expires_at="2026-09-26T13:00:00Z")
     assert not zulu.access_expired(now=NOW)
     assert zulu.access_expired(now=datetime(2026, 9, 26, 12, 59, 30))  # naive `now` is UTC too
+    assert not zulu.access_expired(now=datetime(2026, 9, 26, 12, 30))
+    assert zulu.access_expired(now=datetime(2026, 9, 26, 14, 0))
+    # The refresh token's skew, where it decides: 30 s before expiry is too late, 61 s is not.
+    refresh_ends = NOW + timedelta(days=100)
+    assert tokens.refresh_expired(now=refresh_ends - timedelta(seconds=30))
+    assert not tokens.refresh_expired(now=refresh_ends - timedelta(seconds=61))
+
+
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="the local zone cannot be changed here")
+def test_naive_timestamps_are_utc_whatever_the_local_zone(monkeypatch):
+    """CI runs in UTC, where reading naive times as local would pass: run in Tokyo instead."""
+    monkeypatch.setenv("TZ", "Asia/Tokyo")
+    time.tzset()
+    try:
+        naive = sample(expires_at="2026-09-26T13:00:00")
+        assert naive.access_expired(now=datetime(2026, 9, 26, 12, 59, 30, tzinfo=timezone.utc))
+        assert not naive.access_expired(now=datetime(2026, 9, 26, 12, 58, 30, tzinfo=timezone.utc))
+        assert not sample().access_expired(now=datetime(2026, 9, 26, 12, 30))
+        assert sample().access_expired(now=datetime(2026, 9, 26, 14, 0))
+    finally:
+        monkeypatch.undo()
+        time.tzset()
 
 
 def test_the_ignore_rules_cover_token_files_and_their_temps_but_not_fixtures():
