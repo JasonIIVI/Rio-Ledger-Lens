@@ -23,6 +23,7 @@ from ledgerlens.narrate import (
     entry_context,
 )
 from ledgerlens.narrative_eval import (
+    CASE_SET_NOTES,
     CITATIONS,
     DEFAULT_LEDGER_SHA256,
     GRADER_NOTES,
@@ -771,6 +772,25 @@ def test_committed_rows_were_graded_by_this_grader_against_this_case_file():
         assert grade(r["narrative"], case, r["prompt"]) == r["metrics"], r["entry_id"]
 
 
+def test_every_hand_written_case_is_disclosed_and_the_committed_report_is_current(
+        scored, labels):
+    """Rule 9's other half: a case added by hand has a CASE_SET_NOTES entry naming it, and
+    docs/narrative-eval.md is exactly what this code renders from the committed rows."""
+    combined, flags = scored
+    cases = load_cases(CASES_PATH)
+    selected = {c.entry_id for c in select_cases(combined, flags, labels)}
+    hand_written = [c.entry_id for c in cases if c.entry_id not in selected]
+    assert hand_written
+    for entry_id in hand_written:
+        assert any(entry_id in note for _, note in CASE_SET_NOTES), entry_id
+    rows = [json.loads(line) for line in RUNS_PATH.read_text().splitlines() if line]
+    runs_dir = RUNS_PATH.parent.relative_to(REPO)
+    rendered = render_markdown(rows, aggregate(rows), runs_dir=runs_dir, cases=cases)
+    assert rendered == (REPO / narrative_eval.REPORT_FILE).read_text(encoding="utf-8")
+    for date, note in CASE_SET_NOTES:
+        assert f"- **{date}** - {note}" in rendered
+
+
 RUNS_ROOT_PATH = REPO / narrative_eval.RUNS_ROOT
 
 
@@ -1007,6 +1027,14 @@ def test_a_crossing_from_rows_that_predate_provenance_names_every_earlier_case_f
     assert rows[0]["previous_cases_sha256"] == UNRECORDED  # the earliest origin stays what it was
     summary = aggregate(rows)
     assert summary["provenance"]["previous_cases_sha256"] == [UNRECORDED, "a" * 64]
+    # Two rows with the same history name each earlier file once, and a second re-grade
+    # under the current file does not list the current file as an earlier one.
+    twin = {**rows[0], "entry_id": "JE-9999-000001"}
+    assert aggregate([rows[0], twin])["provenance"]["previous_cases_sha256"] == [UNRECORDED, "a" * 64]
+    again = run_eval([case], Narrator(client=quiet), combined, flags, ledger, tmp_path,
+                     regrade=True, cases_sha256="b" * 64, allow_cases_change=True)
+    assert "b" * 64 in {m.get("cases_sha256") for m in again[0]["metrics_history"]}
+    assert aggregate(again)["provenance"]["previous_cases_sha256"] == [UNRECORDED, "a" * 64]
     report = render_markdown(rows, summary)
     assert "hash was not recorded" in report and "a" * 64 in report and ", then " in report
 
