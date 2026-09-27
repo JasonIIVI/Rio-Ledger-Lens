@@ -65,7 +65,7 @@ def test_a_qbo_sidecar_names_the_ledger_whatever_the_frame_holds(small_ledger, t
 
 @pytest.mark.parametrize("payload", [
     "not json", "[]", '{"ledger_id": null}', '{"ledger_id": "csv:abc"}', '{"ledger_id": "qbo:"}',
-    '{"ledger_id": "qbo:a b"}', '{"other": "qbo:1"}',
+    '{"ledger_id": "qbo:a b"}', '{"other": "qbo:1"}', '{"ledger_id": "qbo:1\\n"}', "",
 ])
 def test_a_malformed_sidecar_is_refused_not_ignored(small_ledger, tmp_path, payload):
     from ledgerlens.ingest import IdentityError, identity_path, ledger_identity

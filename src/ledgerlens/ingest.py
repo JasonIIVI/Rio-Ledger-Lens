@@ -96,7 +96,7 @@ def ledger_identity(lines: pd.DataFrame, path: str | Path | None = None) -> str:
             except (OSError, ValueError) as exc:
                 raise IdentityError(f"{sidecar} cannot be read as JSON ({exc})") from exc
             ledger_id = payload.get("ledger_id") if isinstance(payload, dict) else None
-            if not isinstance(ledger_id, str) or not _QBO_ID.match(ledger_id):
+            if not isinstance(ledger_id, str) or not _QBO_ID.fullmatch(ledger_id):
                 raise IdentityError(
                     f'{sidecar} must hold {{"ledger_id": "qbo:<realm_id>"}}, got {ledger_id!r}'
                 )
