@@ -465,3 +465,23 @@ def test_narrate_refuses_to_ignore_legacy_rows_unless_told_to(tmp_path, capsys, 
     assert main(["narrate", ledger, "--db", str(other), "--top", "0", "--no-model",
                  "--ignore-legacy"]) == 0
     assert client.calls == []
+
+
+@pytest.mark.parametrize("payload", ['{"ledger_id": "qbo 123"}', ""])
+def test_a_malformed_identity_sidecar_stops_every_command_with_a_message(
+        tmp_path, capsys, monkeypatch, payload):
+    """A sidecar that names no ledger is never guessed around, and never a traceback."""
+    from ledgerlens.review import ReviewStore
+
+    monkeypatch.chdir(tmp_path)
+    main(["generate", "--start", "2024-01-01", "--end", "2024-03-31", "--out-dir", str(tmp_path)])
+    ledger, db = str(tmp_path / "ledger.csv"), tmp_path / "review.sqlite"
+    ReviewStore(db, "csv:" + "a" * 64)
+    (tmp_path / "ledger.identity.json").write_text(payload)
+    capsys.readouterr()
+    for argv in (["narrate", ledger, "--no-model", "--top", "0", "--db", str(db)],
+                 ["report", ledger, "--no-model", "--db", str(db), "--out", str(tmp_path / "w.xlsx")],
+                 ["adopt-legacy", ledger, "--db", str(db)]):
+        assert main(argv) == 2, argv[0]
+        out = capsys.readouterr().out
+        assert "error:" in out and "ledger.identity.json" in out, argv[0]

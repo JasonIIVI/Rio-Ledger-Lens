@@ -274,3 +274,15 @@ def test_the_same_decision_on_a_shared_entry_id_in_another_ledger_is_recorded(
     _submit(at, "Accept", "")
     assert not any("just recorded" in w.value for w in at.warning)
     assert ReviewStore(db, other_id).history(picked)["decision"].tolist() == ["accept"]
+
+
+def test_a_malformed_identity_sidecar_is_an_error_not_a_traceback(data_dir, tmp_path):
+    import shutil
+
+    bad = tmp_path / "bad"
+    bad.mkdir()
+    shutil.copy(data_dir / "ledger.csv", bad / "ledger.csv")
+    (bad / "ledger.identity.json").write_text('{"ledger_id": "qbo 123"}')
+    at = _run(bad, tmp_path / "review.sqlite", reviewer="ana")  # _run asserts nothing was raised
+    assert any("ledger.identity.json" in e.value for e in at.error)
+    assert not (tmp_path / "review.sqlite").exists()  # stopped before any store was opened

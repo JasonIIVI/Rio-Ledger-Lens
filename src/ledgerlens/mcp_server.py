@@ -28,6 +28,7 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from .env import load_dotenv
+from .ingest import IdentityError
 from .ledger_context import (
     DEFAULT_LEDGER,
     DEFAULT_REVIEW_DB,
@@ -82,11 +83,12 @@ def _ctx() -> LedgerContext:
 
 def _call(method: str, **kwargs: Any) -> dict[str, Any]:
     """Run one context method; a review database the store refuses (a file from a newer
-    version, or not a review database at all) becomes a tool error whose text reaches the
-    client, rather than an unexpected exception the SDK reports without its message."""
+    version, or not a review database at all), or an identity sidecar that names no ledger,
+    becomes a tool error whose text reaches the client, rather than an unexpected exception
+    the SDK reports without its message."""
     try:
         return getattr(_ctx(), method)(**kwargs)
-    except RuntimeError as exc:
+    except (RuntimeError, IdentityError) as exc:
         raise ToolError(str(exc)) from exc
 
 
@@ -162,7 +164,7 @@ def ledgerlens_benford(
     """First-digit (Benford) analysis: MAD with Nigrini's conformity bands and chi-square, for
     the whole population or per segment. Non-conformity is a pointer, not a finding.
     """
-    return _ctx().benford(by=by, min_n=min_n)
+    return _call("benford", by=by, min_n=min_n)
 
 
 @mcp.tool(title="Review status", annotations=READ_ONLY)

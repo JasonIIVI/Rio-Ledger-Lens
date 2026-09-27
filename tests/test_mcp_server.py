@@ -173,3 +173,18 @@ async def test_review_status_counts_rows_this_file_holds_for_other_ledgers(clien
     status = await client.call_tool("ledgerlens_review_status", {})
     assert status.structured_content["other_ledgers"] == {"legacy": {"narratives": 1, "decisions": 0}}
     assert status.structured_content["narratives"] == 1  # the legacy note is not this ledger's
+
+
+@pytest.mark.anyio
+async def test_a_malformed_identity_sidecar_is_a_tool_error_the_client_can_read(tmp_path):
+    """Every tool, benford included: the ledger's identity is part of loading it."""
+    from ledgerlens.cli import main
+
+    main(["generate", "--start", "2024-01-01", "--end", "2024-02-29", "--out-dir", str(tmp_path)])
+    (tmp_path / "ledger.identity.json").write_text('{"ledger_id": "qbo 123"}')
+    mcp_server.use_context(LedgerContext(tmp_path / "ledger.csv"))
+    async with Client(mcp_server.mcp, raise_exceptions=True) as c:
+        for name in ("ledgerlens_benford", "ledgerlens_review_status", "ledgerlens_summary"):
+            result = await c.call_tool(name, {})
+            assert result.is_error, name
+            assert "ledger.identity.json" in result.content[0].text, name

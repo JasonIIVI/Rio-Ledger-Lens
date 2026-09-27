@@ -23,7 +23,7 @@ from . import evaluate, jets, narrative_eval
 from .benford import benford_test, segmented_benford
 from .env import load_dotenv
 from .generate import generate_ledger
-from .ingest import ledger_identity, load_csv, load_labels
+from .ingest import IdentityError, ledger_identity, load_csv, load_labels
 from .model import combine, score_ledger
 from .narrate import DEFAULT_EFFORT, DEFAULT_MAX_TOKENS, DEFAULT_MODEL, NarrativeError, Narrator
 from .report import build_workpaper
@@ -184,7 +184,7 @@ def cmd_report(args: argparse.Namespace) -> int:
     if args.db and Path(args.db).exists():
         try:
             store = ReviewStore.read_only(args.db, ledger_identity(df, args.ledger))
-        except RuntimeError as exc:
+        except (RuntimeError, IdentityError) as exc:
             print(f"error: {exc}")
             return 2
     elif args.db:
@@ -210,10 +210,10 @@ def cmd_narrate(args: argparse.Namespace) -> int:
         model_scores, _ = score_ledger(df)
         scored = combine(scored, model_scores)
 
-    ledger_id = ledger_identity(df, args.ledger)
     try:
+        ledger_id = ledger_identity(df, args.ledger)
         store = ReviewStore(args.db, ledger_id)
-    except RuntimeError as exc:
+    except (RuntimeError, IdentityError) as exc:
         print(f"error: {exc}")
         return 2
     print(f"Review database {args.db}, rows keyed by {ledger_id}")
@@ -259,11 +259,11 @@ def cmd_adopt_legacy(args: argparse.Namespace) -> int:
         print(f"error: no review database at {args.db}")
         return 2
     df = load_csv(args.ledger)
-    ledger_id = ledger_identity(df, args.ledger)
     try:
+        ledger_id = ledger_identity(df, args.ledger)
         store = ReviewStore(args.db, ledger_id)  # migrates a schema-3 file on the way
         adopted = store.adopt_legacy(entry_ids=df["entry_id"].unique())
-    except RuntimeError as exc:
+    except (RuntimeError, IdentityError) as exc:  # before ValueError: IdentityError is one
         print(f"error: {exc}")
         return 2
     except ValueError as exc:

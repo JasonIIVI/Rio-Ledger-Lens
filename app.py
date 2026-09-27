@@ -19,7 +19,7 @@ import streamlit as st
 from ledgerlens import evaluate, jets
 from ledgerlens.benford import benford_test
 from ledgerlens.env import load_dotenv
-from ledgerlens.ingest import ledger_identity, load_csv, load_labels
+from ledgerlens.ingest import IdentityError, ledger_identity, load_csv, load_labels
 from ledgerlens.model import combine, score_ledger
 from ledgerlens.narrate import NarrativeError, Narrator, build_prompt, entry_context
 from ledgerlens.review import DECISIONS, LEGACY_LEDGER_ID, Decision, ReviewStore
@@ -81,7 +81,11 @@ if not Path(ledger_path).exists():
     st.warning("No ledger found. Run `ledgerlens generate` first.")
     st.stop()
 
-df, flags, combined, scores, report, labels, ledger_id = load(ledger_path, labels_path)
+try:
+    df, flags, combined, scores, report, labels, ledger_id = load(ledger_path, labels_path)
+except IdentityError as exc:  # a sidecar that names no ledger: never guess which one it is
+    st.error(str(exc))
+    st.stop()
 
 # The store is cheap to open and its reads are deliberately never cached: a
 # decision recorded a second ago has to show on the very next rerun. It is
