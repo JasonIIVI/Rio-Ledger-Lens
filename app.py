@@ -206,7 +206,11 @@ with tab_queue:
         # version written in between (a rewrite, another reviewer) would
         # otherwise be recorded as the one they saw. So the id on screen is
         # remembered per entry, and read back before it is overwritten.
-        shown_key = f"shown-{picked}"
+        # Every per-entry key names the ledger and the file too: two ledgers can
+        # share entry ids, and a draft, a remembered note id or the double-click
+        # guard for one must never act on the other's entry.
+        entry_key = f"{db_path}|{ledger_id}|{picked}"
+        shown_key = f"shown-{entry_key}"
         seen_id = st.session_state.get(shown_key)
         st.session_state[shown_key] = narrative["id"] if narrative else None
         if narrative:
@@ -216,7 +220,7 @@ with tab_queue:
         has_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
         if st.button("Rewrite narrative" if narrative else "Write narrative",
                      disabled=not has_key or writes_blocked,
-                     key=f"narrate-{picked}") and not writes_blocked:
+                     key=f"narrate-{entry_key}") and not writes_blocked:
             try:
                 with st.spinner("Asking Claude..."):
                     narrator = Narrator()
@@ -235,15 +239,15 @@ with tab_queue:
 
         # ---- decision: a named human, append-only ----
         st.markdown("**Record a decision**")
-        choice_key, note_key = f"choice-{picked}", f"note-{picked}"
+        choice_key, note_key = f"choice-{entry_key}", f"note-{entry_key}"
         # The form is not cleared on submit: a refused submit (the note changed
         # while the reviewer was reading it) must not discard what they typed.
         # The draft is cleared here instead, on the rerun after a decision was
         # recorded, and each entry keeps its own draft in the meantime.
-        if st.session_state.pop("clear-decision", None) == picked:
+        if st.session_state.pop("clear-decision", None) == entry_key:
             for key in (choice_key, note_key):
                 st.session_state.pop(key, None)
-        with st.form(key=f"decision-{picked}"):
+        with st.form(key=f"decision-{entry_key}"):
             choice = st.radio("Decision", DECISIONS, horizontal=True,
                               format_func=str.capitalize, key=choice_key)
             note = st.text_area("Note", placeholder="What you checked, or why this is fine.",
@@ -259,7 +263,7 @@ with tab_queue:
             latest_id = narrative["id"] if narrative else None
             # A form submits once per click, and this guard absorbs a double click:
             # an append-only log should not carry an accidental duplicate.
-            signature = (picked, choice, note.strip())
+            signature = (entry_key, choice, note.strip())
             if st.session_state.get("last_decision") == signature:
                 st.warning("That decision was just recorded.")
             elif seen_id != latest_id:
@@ -283,7 +287,7 @@ with tab_queue:
                 ))
                 st.session_state["last_decision"] = signature
                 st.session_state["flash"] = f"Recorded: {choice} by {reviewer}."
-                st.session_state["clear-decision"] = picked
+                st.session_state["clear-decision"] = entry_key
                 st.rerun()
 
         history = store.history(picked)

@@ -67,10 +67,15 @@ def _note(summary):
             "suggested_control": "c", "confidence": "low"}
 
 
+def _entry_key(at):
+    """The dashboard keys an entry's widgets by database, ledger and entry id."""
+    return next(r.key for r in at.radio if r.key.startswith("choice-"))[len("choice-"):]
+
+
 def _submit(at, decision="Accept", note="fine"):
-    picked = at.selectbox(key="picked").value
-    at.radio(key=f"choice-{picked}").set_value(decision)
-    at.text_area(key=f"note-{picked}").set_value(note)
+    key = _entry_key(at)
+    at.radio(key=f"choice-{key}").set_value(decision)
+    at.text_area(key=f"note-{key}").set_value(note)
     _click_record(at)
 
 
@@ -99,7 +104,7 @@ def test_a_decision_records_the_note_the_reviewer_read_not_one_written_meanwhile
     assert store.history(picked).empty
     assert any("changed while you were reading" in w.value for w in at.warning)
     assert any(f"note #{second}" in c.value for c in at.caption)  # the rerun shows the new one
-    assert at.text_area(key=f"note-{picked}").value == "fine"  # the draft survived the refusal
+    assert at.text_area(key=f"note-{_entry_key(at)}").value == "fine"  # the draft survived the refusal
 
     # Read it, decide again: this time the recorded note is the one on screen.
     _submit(at)
@@ -119,8 +124,8 @@ def test_a_refusal_keeps_the_draft_and_the_next_click_records_it(data_dir, tmp_p
     _submit(at, "Escalate", "checked the purchase order")
     assert store.history(picked).empty
     assert any(f"now note #{written}" in w.value for w in at.warning)
-    assert at.text_area(key=f"note-{picked}").value == "checked the purchase order"
-    assert at.radio(key=f"choice-{picked}").value == "escalate"
+    assert at.text_area(key=f"note-{_entry_key(at)}").value == "checked the purchase order"
+    assert at.radio(key=f"choice-{_entry_key(at)}").value == "escalate"
 
     # The rerun showed the note; clicking again records the untouched draft
     # against it, and only then is the form cleared.
@@ -129,8 +134,8 @@ def test_a_refusal_keeps_the_draft_and_the_next_click_records_it(data_dir, tmp_p
     assert history["decision"].tolist() == ["escalate"]
     assert history["note"].tolist() == ["checked the purchase order"]
     assert history["narrative_id"].tolist() == [written]
-    assert at.text_area(key=f"note-{picked}").value == ""
-    assert at.radio(key=f"choice-{picked}").value == "accept"
+    assert at.text_area(key=f"note-{_entry_key(at)}").value == ""
+    assert at.radio(key=f"choice-{_entry_key(at)}").value == "accept"
 
 
 def test_a_decision_with_no_note_on_screen_records_none(data_dir, tmp_path, identity):
@@ -236,3 +241,36 @@ def test_starting_from_scratch_is_an_explicit_choice(data_dir, tmp_path, identit
     assert ReviewStore(db, identity).history(picked)["decision"].tolist() == ["dismiss"]
     at = _run(data_dir, db, reviewer="ana")
     assert not any("adopt-legacy" in w.value for w in at.sidebar.warning)  # the choice is made
+
+
+def test_the_same_decision_on_a_shared_entry_id_in_another_ledger_is_recorded(
+        data_dir, tmp_path, identity):
+    """The double-click guard, the draft and the remembered note id belong to one
+    ledger's entry: a second ledger's entry with the same id is a different entry."""
+    import pandas as pd
+
+    from ledgerlens import jets
+    from ledgerlens.ingest import ledger_identity, load_csv
+
+    lines = pd.read_csv(data_dir / "ledger.csv", dtype=str, keep_default_na=False)
+    flagged = set(jets.run_all(load_csv(data_dir / "ledger.csv"))["entry_id"])
+    quiet = lines.index[~lines["entry_id"].isin(flagged)][-1]
+    lines.loc[quiet, "description"] = "a different ledger"  # same ids and flags, another digest
+    other = tmp_path / "other"
+    other.mkdir()
+    lines.to_csv(other / "ledger.csv", index=False)
+    other_id = ledger_identity(load_csv(other / "ledger.csv"), other / "ledger.csv")
+    assert other_id != identity
+
+    db = tmp_path / "review.sqlite"
+    at = _run(data_dir, db, reviewer="ana")
+    picked = at.selectbox(key="picked").value
+    _submit(at, "Accept", "")
+    assert ReviewStore(db, identity).history(picked)["decision"].tolist() == ["accept"]
+
+    at.text_input(key="ledger_path").set_value(str(other / "ledger.csv"))
+    at.run()
+    assert at.selectbox(key="picked").value == picked
+    _submit(at, "Accept", "")
+    assert not any("just recorded" in w.value for w in at.warning)
+    assert ReviewStore(db, other_id).history(picked)["decision"].tolist() == ["accept"]
