@@ -67,13 +67,16 @@ and the MCP SDK, so the two together cover every code path CI will see.
   legacy rows out for good), all fixed on the branch: the dashboard's writes wait for adoption
   or "start from scratch", a malformed sidecar is a message on every surface, the eval checks
   override lines before narrating, the token store writes only records `load()` accepts for its
-  file's realm, and tests that could not fail were tightened (checked with mutants).
+  file's realm, and tests that could not fail were tightened (checked with mutants). A
+  verification pass over those fixes found four more, also fixed: the start-from-scratch
+  choice was keyed by ledger but not by file, a `null` override and a Unicode-digit line key
+  got past the case loader, and the draft half of the per-entry keying was untested.
 - **Next** — the QuickBooks Online sandbox connector (`week4/qbo-connector`: OAuth2 through
   the token store, JournalEntry entity + General Ledger report → `ingest.prepare`,
   `ledgerlens qbo-auth` / `pull-qbo`, recorded-JSON fixtures, no network in tests), then the
   weekly scheduled Action, the README final pass and v1.0.0 (due 2026-10-18). Week 5 breaks
   the circularity in the detection numbers.
-- 308 tests on 3.9 / 318 on 3.12, ruff clean.
+- 309 tests on 3.9 / 319 on 3.12, ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
