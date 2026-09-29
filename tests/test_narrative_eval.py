@@ -951,6 +951,7 @@ def test_overrides_are_validated_on_load_and_at_prompt_time(sample, scored, ledg
         {"lines": {"1": {"description": "two\nlines"}}},
         {"lines": {"1": {"description": "  "}}},
         {"lines": {"x": {"description": "y"}}},
+        {"lines": {"²": {"description": "y"}}},  # isdigit() takes it, int() does not
         {"lines": {}},
         {"lines": {"1": {"description": "x"}}, "extra": {}},
         {"lines": {"1": {}}},

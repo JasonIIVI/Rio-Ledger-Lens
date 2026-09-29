@@ -315,7 +315,8 @@ def _validate_overrides(case: Case) -> None:
     if not isinstance(lines, dict) or set(case.overrides) != {"lines"} or not lines:
         raise ValueError(shape)
     for line_no, fields in lines.items():
-        if not str(line_no).isdigit() or not isinstance(fields, dict) or not fields:
+        # ASCII digits only: str.isdigit() also takes '²', which int() then refuses.
+        if not re.fullmatch(r"[0-9]+", str(line_no)) or not isinstance(fields, dict) or not fields:
             raise ValueError(
                 f"{case.entry_id}: override line numbers are digits, and each names a field"
             )
