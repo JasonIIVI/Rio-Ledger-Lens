@@ -194,6 +194,10 @@ def _record_button(at):
     return next(b for b in at.button if "Record decision" in b.label)
 
 
+def _start_fresh_box(at):
+    return next(c for c in at.sidebar.checkbox if "from scratch" in c.label)
+
+
 def test_the_sidebar_names_other_ledgers_and_points_at_adopt_legacy(data_dir, tmp_path, identity):
     db = tmp_path / "review.sqlite"
     picked = _legacy_note_on_screen(data_dir, db, identity)
@@ -233,10 +237,26 @@ def test_starting_from_scratch_is_an_explicit_choice(data_dir, tmp_path, identit
     db = tmp_path / "review.sqlite"
     picked = _legacy_note_on_screen(data_dir, db, identity)
     at = _run(data_dir, db, reviewer="ana")
-    at.sidebar.checkbox(key=f"start-fresh-{identity}").check()
+    _start_fresh_box(at).check()
     at.run()
     assert not _record_button(at).disabled
 
+    # The choice is made for that file. Pointing the same session at another file
+    # that also holds unadopted legacy rows asks again, with the box unticked: a
+    # tick carried over would let one click there shut its legacy rows out.
+    other = tmp_path / "other.sqlite"
+    _legacy_note_on_screen(data_dir, other, identity)
+    at.text_input(key="db_path").set_value(str(other))
+    at.run()
+    assert any("adopt-legacy" in w.value for w in at.sidebar.warning)
+    assert not _start_fresh_box(at).value
+    assert _record_button(at).disabled
+    assert ReviewStore(other, identity).adopt_legacy()["narratives"] == 1  # still adoptable
+
+    at.text_input(key="db_path").set_value(str(db))
+    at.run()
+    _start_fresh_box(at).check()
+    at.run()
     _submit(at, "Dismiss", "looked fine")
     assert ReviewStore(db, identity).history(picked)["decision"].tolist() == ["dismiss"]
     at = _run(data_dir, db, reviewer="ana")

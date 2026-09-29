@@ -106,7 +106,9 @@ if not others.empty:
 # from before ledgers were keyed, the first note or decision written here would
 # shut the legacy rows out for good, and `ledgerlens narrate` would then buy
 # every note again. Writes therefore wait for a choice, as narrate's refusal
-# does: adopt the rows from the command line, or start this ledger over.
+# does: adopt the rows from the command line, or start this ledger over. The
+# choice is made for one file: keyed like every per-entry widget, it is asked
+# again when the sidebar points at another database.
 writes_blocked = False
 if LEGACY_LEDGER_ID in set(others["ledger_id"]) and ledger_id not in set(store.ledgers()["ledger_id"]):
     st.sidebar.warning(
@@ -116,7 +118,7 @@ if LEGACY_LEDGER_ID in set(others["ledger_id"]) and ledger_id not in set(store.l
         "would make adopting them impossible, and narrating would buy every note again."
     )
     writes_blocked = not st.sidebar.checkbox(
-        "Start this ledger's review from scratch", key=f"start-fresh-{ledger_id}",
+        "Start this ledger's review from scratch", key=f"start-fresh-{db_path}|{ledger_id}",
         help="The dashboard's --ignore-legacy: the legacy rows stay where they are, unadopted.",
     )
 current = store.current()
