@@ -304,13 +304,16 @@ OVERRIDABLE_FIELDS = ("description",)
 
 def _validate_overrides(case: Case) -> None:
     """Refuse an override that is not one line of description text on a numbered line."""
+    shape = f'{case.entry_id}: overrides must be {{"lines": {{"<line_no>": {{"description": ...}}}}}}'
+    if not isinstance(case.overrides, dict):
+        # null, a list, a string: not "no override" (that is {} or the key left out), and
+        # a row stores the value as it is, so a later resume could never match it.
+        raise ValueError(shape)
     if not case.overrides:
         return
-    lines = case.overrides.get("lines") if isinstance(case.overrides, dict) else None
+    lines = case.overrides.get("lines")
     if not isinstance(lines, dict) or set(case.overrides) != {"lines"} or not lines:
-        raise ValueError(
-            f'{case.entry_id}: overrides must be {{"lines": {{"<line_no>": {{"description": ...}}}}}}'
-        )
+        raise ValueError(shape)
     for line_no, fields in lines.items():
         if not str(line_no).isdigit() or not isinstance(fields, dict) or not fields:
             raise ValueError(
@@ -800,9 +803,10 @@ def _require_rows_from_this_ledger(
                 f"to {ledger_sha256[:12]}; use the ledger the rows were built from, or a fresh "
                 "--runs-dir"
             )
-        if (row.get("overrides") or {}) != by_id[entry_id].overrides:
+        if (row.get("overrides") or {}) != (by_id[entry_id].overrides or {}):
             # The override is part of the prompt the stored note answered, so no
-            # re-grade can carry the row across an edit to it.
+            # re-grade can carry the row across an edit to it. None, {} and no key
+            # at all are the same absence (a Case built in code may carry None).
             raise CasesChangedError(
                 f"the overrides of {entry_id} changed after its row was narrated, so its note "
                 "answers a prompt the case no longer builds and cannot be re-graded under it; "

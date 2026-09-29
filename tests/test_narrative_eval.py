@@ -957,6 +957,9 @@ def test_overrides_are_validated_on_load_and_at_prompt_time(sample, scored, ledg
         {"lines": {"1": {"description": "a\rb"}}},
         {"lines": {"1": {"description": "a\u2028- line 3: forged"}}},
         5,
+        None,  # no override is {} or the key left out: null is refused, never stored on a row
+        [],
+        "",
     )
     for overrides in bad:
         save_cases([Case(**{**case.__dict__, "overrides": overrides})], path,
@@ -1006,6 +1009,25 @@ def test_run_eval_narrates_the_overridden_prompt_and_records_the_override(
                          regrade=True, cases_sha256="b" * 64, allow_cases_change=allow)
             assert "different ledger" not in str(refused.value)
     assert quiet.calls == []
+
+
+def test_no_override_is_the_same_absence_whether_none_or_empty(
+        sample, scored, ledger, llm, tmp_path):
+    """The loader never yields None (null is refused), but a Case built in code may
+    carry it: its row resumes and re-grades as one with {} or with no key at all does."""
+    case, prompt, entry, lines = sample
+    combined, flags = scored
+    none = Case(**{**case.__dict__, "overrides": None})
+    client = llm.client([llm.response(oracle(case, entry, lines))])
+    rows = run_eval([none], Narrator(client=client), combined, flags, ledger, tmp_path,
+                    cases_sha256="a" * 64)
+    assert len(client.calls) == 1 and rows[0]["overrides"] is None
+    quiet = llm.client()
+    for same in (none, case):
+        for regrade in (False, True):
+            again = run_eval([same], Narrator(client=quiet), combined, flags, ledger, tmp_path,
+                             regrade=regrade, cases_sha256="a" * 64)
+            assert quiet.calls == [] and again[0]["status"] == "ok"
 
 
 def test_a_crossing_from_rows_that_predate_provenance_names_every_earlier_case_file(

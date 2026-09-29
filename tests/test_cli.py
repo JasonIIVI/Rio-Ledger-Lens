@@ -327,6 +327,7 @@ def test_eval_narratives_names_a_missing_or_damaged_case_file(tmp_path, capsys):
         "no case list": {"about": "x"},
         "a list, not an object": [good],
         "overrides that are not an object": {"cases": [{**good, "overrides": 5}]},
+        "overrides that are null": {"cases": [{**good, "overrides": None}]},
         "a pattern list that is a string": {"cases": [{**good, "must_mention": "1,322"}]},
     }
     for why, payload in refused.items():
