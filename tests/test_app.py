@@ -287,10 +287,19 @@ def test_the_same_decision_on_a_shared_entry_id_in_another_ledger_is_recorded(
     picked = at.selectbox(key="picked").value
     _submit(at, "Accept", "")
     assert ReviewStore(db, identity).history(picked)["decision"].tolist() == ["accept"]
+    # A draft typed here, not submitted, stays with this ledger's entry.
+    key = _entry_key(at)
+    at.radio(key=f"choice-{key}").set_value("Escalate")
+    at.text_area(key=f"note-{key}").set_value("checked the PO for the first ledger")
+    at.run()
 
     at.text_input(key="ledger_path").set_value(str(other / "ledger.csv"))
     at.run()
     assert at.selectbox(key="picked").value == picked
+    other_key = _entry_key(at)
+    assert at.radio(key=f"choice-{other_key}").value == "accept"  # the form starts over
+    assert not at.text_area(key=f"note-{other_key}").value
+    assert other_key != key
     _submit(at, "Accept", "")
     assert not any("just recorded" in w.value for w in at.warning)
     assert ReviewStore(db, other_id).history(picked)["decision"].tolist() == ["accept"]
