@@ -234,17 +234,32 @@ class Transport(Protocol):
                 body: bytes | None = None) -> Response: ...
 
 
-class UrllibTransport:
-    """The real network, through :mod:`urllib`. Any HTTP status comes back as a Response."""
+class _NoRedirects(urllib.request.HTTPRedirectHandler):
+    """urllib's default handler follows a 30x with every header but the body's, so a redirect
+    to another host (or to plain http) would carry the bearer token or the client secret
+    along. No endpoint this connector calls redirects: a 30x comes back as a Response."""
 
-    def __init__(self, timeout: float = REQUEST_TIMEOUT):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
+        return None
+
+
+class UrllibTransport:
+    """The real network, through :mod:`urllib`: https only, redirects never followed, and
+    any HTTP status comes back as a Response."""
+
+    def __init__(self, timeout: float = REQUEST_TIMEOUT, https_only: bool = True):
         self.timeout = timeout
+        self.https_only = https_only
+        self._opener = urllib.request.build_opener(_NoRedirects())
 
     def request(self, method: str, url: str, headers: Mapping[str, str],
                 body: bytes | None = None) -> Response:
+        if self.https_only and urllib.parse.urlsplit(url).scheme != "https":
+            raise QboError(0, None, f"refusing to send credentials over {url.split(':', 1)[0]}: "
+                                    "only https URLs are called")
         req = urllib.request.Request(url, data=body, headers=dict(headers), method=method)
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:  # noqa: S310 (https only)
+            with self._opener.open(req, timeout=self.timeout) as resp:
                 return Response(resp.status, _lower(resp.headers.items()), resp.read())
         except urllib.error.HTTPError as exc:
             return Response(exc.code, _lower(exc.headers.items() if exc.headers else ()), exc.read())

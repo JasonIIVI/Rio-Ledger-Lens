@@ -651,3 +651,60 @@ def test_a_recording_that_cannot_be_written_still_returns_the_response(tmp_path)
     assert got.json()["refresh_token"] == "REFRESH-2"  # the rotated token reaches the caller
     assert recorder.written == [] and len(recorder.failures) == 1
     assert "/oauth2/v1/tokens/bearer" in recorder.failures[0]
+
+
+# --- the real transport, against loopback servers only ---------------------------
+
+
+@pytest.fixture
+def no_proxy(monkeypatch):
+    """urllib honours proxy variables; a developer's proxy must not see loopback traffic."""
+    for name in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("no_proxy", "*")
+
+
+def _serve(handler_body):
+    """A one-thread loopback server whose GET is ``handler_body(request)``; returns (server, hits)."""
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    hits = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            hits.append({"path": self.path, "authorization": self.headers.get("Authorization")})
+            handler_body(self)
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, hits
+
+
+def test_a_redirect_is_returned_not_followed_so_the_token_stays_home(no_proxy):
+    elsewhere, stolen = _serve(lambda req: (req.send_response(200), req.end_headers()))
+
+    def redirect(req):
+        req.send_response(302)
+        req.send_header("Location", f"http://127.0.0.1:{elsewhere.server_address[1]}/steal")
+        req.end_headers()
+
+    origin, hits = _serve(redirect)
+    try:
+        transport = qbo.UrllibTransport(timeout=5, https_only=False)
+        got = transport.request("GET", f"http://127.0.0.1:{origin.server_address[1]}/v3/x",
+                                {"Authorization": "Bearer SECRET-ACCESS"})
+    finally:
+        origin.shutdown()
+        elsewhere.shutdown()
+    assert got.status == 302
+    assert hits == [{"path": "/v3/x", "authorization": "Bearer SECRET-ACCESS"}]
+    assert stolen == []
+
+
+def test_the_real_transport_calls_https_only():
+    with pytest.raises(QboError, match="only https"):
+        qbo.UrllibTransport().request("GET", "http://quickbooks.api.intuit.com/v3/x",
+                                      {"Authorization": "Bearer T"})
