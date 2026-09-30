@@ -27,18 +27,23 @@ production outright.
 
 from __future__ import annotations
 
+import base64
 import json
 import re
+import secrets
 import socket
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, Protocol
 
-from .tokens import ENVIRONMENTS
+from .tokens import ENVIRONMENTS, Tokens, TokenStore
 
 AUTH_URL = "https://appcenter.intuit.com/connect/oauth2"
 TOKEN_URL = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer"
@@ -454,3 +459,279 @@ def column_key(column: Mapping[str, Any]) -> str:
         if isinstance(meta, dict) and meta.get("Name") == "ColKey" and meta.get("Value"):
             return str(meta["Value"])
     return str(column.get("ColTitle") or "")
+
+
+# --- OAuth 2.0 --------------------------------------------------------------------
+
+
+def new_state() -> str:
+    """An unguessable ``state`` for one sign-in: the callback must bring it back."""
+    return secrets.token_urlsafe(32)
+
+
+@dataclass(frozen=True)
+class Callback:
+    """What the browser brought back after a successful sign-in."""
+
+    code: str = field(repr=False)
+    realm_id: str
+
+
+class CallbackServer:
+    """Catches Intuit's redirect on this machine: one listener on 127.0.0.1, one sign-in.
+
+    Only a request to the configured path carrying the expected ``state``
+    counts; anything else is answered (404 or 400) and ignored, so a stray
+    request cannot end the sign-in or smuggle in a code.
+    """
+
+    def __init__(self, port: int, path: str = "/callback", host: str = "127.0.0.1"):
+        self.path = path
+        self._state: str | None = None
+        self._outcome: Callback | QboAuthError | None = None
+        server = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802 (the stdlib's name)
+                server._handle(self)
+
+            def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
+                pass  # the URL carries the code: never print it
+
+        try:
+            self.httpd = HTTPServer((host, port), Handler)
+        except OSError as exc:
+            raise QboAuthError(0, None, f"cannot listen on {host}:{port} for the sign-in "
+                                        f"callback ({exc.strerror or exc})") from None
+        self.port = self.httpd.server_address[1]
+
+    def _handle(self, request: BaseHTTPRequestHandler) -> None:
+        parts = urllib.parse.urlsplit(request.path)
+        params = dict(urllib.parse.parse_qsl(parts.query))
+        if parts.path != self.path:
+            return _reply(request, 404, "Not found.")
+        state = params.get("state", "")
+        if not self._state or not secrets.compare_digest(state.encode(), self._state.encode()):
+            return _reply(request, 400, "This sign-in link is not the one ledgerlens is waiting for.")
+        if params.get("error"):
+            self._outcome = QboAuthError(0, params, "sign-in refused: " + params["error"]
+                                         + (f" ({params['error_description']})"
+                                            if params.get("error_description") else ""))
+            return _reply(request, 400, "Sign-in was refused. You can close this tab.")
+        if not params.get("code") or not params.get("realmId"):
+            self._outcome = QboAuthError(0, None, "the callback carried no code or no realmId")
+            return _reply(request, 400, "The sign-in response was incomplete.")
+        self._outcome = Callback(params["code"], params["realmId"])
+        _reply(request, 200, "Authorised. You can close this tab.")
+
+    def wait(self, state: str, timeout: float) -> Callback:
+        """Serve requests until the one carrying ``state`` arrives, or ``timeout`` seconds pass."""
+        self._state = state
+        deadline = time.monotonic() + timeout
+        while self._outcome is None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise QboAuthError(0, None, f"no sign-in arrived within {timeout:g}s")
+            self.httpd.timeout = remaining
+            self.httpd.handle_request()
+        if isinstance(self._outcome, QboAuthError):
+            raise self._outcome
+        return self._outcome
+
+    def close(self) -> None:
+        self.httpd.server_close()
+
+    def __enter__(self) -> CallbackServer:
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.close()
+
+
+def _reply(request: BaseHTTPRequestHandler, status: int, text: str) -> None:
+    body = text.encode("utf-8")
+    request.send_response(status)
+    request.send_header("Content-Type", "text/plain; charset=utf-8")
+    request.send_header("Content-Length", str(len(body)))
+    request.end_headers()
+    request.wfile.write(body)
+
+
+_SIGN_IN_AGAIN = "run `ledgerlens qbo-auth` to sign in again"
+
+
+class QboAuth:
+    """The authorisation-code flow: the URL to open, and the token endpoint's two grants."""
+
+    def __init__(self, config: QboConfig, transport: Transport | None = None):
+        self.config = config
+        self.transport = transport or default_transport()
+
+    def authorization_url(self, state: str) -> str:
+        return AUTH_URL + "?" + urllib.parse.urlencode({
+            "client_id": self.config.client_id,
+            "response_type": "code",
+            "scope": SCOPE,
+            "redirect_uri": self.config.redirect_uri,
+            "state": state,
+        })
+
+    def exchange(self, code: str, realm_id: str, now: datetime | None = None) -> Tokens:
+        """Trade the callback's one-time code for tokens."""
+        payload = self._grant({"grant_type": "authorization_code", "code": code,
+                               "redirect_uri": self.config.redirect_uri},
+                              "the code exchange was refused")
+        return self._tokens(payload, realm_id, now)
+
+    def refresh(self, tokens: Tokens, now: datetime | None = None) -> Tokens:
+        """New tokens for old. Intuit rotates the refresh token: keep the one returned."""
+        payload = self._grant({"grant_type": "refresh_token", "refresh_token": tokens.refresh_token},
+                              f"the stored authorisation was refused; {_SIGN_IN_AGAIN}")
+        return self._tokens(payload, tokens.realm_id, now)
+
+    def _grant(self, form: Mapping[str, str], refused: str) -> dict[str, Any]:
+        credentials = f"{self.config.client_id}:{self.config.client_secret}".encode()
+        headers = {
+            "Authorization": "Basic " + base64.b64encode(credentials).decode("ascii"),
+            "Accept": "application/json",
+            "Content-Type": _FORM,
+            "User-Agent": USER_AGENT,
+        }
+        response = self.transport.request("POST", TOKEN_URL, headers,
+                                          urllib.parse.urlencode(form).encode("ascii"))
+        if response.status in (400, 401):
+            error = QboError.from_response(response, refused)
+            raise QboAuthError(error.status, error.fault, error.message)
+        if response.status != 200:
+            raise QboError.from_response(response, "token endpoint")
+        try:
+            payload = response.json()
+        except ValueError:
+            raise QboError(response.status, None, "token endpoint: the response is not JSON") from None
+        missing = [k for k in ("access_token", "refresh_token", "expires_in",
+                               "x_refresh_token_expires_in") if not isinstance(payload, dict) or k not in payload]
+        if missing:
+            raise QboError(response.status, None, f"token endpoint: the response has no {', '.join(missing)}")
+        return payload
+
+    def _tokens(self, payload: Mapping[str, Any], realm_id: str, now: datetime | None) -> Tokens:
+        return Tokens.issued(payload["access_token"], payload["refresh_token"],
+                             int(payload["expires_in"]), int(payload["x_refresh_token_expires_in"]),
+                             realm_id, self.config.environment, now=now)
+
+
+# --- the Accounting API client ------------------------------------------------------
+
+#: How often a throttled request is tried before giving up, and the waits between.
+THROTTLE_ATTEMPTS = 3
+THROTTLE_DEFAULT_WAIT = 5
+THROTTLE_MAX_WAIT = 60
+
+
+class QboClient:
+    """Accounting API requests for one company, with the token kept fresh.
+
+    Every request carries the bearer token, ``Accept: application/json`` and
+    ``minorversion``. An access token within a minute of expiry is refreshed
+    first; a 401 is answered by one refresh and one retry (a second 401 means
+    the authorisation itself is gone); a 429 waits for ``Retry-After`` (or 5 s,
+    doubling, at most 60 s) and gives up after three throttled attempts. A
+    rotated refresh token is saved through ``token_store`` the moment it
+    arrives, because the old one stops working.
+    """
+
+    def __init__(self, config: QboConfig, tokens: Tokens, transport: Transport,
+                 token_store: TokenStore | None = None, auth: QboAuth | None = None,
+                 sleep: Callable[[float], None] = time.sleep,
+                 now: Callable[[], datetime] | None = None):
+        self.config = config
+        self.tokens = tokens
+        self.transport = transport
+        self.token_store = token_store
+        self.auth = auth or QboAuth(config, transport)
+        self.sleep = sleep
+        self.now = now or (lambda: datetime.now(timezone.utc))
+        self.refreshes = 0
+        self.requests = 0
+
+    def _refresh(self) -> None:
+        self.tokens = self.auth.refresh(self.tokens, now=self.now())
+        self.refreshes += 1
+        if self.token_store is not None:
+            self.token_store.save(self.tokens)
+
+    def request(self, method: str, path: str, *, query: Mapping[str, str] | None = None,
+                body: str | None = None, content_type: str | None = None) -> Any:
+        """One API call; the parsed JSON body, or :class:`QboError`."""
+        if self.tokens.refresh_expired(now=self.now()):
+            raise QboAuthError(0, None, f"the stored authorisation has expired; {_SIGN_IN_AGAIN}")
+        if self.tokens.access_expired(now=self.now()):
+            self._refresh()
+        params = {**(query or {}), "minorversion": MINOR_VERSION}
+        url = f"{self.config.base_url}{path}?{urllib.parse.urlencode(sorted(params.items()))}"
+        data = body.encode("utf-8") if body is not None else None
+        retried_401 = False
+        throttled = 0
+        while True:
+            headers = {"Authorization": f"Bearer {self.tokens.access_token}",
+                       "Accept": "application/json", "User-Agent": USER_AGENT}
+            if content_type:
+                headers["Content-Type"] = content_type
+            self.requests += 1
+            response = self.transport.request(method, url, headers, data)
+            if response.status == 401:
+                if retried_401:
+                    error = QboError.from_response(response, f"{method} {path}")
+                    raise QboAuthError(401, error.fault,
+                                       f"{error.message}; refreshed once and still refused, so "
+                                       f"{_SIGN_IN_AGAIN}")
+                retried_401 = True
+                self._refresh()
+                continue
+            if response.status == 429:
+                throttled += 1
+                if throttled >= THROTTLE_ATTEMPTS:
+                    raise QboError(429, None, f"{method} {path}: throttled {throttled} times in a "
+                                              "row; wait a minute and run the pull again")
+                self.sleep(_retry_after(response, throttled))
+                continue
+            if not 200 <= response.status < 300:
+                raise QboError.from_response(response, f"{method} {path}")
+            try:
+                payload = response.json()
+            except ValueError:
+                raise QboError(response.status, None, f"{method} {path}: the response is not JSON") from None
+            if isinstance(payload, dict) and ("Fault" in payload or "fault" in payload):
+                raise QboError.from_response(response, f"{method} {path}")
+            return payload
+
+    def query(self, statement: str, page_size: int = PAGE_SIZE) -> list[dict[str, Any]]:
+        """Every row a query statement selects, page by page (``STARTPOSITION`` is 1-based)."""
+        entity = re.search(r"\bfrom\s+(\w+)", statement, re.IGNORECASE)
+        if not entity:
+            raise ValueError(f"not a query statement: {statement!r}")
+        rows: list[dict[str, Any]] = []
+        start = 1
+        while True:
+            page = self.request("POST", "/query", body=f"{statement} STARTPOSITION {start} "
+                                                        f"MAXRESULTS {page_size}",
+                                content_type="application/text")
+            found = page.get("QueryResponse") or {}
+            key = next((k for k in found if k.lower() == entity.group(1).lower()), None)
+            got = (found.get(key) or []) if key else []
+            rows.extend(got)
+            if len(got) < page_size:
+                return rows
+            start += page_size
+
+    def report(self, name: str, **params: str) -> dict[str, Any]:
+        return self.request("GET", f"/reports/{name}", query=params)
+
+
+def _retry_after(response: Response, attempt: int) -> float:
+    value = response.headers.get("retry-after", "")
+    try:
+        wait = float(value)
+    except ValueError:
+        wait = THROTTLE_DEFAULT_WAIT * 2 ** (attempt - 1)
+    return max(0.0, min(wait, THROTTLE_MAX_WAIT))
