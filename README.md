@@ -314,8 +314,8 @@ What the pull does, and what it cannot know:
 - **Who and when.** The user comes from the report's "created by" column, since the entity
   has none. The entry time is the entity's `CreateTime`; for other transactions it is the
   report's create date (a full timestamp in the sandbox; when a transaction's rows differ,
-  the earliest), and where only a date is given the time is estimated at noon and the line is
-  marked `entered_at_estimated`. QuickBooks writes both with the company's offset, so they
+  the earliest readable one), and where only a date is given the time is estimated at noon
+  and the line is marked `entered_at_estimated`. QuickBooks writes both with the company's offset, so they
   are used as given. `QBO_TIMEZONE` converts both, so set it only to the company's own zone
   (a report time with no offset is taken to be in it already); the pull warns if a time
   arrives in UTC without it, and counts any create date it cannot read.

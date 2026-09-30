@@ -77,19 +77,29 @@ and the MCP SDK, so the two together cover every code path CI will see.
   a 401, waits out a 429 (60 s unless `Retry-After` says otherwise) and pages queries, and a
   pure mapping (`ledgerlens pull-qbo`): journal entries from the entity with the user from
   the GL report, every other transaction rebuilt whole from the GL report, the type as
-  `source` and in the entry id, the entry time from the earliest readable create date of a
-  transaction's rows (a date alone is estimated at noon and flagged; an unreadable one is
-  counted and warned about), every skipped line and all-zero transaction counted in
-  `PullStats`. It writes `data/qbo-ledger.csv` and the `qbo:<realm>` sidecar. Tests replay
+  `source` and in the entry id, the entry time from the create date that says most among a
+  transaction's rows (a time of day, then a date, then only the posting date; the earliest
+  among equals), timestamps read by explicit formats so Python 3.9 and 3.12 agree, a date
+  alone estimated at noon and flagged, an unreadable one (report or `CreateTime`) estimated,
+  counted and warned about, a UTC time without `QBO_TIMEZONE` warned about on either clock,
+  every skipped line and all-zero transaction counted in `PullStats`. It writes `data/qbo-ledger.csv` and the `qbo:<realm>` sidecar. Tests replay
   `tests/fixtures/qbo/`: `pull/` is a sanitized `pull-qbo --record` of a real sandbox
   company (Intuit's sample company, 2026-07-01..2026-09-30, recorded 2026-09-30; 116
   entries / 297 lines), and its README answers the ten questions the recording had to
   settle. Shapes the quarter lacks are reached by editing a copy of the recording in the
-  test, never by a hand-shaped file (`auth/` stays hand-shaped: a code exchange cannot be
-  replayed). The recording found three defects: the report writes `create_date` offsets
-  as `-0700`, which Python 3.9 could not read (every report-built entry lost its keying
-  date, on 3.9 only); Cash Expense and Sales Tax Payment fell back to `System` (now AP);
-  and one transaction's rows can carry different create dates. Facts about Intuit's API were checked against its
+  test, or by a minimal report built in the test for row-level cases; no hand-shaped file
+  remains in `pull/` (`auth/` stays hand-shaped: a code exchange cannot be replayed). The
+  recording found three defects: the report writes `create_date` offsets as `-0700`,
+  which Python 3.9 could not read (on 3.9 only, every report-built entry lost its time of
+  day and 65 of 113 their keying date); Cash Expense and Sales Tax Payment fell back to
+  `System` (now AP); and one transaction's rows can carry different create dates. A review
+  of those commits (security, correctness and claims lenses, every finding checked by a
+  skeptic) found no security problem and eleven smaller ones, all fixed: a date plus an
+  offset read as a time of day on 3.12 only (now explicit formats), a ranking that could
+  prefer the posting date over a real date, warnings that miscounted, report times in UTC
+  not warned about, description and user rules the one-user sandbox could not test, and
+  overstated wording; a strict parser would have made an odd `CreateTime` a traceback, so
+  it is now estimated and counted. Facts about Intuit's API were checked against its
   current documentation on 2026-09-30 (minor version 75; no documented `Retry-After`; the
   transaction id on the `txn_type` cell; reads are metered). A security review and a
   correctness review before the push found 16 problems (two medium: a rotated refresh token
@@ -100,7 +110,7 @@ and the MCP SDK, so the two together cover every code path CI will see.
   recording is re-scrubbed and checked on every exit, and pulled books stay in `data/`.
 - **Next** — the weekly scheduled Action, the README final pass and v1.0.0 (due
   2026-10-18). Week 5 breaks the circularity in the detection numbers.
-- 412 tests on 3.9 / 422 on 3.12, ruff clean.
+- 428 tests on 3.9 / 438 on 3.12, ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
