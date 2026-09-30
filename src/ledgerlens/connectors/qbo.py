@@ -1103,10 +1103,11 @@ def parse_qbo_datetime(value: str, zone: str | None = None) -> datetime:
 
 
 _UTC_SUFFIX = re.compile(r"(Z|[+-]00:?00)$")
-_ISO_TIMESTAMP = re.compile(r"\d{4}-\d\d-\d\d[T ]\d\d:\d\d")  # a date, then a time of day
+# a date, then a time of day; as lenient as strptime (unpadded fields, either case of T)
+_ISO_TIMESTAMP = re.compile(r"\d{4}-\d{1,2}-\d{1,2}[Tt ]\d{1,2}:\d{1,2}")
 _REPORT_TIME_FORMATS = ("%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y %H:%M:%S")
 _REPORT_DATE_FORMATS = ("%Y-%m-%d", "%m/%d/%Y")
-_LEADING_DATE = re.compile(r"(\d{4}-\d\d-\d\d)|(\d\d/\d\d/\d{4})")
+_LEADING_DATE = re.compile(r"(\d{4}-\d{1,2}-\d{1,2})|(\d{1,2}/\d{1,2}/\d{4})")
 
 
 @dataclass(frozen=True)

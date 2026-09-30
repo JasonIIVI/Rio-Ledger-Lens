@@ -700,7 +700,17 @@ def test_a_create_date_whose_offset_has_no_colon_is_read_on_every_python():
     ("2026-09-02+00:00", (datetime(2026, 9, 2, 12), True)),
     # an unreadable value keeps the date it starts with in either of the report's date formats
     ("09/02/2026 at 3 PM", (datetime(2026, 9, 2, 12), True)),
+    ("9/2/2026 at 3 PM", (datetime(2026, 9, 2, 12), True)),
+    ("2026-9-2 at 3 PM", (datetime(2026, 9, 2, 12), True)),
     ("2026-13-45T99:99", (datetime(2026, 7, 16, 12), True)),
+    # shapes fromisoformat read one way on 3.9 and another on 3.12, now one way on both
+    ("2026-09-02T15:14:27.1234-07:00", (datetime(2026, 9, 2, 15, 14, 27, 123400), False)),
+    ("2026-09-02T15:14:27-07", (datetime(2026, 9, 2, 12), True)),
+    ("2026-09-02 15:14", (datetime(2026, 9, 2, 15, 14), False)),
+    ("2026-09-02T15:14:27.5", (datetime(2026, 9, 2, 15, 14, 27, 500000), False)),
+    # what strptime reads, the gate in front of it lets through
+    ("2026-9-1T10:00:00-07:00", (datetime(2026, 9, 1, 10), False)),
+    ("2026-09-01t10:00:00-07:00", (datetime(2026, 9, 1, 10), False)),
 ])
 def test_report_timestamps_are_read_by_explicit_formats(value, expected):
     assert qbo.parse_report_datetime(value, datetime(2026, 7, 16)) == expected
