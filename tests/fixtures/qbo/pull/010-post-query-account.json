@@ -1,0 +1,219 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/query",
+    "query": [
+      [
+        "minorversion",
+        "75"
+      ]
+    ],
+    "body": "select * from Account where Active IN (true, false) STARTPOSITION 1 MAXRESULTS 1000"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json;charset=UTF-8"
+    },
+    "body": {
+      "QueryResponse": {
+        "Account": [
+          {
+            "Id": "35",
+            "Name": "Checking",
+            "SubAccount": false,
+            "FullyQualifiedName": "Checking",
+            "Active": true,
+            "Classification": "Asset",
+            "AccountType": "Bank",
+            "CurrentBalance": 0,
+            "domain": "QBO",
+            "sparse": false,
+            "SyncToken": "0",
+            "MetaData": {
+              "CreateTime": "2024-01-02T10:00:00-08:00",
+              "LastUpdatedTime": "2024-01-02T10:00:00-08:00"
+            },
+            "AcctNum": "1010"
+          },
+          {
+            "Id": "84",
+            "Name": "Accounts Receivable (A/R)",
+            "SubAccount": false,
+            "FullyQualifiedName": "Accounts Receivable (A/R)",
+            "Active": true,
+            "Classification": "Asset",
+            "AccountType": "Accounts Receivable",
+            "CurrentBalance": 0,
+            "domain": "QBO",
+            "sparse": false,
+            "SyncToken": "0",
+            "MetaData": {
+              "CreateTime": "2024-01-02T10:00:00-08:00",
+              "LastUpdatedTime": "2024-01-02T10:00:00-08:00"
+            }
+          },
+          {
+            "Id": "33",
+            "Name": "Accounts Payable (A/P)",
+            "SubAccount": false,
+            "FullyQualifiedName": "Accounts Payable (A/P)",
+            "Active": true,
+            "Classification": "Liability",
+            "AccountType": "Accounts Payable",
+            "CurrentBalance": 0,
+            "domain": "QBO",
+            "sparse": false,
+            "SyncToken": "0",
+            "MetaData": {
+              "CreateTime": "2024-01-02T10:00:00-08:00",
+              "LastUpdatedTime": "2024-01-02T10:00:00-08:00"
+            }
+          },
+          {
+            "Id": "89",
+            "Name": "Board of Equalization Payable",
+            "SubAccount": false,
+            "FullyQualifiedName": "Board of Equalization Payable",
+            "Active": true,
+            "Classification": "Liability",
+            "AccountType": "Other Current Liability",
+            "CurrentBalance": 0,
+            "domain": "QBO",
+            "sparse": false,
+            "SyncToken": "0",
+            "MetaData": {
+              "CreateTime": "2024-01-02T10:00:00-08:00",
+              "LastUpdatedTime": "2024-01-02T10:00:00-08:00"
+            }
+          },
+          {
+            "Id": "2",
+            "Name": "Opening Balance Equity",
+            "SubAccount": false,
+            "FullyQualifiedName": "Opening Balance Equity",
+            "Active": true,
+            "Classification": "Equity",
+            "AccountType": "Equity",
+            "CurrentBalance": 0,
+            "domain": "QBO",
+            "sparse": false,
+            "SyncToken": "0",
+            "MetaData": {
+              "CreateTime": "2024-01-02T10:00:00-08:00",
+              "LastUpdatedTime": "2024-01-02T10:00:00-08:00"
+            }
+          },
+          {
+            "Id": "79",
+            "Name": "Sales of Product Income",
+            "SubAccount": false,
+            "FullyQualifiedName": "Sales of Product Income",
+            "Active": true,
+            "Classification": "Revenue",
+            "AccountType": "Income",
+            "CurrentBalance": 0,
+            "domain": "QBO",
+            "sparse": false,
+            "SyncToken": "0",
+            "MetaData": {
+              "CreateTime": "2024-01-02T10:00:00-08:00",
+              "LastUpdatedTime": "2024-01-02T10:00:00-08:00"
+            }
+          },
+          {
+            "Id": "1",
+            "Name": "Services",
+            "SubAccount": false,
+            "FullyQualifiedName": "Services",
+            "Active": true,
+            "Classification": "Revenue",
+            "AccountType": "Income",
+            "CurrentBalance": 0,
+            "domain": "QBO",
+            "sparse": false,
+            "SyncToken": "0",
+            "MetaData": {
+              "CreateTime": "2024-01-02T10:00:00-08:00",
+              "LastUpdatedTime": "2024-01-02T10:00:00-08:00"
+            }
+          },
+          {
+            "Id": "7",
+            "Name": "Advertising",
+            "SubAccount": false,
+            "FullyQualifiedName": "Advertising",
+            "Active": true,
+            "Classification": "Expense",
+            "AccountType": "Expense",
+            "CurrentBalance": 0,
+            "domain": "QBO",
+            "sparse": false,
+            "SyncToken": "0",
+            "MetaData": {
+              "CreateTime": "2024-01-02T10:00:00-08:00",
+              "LastUpdatedTime": "2024-01-02T10:00:00-08:00"
+            }
+          },
+          {
+            "Id": "13",
+            "Name": "Meals and Entertainment",
+            "SubAccount": false,
+            "FullyQualifiedName": "Meals and Entertainment",
+            "Active": false,
+            "Classification": "Expense",
+            "AccountType": "Expense",
+            "CurrentBalance": 0,
+            "domain": "QBO",
+            "sparse": false,
+            "SyncToken": "0",
+            "MetaData": {
+              "CreateTime": "2024-01-02T10:00:00-08:00",
+              "LastUpdatedTime": "2024-01-02T10:00:00-08:00"
+            }
+          },
+          {
+            "Id": "75",
+            "Name": "Maintenance and Repair",
+            "SubAccount": false,
+            "FullyQualifiedName": "Maintenance and Repair",
+            "Active": true,
+            "Classification": "Expense",
+            "AccountType": "Expense",
+            "CurrentBalance": 0,
+            "domain": "QBO",
+            "sparse": false,
+            "SyncToken": "0",
+            "MetaData": {
+              "CreateTime": "2024-01-02T10:00:00-08:00",
+              "LastUpdatedTime": "2024-01-02T10:00:00-08:00"
+            }
+          },
+          {
+            "Id": "76",
+            "Name": "Equipment Repairs",
+            "SubAccount": true,
+            "FullyQualifiedName": "Maintenance and Repair:Equipment Repairs",
+            "Active": true,
+            "Classification": "Expense",
+            "AccountType": "Expense",
+            "CurrentBalance": 0,
+            "domain": "QBO",
+            "sparse": false,
+            "SyncToken": "0",
+            "MetaData": {
+              "CreateTime": "2024-01-02T10:00:00-08:00",
+              "LastUpdatedTime": "2024-01-02T10:00:00-08:00"
+            },
+            "ParentRef": {
+              "value": "75"
+            }
+          }
+        ],
+        "startPosition": 1,
+        "maxResults": 11
+      },
+      "time": "2026-09-30T08:00:00.000-07:00"
+    }
+  }
+}

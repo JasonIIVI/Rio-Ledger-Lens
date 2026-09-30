@@ -38,11 +38,15 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, Protocol
 
+import pandas as pd
+
+from ..ingest import entry_level, identity_path, prepare
+from ..schema import ACCOUNT_TYPES, REQUIRED_COLUMNS
 from .tokens import ENVIRONMENTS, Tokens, TokenStore
 
 AUTH_URL = "https://appcenter.intuit.com/connect/oauth2"
@@ -461,12 +465,29 @@ def _sanitize_report(report: dict, walk, user) -> dict:
     return {k: (rows(v) if k == "Rows" else walk(v)) for k, v in report.items()}
 
 
+#: The GeneralLedger columns a pull asks for, by key.
+GL_COLUMNS = ("tx_date", "txn_type", "doc_num", "name", "memo", "split_acc",
+              "debt_amt", "credit_amt", "create_by", "create_date")
+#: Report column titles Intuit shows, for a column that carries no key.
+_TITLE_KEYS = {
+    "date": "tx_date", "transaction type": "txn_type", "num": "doc_num", "name": "name",
+    "memo/description": "memo", "split": "split_acc", "debit": "debt_amt", "credit": "credit_amt",
+    "created by": "create_by", "create date": "create_date", "last modified by": "last_mod_by",
+    "last modified": "last_mod_date", "account": "account_name",
+}
+_KNOWN_KEYS = set(GL_COLUMNS) | set(_TITLE_KEYS.values()) | {"account_num", "subt_nat_amount"}
+
+
 def column_key(column: Mapping[str, Any]) -> str:
-    """A report column's key: its ``ColKey`` metadata when present, else its title."""
+    """A report column's key: its ``ColKey`` metadata, else a ``ColType`` that is a key
+    (Intuit's own samples put it there), else the key its title stands for, else the title."""
     for meta in column.get("MetaData") or []:
         if isinstance(meta, dict) and meta.get("Name") == "ColKey" and meta.get("Value"):
             return str(meta["Value"])
-    return str(column.get("ColTitle") or "")
+    if column.get("ColType") in _KNOWN_KEYS:
+        return str(column["ColType"])
+    title = str(column.get("ColTitle") or "")
+    return _TITLE_KEYS.get(title.strip().lower(), title)
 
 
 # --- OAuth 2.0 --------------------------------------------------------------------
@@ -745,3 +766,402 @@ def _retry_after(response: Response) -> float:
     except ValueError:
         wait = THROTTLE_DEFAULT_WAIT
     return max(0.0, min(wait, THROTTLE_MAX_WAIT))
+
+
+# --- mapping QuickBooks into the ledger contract -------------------------------------
+
+#: Where each QuickBooks transaction type sits among the ledger's sources.
+TXN_SOURCE = {
+    "JournalEntry": "Manual",
+    "Bill": "AP", "BillPayment": "AP", "BillPaymentCheck": "AP", "BillPaymentCreditCard": "AP",
+    "VendorCredit": "AP", "Expense": "AP", "Check": "AP", "Purchase": "AP",
+    "CreditCardExpense": "AP", "CreditCardCredit": "AP", "PurchaseOrder": "AP",
+    "Invoice": "AR", "Payment": "AR", "SalesReceipt": "AR", "CreditMemo": "AR",
+    "RefundReceipt": "AR", "Refund": "AR",
+    "Deposit": "Bank", "Transfer": "Bank",
+    "Paycheck": "Payroll",
+}
+UNKNOWN_ACCOUNT_TYPE = "Unknown"
+UNKNOWN_USER = "qbo-unknown"
+#: An estimated entry time sits at noon: inside business hours, so it raises no
+#: after-hours flag of its own (the count of estimated times is reported instead).
+ESTIMATED_HOUR = 12
+EXPORT_COLUMNS = (*REQUIRED_COLUMNS, "entered_at_estimated")
+#: Below this many entries the model tier and Benford analysis have too little to work on.
+SMALL_LEDGER = 50
+
+
+def type_token(txn_type: str) -> str:
+    """``"Bill Payment (Check)"`` -> ``"BillPaymentCheck"``: the report's label as an entity name."""
+    return re.sub(r"[^A-Za-z0-9]", "", txn_type or "")
+
+
+def source_for(token: str) -> str:
+    if token in TXN_SOURCE:
+        return TXN_SOURCE[token]
+    return "Payroll" if token.startswith("Payroll") else "System"
+
+
+def entry_id_for(token: str, txn_id: str) -> str:
+    """``QBO-Invoice-1037``: the type is part of the id because QuickBooks numbers each type
+    separately, so an Invoice and a Bill can share an Id."""
+    return f"QBO-{token}-{txn_id}"
+
+
+@dataclass
+class PullStats:
+    """What a pull found and what it set aside. Every skipped line is counted here."""
+
+    accounts: int = 0
+    inactive_accounts: int = 0
+    sub_accounts: int = 0
+    journal_entries: int = 0
+    adjusting_entries: int = 0
+    other_transactions: int = 0
+    description_only_lines: int = 0
+    other_detail_lines: int = 0
+    zero_amount_lines: int = 0
+    unknown_account_lines: int = 0
+    rows_without_txn_id: int = 0
+    estimated_entered_at: int = 0
+    unknown_users: int = 0
+    unbalanced_entries: int = 0
+    je_ids_missing_from_report: int = 0
+
+    def describe(self) -> list[str]:
+        return [
+            f"Accounts {self.accounts} ({self.inactive_accounts} inactive, {self.sub_accounts} sub-accounts)",
+            f"Journal entries {self.journal_entries} ({self.adjusting_entries} adjusting); "
+            f"other transactions {self.other_transactions}",
+            f"Set aside: {self.description_only_lines} description-only line(s), "
+            f"{self.other_detail_lines} other non-posting line(s), {self.zero_amount_lines} zero line(s), "
+            f"{self.rows_without_txn_id} report row(s) with no transaction (balances)",
+            f"Estimated: entry time on {self.estimated_entered_at} entrie(s) (date only), "
+            f"user on {self.unknown_users} entrie(s) ({UNKNOWN_USER})",
+            f"Checks: {self.unknown_account_lines} line(s) on accounts the Account query did not "
+            f"return, {self.unbalanced_entries} unbalanced entrie(s), "
+            f"{self.je_ids_missing_from_report} journal entrie(s) missing from the GL report",
+        ]
+
+
+@dataclass(frozen=True)
+class Account:
+    id: str
+    code: str
+    name: str
+    type: str
+    active: bool = True
+    sub_account: bool = False
+
+
+def accounts_by_id(rows: list[Mapping[str, Any]], stats: PullStats | None = None) -> dict[str, Account]:
+    """Account query rows by Id. The code is ``AcctNum`` when numbering is on, else the Id;
+    a sub-account is named by its full ``Parent:Child`` path; the type is the Classification."""
+    stats = stats if stats is not None else PullStats()
+    accounts: dict[str, Account] = {}
+    for row in rows:
+        sub = bool(row.get("SubAccount"))
+        classification = row.get("Classification")
+        account = Account(
+            id=str(row["Id"]),
+            code=str(row.get("AcctNum") or row["Id"]),
+            name=str((row.get("FullyQualifiedName") if sub else None) or row.get("Name") or row["Id"]),
+            type=classification if classification in ACCOUNT_TYPES else UNKNOWN_ACCOUNT_TYPE,
+            active=row.get("Active", True) is not False,
+            sub_account=sub,
+        )
+        accounts[account.id] = account
+        stats.accounts += 1
+        stats.inactive_accounts += not account.active
+        stats.sub_accounts += sub
+    return accounts
+
+
+def _account(accounts: Mapping[str, Account], ref_id: Any, ref_name: Any, stats: PullStats) -> Account:
+    found = accounts.get(str(ref_id)) if ref_id not in (None, "") else None
+    if found is not None:
+        return found
+    stats.unknown_account_lines += 1
+    label = str(ref_id) if ref_id not in (None, "") else "none"
+    return Account(label, label, str(ref_name or f"Unknown account {label}"), UNKNOWN_ACCOUNT_TYPE)
+
+
+def parse_qbo_datetime(value: str, zone: str | None = None) -> datetime:
+    """An API timestamp (``2025-12-28T10:15:00-08:00``, or ``...Z``) as a naive datetime:
+    the clock time as given, or converted to ``zone`` first when one is named."""
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    moment = datetime.fromisoformat(text)
+    if moment.tzinfo is not None and zone:
+        moment = moment.astimezone(_zone(zone))
+    return moment.replace(tzinfo=None)
+
+
+_REPORT_TIME_FORMATS = ("%Y-%m-%d %H:%M:%S", "%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y %H:%M:%S")
+_REPORT_DATE_FORMATS = ("%Y-%m-%d", "%m/%d/%Y")
+
+
+def parse_report_datetime(value: str, posting_date: datetime,
+                          zone: str | None = None) -> tuple[datetime, bool]:
+    """A report's ``create_date`` as ``(entered_at, estimated)``.
+
+    A timestamp is used as given. A date alone keeps its date with the time
+    estimated at noon, because the date is the audit signal (an entry keyed
+    long after its posting date); an empty or unreadable value falls back to
+    the posting date at noon. ``estimated`` is True for both fallbacks.
+    """
+    text = (value or "").strip()
+    if text:
+        if "T" in text or re.search(r"[+-]\d\d:\d\d$|Z$", text):
+            try:
+                return parse_qbo_datetime(text, zone), False
+            except ValueError:
+                pass
+        for fmt in _REPORT_TIME_FORMATS:
+            try:
+                return datetime.strptime(text, fmt), False
+            except ValueError:
+                continue
+        for fmt in _REPORT_DATE_FORMATS:
+            try:
+                return datetime.strptime(text, fmt).replace(hour=ESTIMATED_HOUR), True
+            except ValueError:
+                continue
+    return posting_date.replace(hour=ESTIMATED_HOUR, minute=0, second=0, microsecond=0), True
+
+
+def _date(value: str) -> datetime:
+    return datetime.strptime(str(value).strip()[:10], "%Y-%m-%d")
+
+
+def _money(value: Any) -> float:
+    text = str(value if value is not None else "").replace(",", "").strip()
+    return float(text) if text else 0.0
+
+
+def report_columns(report: Mapping[str, Any]) -> list[str]:
+    """The report's column keys in order; refuses a report without debit and credit columns
+    (a multicurrency company, or a report that ignored the ``columns`` parameter)."""
+    keys = [column_key(c) for c in ((report.get("Columns") or {}).get("Column") or [])]
+    missing = [k for k in ("tx_date", "txn_type", "debt_amt", "credit_amt") if k not in keys]
+    if missing:
+        raise ValueError(
+            f"the GeneralLedger report has no {', '.join(missing)} column(s) (it has {keys}); "
+            "multicurrency companies report amounts differently and are not supported")
+    return keys
+
+
+def _report_rows(report: Mapping[str, Any]):
+    """Yield ``(cells, account_cell)`` for every Data row, walking nested sections; the
+    account is the innermost section header's first cell (``{"value", "id"}``)."""
+
+    def walk(node: Any, account: Mapping[str, Any] | None):
+        for row in (node or {}).get("Row") or []:
+            if not isinstance(row, dict):
+                continue
+            if row.get("type") == "Section" or "Header" in row or "Rows" in row:
+                header = ((row.get("Header") or {}).get("ColData") or [None])[0]
+                yield from walk(row.get("Rows"), header if isinstance(header, dict) and header.get("id")
+                                else account)
+            elif isinstance(row.get("ColData"), list):
+                yield row["ColData"], account
+
+    yield from walk(report.get("Rows"), None)
+
+
+def _cells(keys: list[str], col_data: list[Mapping[str, Any]]) -> tuple[dict[str, str], str | None]:
+    """A row's values by key, and the transaction id (on the ``txn_type`` cell; ``tx_date``
+    is checked too, in case a report variant carries it there)."""
+    values: dict[str, str] = {}
+    txn_id = None
+    for key, cell in zip(keys, col_data):
+        cell = cell if isinstance(cell, dict) else {}
+        values[key] = str(cell.get("value") or "")
+        if key in ("txn_type", "tx_date") and cell.get("id") and txn_id is None:
+            txn_id = str(cell["id"])
+    return values, txn_id
+
+
+def report_headers(report: Mapping[str, Any]) -> dict[tuple[str, str], dict[str, str]]:
+    """``(type_token, txn_id) -> {"create_by", "create_date"}`` for every transaction in the
+    report, journal entries included (the JournalEntry entity carries no user)."""
+    keys = report_columns(report)
+    headers: dict[tuple[str, str], dict[str, str]] = {}
+    for col_data, _ in _report_rows(report):
+        values, txn_id = _cells(keys, col_data)
+        if txn_id:
+            headers.setdefault((type_token(values.get("txn_type", "")), txn_id), {
+                "create_by": values.get("create_by", ""), "create_date": values.get("create_date", "")})
+    return headers
+
+
+def journal_entries_to_lines(entries: list[Mapping[str, Any]], accounts: Mapping[str, Account],
+                             headers: Mapping[tuple[str, str], Mapping[str, str]] | None = None,
+                             zone: str | None = None,
+                             stats: PullStats | None = None) -> list[dict[str, Any]]:
+    """JournalEntry entities as ledger lines (``source`` Manual). The entry time is the
+    entity's ``MetaData.CreateTime``; the user comes from the GL report."""
+    stats = stats if stats is not None else PullStats()
+    headers = headers or {}
+    lines: list[dict[str, Any]] = []
+    for entry in entries:
+        txn_id = str(entry["Id"])
+        posting = _date(entry["TxnDate"])
+        created = (entry.get("MetaData") or {}).get("CreateTime")
+        if created:
+            entered_at, estimated = parse_qbo_datetime(created, zone), False
+        else:
+            entered_at, estimated = parse_report_datetime("", posting)
+        user = (headers.get(("JournalEntry", txn_id)) or {}).get("create_by") or UNKNOWN_USER
+        stats.journal_entries += 1
+        stats.adjusting_entries += bool(entry.get("Adjustment"))
+        stats.estimated_entered_at += estimated
+        stats.unknown_users += user == UNKNOWN_USER
+        fallback = entry.get("PrivateNote") or f"Journal entry {entry.get('DocNumber') or txn_id}"
+        line_no = 0
+        for line in entry.get("Line") or []:
+            detail_type = line.get("DetailType")
+            if detail_type != "JournalEntryLineDetail":
+                if detail_type == "DescriptionOnly":
+                    stats.description_only_lines += 1
+                else:
+                    stats.other_detail_lines += 1
+                continue
+            detail = line.get("JournalEntryLineDetail") or {}
+            amount = _money(line.get("Amount"))
+            side = detail.get("PostingType")
+            if amount < 0:  # a negative amount posts to the other side
+                amount, side = -amount, {"Debit": "Credit", "Credit": "Debit"}.get(side, side)
+            if amount == 0 or side not in ("Debit", "Credit"):
+                stats.zero_amount_lines += 1
+                continue
+            ref = detail.get("AccountRef") or {}
+            account = _account(accounts, ref.get("value"), ref.get("name"), stats)
+            line_no += 1
+            lines.append(_line(entry_id_for("JournalEntry", txn_id), line_no, posting, entered_at,
+                               account, line.get("Description") or fallback,
+                               amount if side == "Debit" else 0.0,
+                               amount if side == "Credit" else 0.0, "Manual", user, estimated))
+    return lines
+
+
+def general_ledger_to_lines(report: Mapping[str, Any], accounts: Mapping[str, Account],
+                            zone: str | None = None,
+                            stats: PullStats | None = None) -> list[dict[str, Any]]:
+    """Every transaction but journal entries, rebuilt from the GL report.
+
+    The report lists each posting under the account it hits, so grouping its
+    rows by transaction id gives each transaction back whole (an invoice with
+    a tax line is three lines). Journal entries are skipped here: the entity
+    query has their lines in full. A row with no transaction id (a beginning
+    balance) is counted and skipped.
+    """
+    stats = stats if stats is not None else PullStats()
+    keys = report_columns(report)
+    groups: dict[tuple[str, str], list[tuple[dict[str, str], Mapping[str, Any] | None]]] = {}
+    for col_data, account_cell in _report_rows(report):
+        values, txn_id = _cells(keys, col_data)
+        if not txn_id:
+            stats.rows_without_txn_id += 1
+            continue
+        token = type_token(values.get("txn_type", ""))
+        if token == "JournalEntry":
+            continue
+        groups.setdefault((token, txn_id), []).append((values, account_cell))
+
+    lines: list[dict[str, Any]] = []
+    for (token, txn_id), rows in groups.items():
+        first = rows[0][0]
+        posting = _date(first["tx_date"])
+        entered_at, estimated = parse_report_datetime(first.get("create_date", ""), posting, zone)
+        user = first.get("create_by") or UNKNOWN_USER
+        stats.other_transactions += 1
+        stats.estimated_entered_at += estimated
+        stats.unknown_users += user == UNKNOWN_USER
+        line_no = 0
+        for values, account_cell in rows:
+            debit, credit = _money(values.get("debt_amt")), _money(values.get("credit_amt"))
+            if debit < 0:
+                debit, credit = 0.0, credit - debit
+            if credit < 0:
+                debit, credit = debit - credit, 0.0
+            if debit == 0 and credit == 0:
+                stats.zero_amount_lines += 1
+                continue
+            cell = account_cell or {}
+            account = _account(accounts, cell.get("id"), cell.get("value"), stats)
+            label = values.get("txn_type") or token
+            description = (values.get("memo") or values.get("name")
+                           or (f"{label} {values['doc_num']}" if values.get("doc_num") else label))
+            line_no += 1
+            lines.append(_line(entry_id_for(token, txn_id), line_no, posting, entered_at, account,
+                               description, debit, credit, source_for(token), user, estimated))
+    return lines
+
+
+def _line(entry_id: str, line_no: int, posting: datetime, entered_at: datetime, account: Account,
+          description: str, debit: float, credit: float, source: str, user: str,
+          estimated: bool) -> dict[str, Any]:
+    return {
+        "entry_id": entry_id, "line_no": line_no, "posting_date": posting,
+        "entered_at": entered_at, "fiscal_year": posting.year, "period": posting.month,
+        "account_code": account.code, "account_name": account.name, "account_type": account.type,
+        "description": description, "debit": round(debit, 2), "credit": round(credit, 2),
+        "source": source, "created_by": user, "entered_at_estimated": estimated,
+    }
+
+
+def to_ledger_frame(lines: list[Mapping[str, Any]], stats: PullStats | None = None) -> pd.DataFrame:
+    """Lines as a prepared ledger, sorted by date, entry and line; counts unbalanced entries."""
+    if not lines:
+        raise ValueError("no transactions in range")
+    frame = pd.DataFrame(list(lines), columns=list(EXPORT_COLUMNS))
+    frame = frame.sort_values(["posting_date", "entry_id", "line_no"], kind="mergesort")
+    prepared = prepare(frame.reset_index(drop=True))
+    if stats is not None:
+        stats.unbalanced_entries = int((entry_level(prepared)["imbalance"].abs() > 0.005).sum())
+    return prepared
+
+
+def pull(client: QboClient, start: date, end: date,
+         zone: str | None = None) -> tuple[pd.DataFrame, PullStats]:
+    """One period's books: accounts, journal entries and the GL report, as a prepared ledger.
+    Timestamps are converted to ``zone``, else to the client's ``QBO_TIMEZONE``, else kept."""
+    zone = zone or client.config.timezone
+    stats = PullStats()
+    accounts = accounts_by_id(client.query("select * from Account where Active IN (true, false)"),
+                              stats)
+    entries = client.query(f"select * from JournalEntry where TxnDate >= '{start:%Y-%m-%d}' "
+                           f"and TxnDate <= '{end:%Y-%m-%d}'")
+    report = client.report("GeneralLedger", start_date=f"{start:%Y-%m-%d}",
+                           end_date=f"{end:%Y-%m-%d}", columns=",".join(GL_COLUMNS))
+    headers = report_headers(report)
+    lines = journal_entries_to_lines(entries, accounts, headers, zone, stats)
+    lines += general_ledger_to_lines(report, accounts, zone, stats)
+    stats.je_ids_missing_from_report = sum(
+        ("JournalEntry", str(e["Id"])) not in headers for e in entries)
+    return to_ledger_frame(lines, stats), stats
+
+
+def write_ledger_csv(frame: pd.DataFrame, path: str | Path) -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frame[list(EXPORT_COLUMNS)].to_csv(path, index=False)
+    return path
+
+
+def write_identity(ledger_path: str | Path, realm_id: str, environment: str, start: date,
+                   end: date, pulled_at: datetime | None = None) -> Path:
+    """The sidecar that files this ledger's reviews under ``qbo:<realm_id>``, which a
+    re-pull keeps (a CSV digest would change with every new transaction)."""
+    sidecar = identity_path(ledger_path)
+    moment = (pulled_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    sidecar.write_text(json.dumps({
+        "ledger_id": f"qbo:{realm_id}",
+        "source": "quickbooks-online",
+        "environment": environment,
+        "period": {"start": f"{start:%Y-%m-%d}", "end": f"{end:%Y-%m-%d}"},
+        "pulled_at": moment.isoformat(timespec="seconds"),
+    }, indent=2) + "\n", encoding="utf-8")
+    return sidecar

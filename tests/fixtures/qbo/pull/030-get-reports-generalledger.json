@@ -1,0 +1,1266 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/reports/GeneralLedger",
+    "query": [
+      [
+        "columns",
+        "tx_date,txn_type,doc_num,name,memo,split_acc,debt_amt,credit_amt,create_by,create_date"
+      ],
+      [
+        "end_date",
+        "2025-12-31"
+      ],
+      [
+        "minorversion",
+        "75"
+      ],
+      [
+        "start_date",
+        "2025-10-01"
+      ]
+    ],
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json;charset=UTF-8"
+    },
+    "body": {
+      "Header": {
+        "Time": "2026-09-30T08:00:02-07:00",
+        "ReportName": "GeneralLedger",
+        "ReportBasis": "Accrual",
+        "StartPeriod": "2025-10-01",
+        "EndPeriod": "2025-12-31",
+        "Currency": "USD",
+        "Option": [
+          {
+            "Name": "NoReportData",
+            "Value": "false"
+          }
+        ]
+      },
+      "Columns": {
+        "Column": [
+          {
+            "ColTitle": "Date",
+            "ColType": "Date",
+            "MetaData": [
+              {
+                "Name": "ColKey",
+                "Value": "tx_date"
+              }
+            ]
+          },
+          {
+            "ColTitle": "Transaction Type",
+            "ColType": "String",
+            "MetaData": [
+              {
+                "Name": "ColKey",
+                "Value": "txn_type"
+              }
+            ]
+          },
+          {
+            "ColTitle": "Num",
+            "ColType": "String",
+            "MetaData": [
+              {
+                "Name": "ColKey",
+                "Value": "doc_num"
+              }
+            ]
+          },
+          {
+            "ColTitle": "Name",
+            "ColType": "String",
+            "MetaData": [
+              {
+                "Name": "ColKey",
+                "Value": "name"
+              }
+            ]
+          },
+          {
+            "ColTitle": "Memo/Description",
+            "ColType": "String",
+            "MetaData": [
+              {
+                "Name": "ColKey",
+                "Value": "memo"
+              }
+            ]
+          },
+          {
+            "ColTitle": "Split",
+            "ColType": "String",
+            "MetaData": [
+              {
+                "Name": "ColKey",
+                "Value": "split_acc"
+              }
+            ]
+          },
+          {
+            "ColTitle": "Debit",
+            "ColType": "Money",
+            "MetaData": [
+              {
+                "Name": "ColKey",
+                "Value": "debt_amt"
+              }
+            ]
+          },
+          {
+            "ColTitle": "Credit",
+            "ColType": "Money",
+            "MetaData": [
+              {
+                "Name": "ColKey",
+                "Value": "credit_amt"
+              }
+            ]
+          },
+          {
+            "ColTitle": "Created By",
+            "ColType": "String",
+            "MetaData": [
+              {
+                "Name": "ColKey",
+                "Value": "create_by"
+              }
+            ]
+          },
+          {
+            "ColTitle": "Create Date",
+            "ColType": "Date",
+            "MetaData": [
+              {
+                "Name": "ColKey",
+                "Value": "create_date"
+              }
+            ]
+          }
+        ]
+      },
+      "Rows": {
+        "Row": [
+          {
+            "type": "Section",
+            "Header": {
+              "ColData": [
+                {
+                  "value": "Checking",
+                  "id": "35"
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                }
+              ]
+            },
+            "Rows": {
+              "Row": [
+                {
+                  "type": "Data",
+                  "ColData": [
+                    {
+                      "value": "Beginning Balance"
+                    },
+                    {
+                      "value": ""
+                    },
+                    {
+                      "value": ""
+                    },
+                    {
+                      "value": ""
+                    },
+                    {
+                      "value": ""
+                    },
+                    {
+                      "value": ""
+                    },
+                    {
+                      "value": "5,000.00"
+                    },
+                    {
+                      "value": ""
+                    },
+                    {
+                      "value": ""
+                    },
+                    {
+                      "value": ""
+                    }
+                  ]
+                },
+                {
+                  "type": "Data",
+                  "ColData": [
+                    {
+                      "value": "2025-10-20"
+                    },
+                    {
+                      "value": "Payment",
+                      "id": "131"
+                    },
+                    {
+                      "value": ""
+                    },
+                    {
+                      "value": "Amy's Bird Sanctuary"
+                    },
+                    {
+                      "value": ""
+                    },
+                    {
+                      "value": "Accounts Receivable (A/R)"
+                    },
+                    {
+                      "value": "1,080.00"
+                    },
+                    {
+                      "value": ""
+                    },
+                    {
+                      "value": "qbo-user-1"
+                    },
+                    {
+                      "value": "2025-10-20"
+                    }
+                  ]
+                },
+                {
+                  "type": "Data",
+                  "ColData": [
+                    {
+                      "value": "2025-11-03"
+                    },
+                    {
+                      "value": "Expense",
+                      "id": "140"
+                    },
+                    {
+                      "value": ""
+                    },
+                    {
+                      "value": "Squeaky Kleen Car Wash"
+                    },
+                    {
+                      "value": "Pressure washer repair"
+                    },
+                    {
+                      "value": "Equipment Repairs"
+                    },
+                    {
+                      "value": ""
+                    },
+                    {
+                      "value": "300.00"
+                    },
+                    {
+                      "value": "qbo-user-2"
+                    },
+                    {
+                      "value": "2025-11-03T16:05:00-08:00"
+                    }
+                  ]
+                },
+                {
+                  "type": "Data",
+                  "ColData": [
+                    {
+                      "value": "2025-12-05"
+                    },
+                    {
+                      "value": "Bill Payment (Check)",
+                      "id": "150"
+                    },
+                    {
+                      "value": "71"
+                    },
+                    {
+                      "value": "Books by Bessie"
+                    },
+                    {
+                      "value": ""
+                    },
+                    {
+                      "value": "Accounts Payable (A/P)"
+                    },
+                    {
+                      "value": ""
+                    },
+                    {
+                      "value": "450.00"
+                    },
+                    {
+                      "value": "qbo-user-1"
+                    },
+                    {
+                      "value": "2025-12-05 11:20:31"
+                    }
+                  ]
+                }
+              ]
+            },
+            "Summary": {
+              "ColData": [
+                {
+                  "value": "Total for Checking"
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                }
+              ]
+            }
+          },
+          {
+            "type": "Section",
+            "Header": {
+              "ColData": [
+                {
+                  "value": "Accounts Receivable (A/R)",
+                  "id": "84"
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                }
+              ]
+            },
+            "Rows": {
+              "Row": [
+                {
+                  "type": "Data",
+                  "ColData": [
+                    {
+                      "value": "2025-10-06"
+                    },
+                    {
+                      "value": "Invoice",
+                      "id": "130"
+                    },
+                    {
+                      "value": "1037"
+                    },
+                    {
+                      "value": "Amy's Bird Sanctuary"
+                    },
+                    {
+                      "value": ""
+                    },
+                    {
+                      "value": "-Split-"
+                    },
+                    {
+                      "value": "1,080.00"
+                    },
+                    {
+                      "value": ""
+                    },
+                    {
+                      "value": "qbo-user-1"
+                    },
+                    {
+                      "value": "2025-10-06 08:31:05"
+                    }
+                  ]
+                },
+                {
+                  "type": "Data",
+                  "ColData": [
+                    {
+                      "value": "2025-10-20"
+                    },
+                    {
+                      "value": "Payment",
+                      "id": "131"
+                    },
+                    {
+                      "value": ""
+                    },
+                    {
+                      "value": "Amy's Bird Sanctuary"
+                    },
+                    {
+                      "value": ""
+                    },
+                    {
+                      "value": "Checking"
+                    },
+                    {
+                      "value": ""
+                    },
+                    {
+                      "value": "1,080.00"
+                    },
+                    {
+                      "value": "qbo-user-1"
+                    },
+                    {
+                      "value": "2025-10-20"
+                    }
+                  ]
+                },
+                {
+                  "type": "Data",
+                  "ColData": [
+                    {
+                      "value": "2025-12-28"
+                    },
+                    {
+                      "value": "Journal Entry",
+                      "id": "147"
+                    },
+                    {
+                      "value": "1046"
+                    },
+                    {
+                      "value": "Amy's Bird Sanctuary"
+                    },
+                    {
+                      "value": ""
+                    },
+                    {
+                      "value": "Services"
+                    },
+                    {
+                      "value": "12,000.00"
+                    },
+                    {
+                      "value": ""
+                    },
+                    {
+                      "value": "qbo-user-2"
+                    },
+                    {
+                      "value": "2025-12-28 14:47:10"
+                    }
+                  ]
+                }
+              ]
+            },
+            "Summary": {
+              "ColData": [
+                {
+                  "value": "Total for Accounts Receivable (A/R)"
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                }
+              ]
+            }
+          },
+          {
+            "type": "Section",
+            "Header": {
+              "ColData": [
+                {
+                  "value": "Accounts Payable (A/P)",
+                  "id": "33"
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                }
+              ]
+            },
+            "Rows": {
+              "Row": [
+                {
+                  "type": "Data",
+                  "ColData": [
+                    {
+                      "value": "2025-11-14"
+                    },
+                    {
+                      "value": "Journal Entry",
+                      "id": "146"
+                    },
+                    {
+                      "value": "1045"
+                    },
+                    {
+                      "value": "Books by Bessie"
+                    },
+                    {
+                      "value": ""
+                    },
+                    {
+                      "value": "Advertising"
+                    },
+                    {
+                      "value": ""
+                    },
+                    {
+                      "value": "450.00"
+                    },
+                    {
+                      "value": "qbo-user-1"
+                    },
+                    {
+                      "value": "2025-11-14 09:12:44"
+                    }
+                  ]
+                },
+                {
+                  "type": "Data",
+                  "ColData": [
+                    {
+                      "value": "2025-12-05"
+                    },
+                    {
+                      "value": "Bill Payment (Check)",
+                      "id": "150"
+                    },
+                    {
+                      "value": "71"
+                    },
+                    {
+                      "value": "Books by Bessie"
+                    },
+                    {
+                      "value": ""
+                    },
+                    {
+                      "value": "Checking"
+                    },
+                    {
+                      "value": "450.00"
+                    },
+                    {
+                      "value": ""
+                    },
+                    {
+                      "value": "qbo-user-1"
+                    },
+                    {
+                      "value": "2025-12-05 11:20:31"
+                    }
+                  ]
+                }
+              ]
+            },
+            "Summary": {
+              "ColData": [
+                {
+                  "value": "Total for Accounts Payable (A/P)"
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                }
+              ]
+            }
+          },
+          {
+            "type": "Section",
+            "Header": {
+              "ColData": [
+                {
+                  "value": "Board of Equalization Payable",
+                  "id": "89"
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                }
+              ]
+            },
+            "Rows": {
+              "Row": [
+                {
+                  "type": "Data",
+                  "ColData": [
+                    {
+                      "value": "2025-10-06"
+                    },
+                    {
+                      "value": "Invoice",
+                      "id": "130"
+                    },
+                    {
+                      "value": "1037"
+                    },
+                    {
+                      "value": "Amy's Bird Sanctuary"
+                    },
+                    {
+                      "value": "Sales tax"
+                    },
+                    {
+                      "value": "Accounts Receivable (A/R)"
+                    },
+                    {
+                      "value": ""
+                    },
+                    {
+                      "value": "80.00"
+                    },
+                    {
+                      "value": "qbo-user-1"
+                    },
+                    {
+                      "value": "2025-10-06 08:31:05"
+                    }
+                  ]
+                }
+              ]
+            },
+            "Summary": {
+              "ColData": [
+                {
+                  "value": "Total for Board of Equalization Payable"
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                }
+              ]
+            }
+          },
+          {
+            "type": "Section",
+            "Header": {
+              "ColData": [
+                {
+                  "value": "Services",
+                  "id": "1"
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                }
+              ]
+            },
+            "Rows": {
+              "Row": [
+                {
+                  "type": "Data",
+                  "ColData": [
+                    {
+                      "value": "2025-10-06"
+                    },
+                    {
+                      "value": "Invoice",
+                      "id": "130"
+                    },
+                    {
+                      "value": "1037"
+                    },
+                    {
+                      "value": "Amy's Bird Sanctuary"
+                    },
+                    {
+                      "value": "Landscaping services"
+                    },
+                    {
+                      "value": "Accounts Receivable (A/R)"
+                    },
+                    {
+                      "value": ""
+                    },
+                    {
+                      "value": "1,000.00"
+                    },
+                    {
+                      "value": "qbo-user-1"
+                    },
+                    {
+                      "value": "2025-10-06 08:31:05"
+                    }
+                  ]
+                },
+                {
+                  "type": "Data",
+                  "ColData": [
+                    {
+                      "value": "2025-12-28"
+                    },
+                    {
+                      "value": "Journal Entry",
+                      "id": "147"
+                    },
+                    {
+                      "value": "1046"
+                    },
+                    {
+                      "value": "Amy's Bird Sanctuary"
+                    },
+                    {
+                      "value": ""
+                    },
+                    {
+                      "value": "Accounts Receivable (A/R)"
+                    },
+                    {
+                      "value": ""
+                    },
+                    {
+                      "value": "12,000.00"
+                    },
+                    {
+                      "value": "qbo-user-2"
+                    },
+                    {
+                      "value": "2025-12-28 14:47:10"
+                    }
+                  ]
+                }
+              ]
+            },
+            "Summary": {
+              "ColData": [
+                {
+                  "value": "Total for Services"
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                }
+              ]
+            }
+          },
+          {
+            "type": "Section",
+            "Header": {
+              "ColData": [
+                {
+                  "value": "Advertising",
+                  "id": "7"
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                }
+              ]
+            },
+            "Rows": {
+              "Row": [
+                {
+                  "type": "Data",
+                  "ColData": [
+                    {
+                      "value": "2025-11-14"
+                    },
+                    {
+                      "value": "Journal Entry",
+                      "id": "146"
+                    },
+                    {
+                      "value": "1045"
+                    },
+                    {
+                      "value": "Books by Bessie"
+                    },
+                    {
+                      "value": "November search campaign"
+                    },
+                    {
+                      "value": "Accounts Payable (A/P)"
+                    },
+                    {
+                      "value": "450.00"
+                    },
+                    {
+                      "value": ""
+                    },
+                    {
+                      "value": "qbo-user-1"
+                    },
+                    {
+                      "value": "2025-11-14 09:12:44"
+                    }
+                  ]
+                }
+              ]
+            },
+            "Summary": {
+              "ColData": [
+                {
+                  "value": "Total for Advertising"
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                }
+              ]
+            }
+          },
+          {
+            "type": "Section",
+            "Header": {
+              "ColData": [
+                {
+                  "value": "Maintenance and Repair",
+                  "id": "75"
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                }
+              ]
+            },
+            "Rows": {
+              "Row": [
+                {
+                  "type": "Section",
+                  "Header": {
+                    "ColData": [
+                      {
+                        "value": "Equipment Repairs",
+                        "id": "76"
+                      },
+                      {
+                        "value": ""
+                      },
+                      {
+                        "value": ""
+                      },
+                      {
+                        "value": ""
+                      },
+                      {
+                        "value": ""
+                      },
+                      {
+                        "value": ""
+                      },
+                      {
+                        "value": ""
+                      },
+                      {
+                        "value": ""
+                      },
+                      {
+                        "value": ""
+                      },
+                      {
+                        "value": ""
+                      }
+                    ]
+                  },
+                  "Rows": {
+                    "Row": [
+                      {
+                        "type": "Data",
+                        "ColData": [
+                          {
+                            "value": "2025-11-03"
+                          },
+                          {
+                            "value": "Expense",
+                            "id": "140"
+                          },
+                          {
+                            "value": ""
+                          },
+                          {
+                            "value": "Squeaky Kleen Car Wash"
+                          },
+                          {
+                            "value": "Pressure washer repair"
+                          },
+                          {
+                            "value": "Checking"
+                          },
+                          {
+                            "value": "300.00"
+                          },
+                          {
+                            "value": ""
+                          },
+                          {
+                            "value": "qbo-user-2"
+                          },
+                          {
+                            "value": "2025-11-03T16:05:00-08:00"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  "Summary": {
+                    "ColData": [
+                      {
+                        "value": "Total for Equipment Repairs"
+                      },
+                      {
+                        "value": ""
+                      },
+                      {
+                        "value": ""
+                      },
+                      {
+                        "value": ""
+                      },
+                      {
+                        "value": ""
+                      },
+                      {
+                        "value": ""
+                      },
+                      {
+                        "value": ""
+                      },
+                      {
+                        "value": ""
+                      },
+                      {
+                        "value": ""
+                      },
+                      {
+                        "value": ""
+                      }
+                    ]
+                  }
+                }
+              ]
+            },
+            "Summary": {
+              "ColData": [
+                {
+                  "value": "Total for Maintenance and Repair"
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                },
+                {
+                  "value": ""
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  }
+}
