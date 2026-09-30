@@ -118,7 +118,7 @@ and the MCP SDK, so the two together cover every code path CI will see.
   recording is re-scrubbed and checked on every exit, and pulled books stay in `data/`.
 - **Next** — the weekly scheduled Action, the README final pass and v1.0.0 (due
   2026-10-18). Week 5 breaks the circularity in the detection numbers.
-- 461 tests on 3.9 / 472 on 3.12, ruff clean.
+- 462 tests on 3.9 / 472 on 3.12, ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
