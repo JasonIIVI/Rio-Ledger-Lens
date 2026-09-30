@@ -295,7 +295,7 @@ a redirect URI, and copy the app's client id and secret into `.env` as `QBO_CLIE
 
 ```bash
 ledgerlens qbo-auth                          # sign in in the browser; tokens go to ~/.config/ledgerlens, mode 600
-ledgerlens pull-qbo --start 2025-10-01 --end 2025-12-31     # writes data/qbo-ledger.csv + its .identity.json
+ledgerlens pull-qbo --start 2026-07-01 --end 2026-09-30     # writes data/qbo-ledger.csv + its .identity.json
 ledgerlens test data/qbo-ledger.csv
 ledgerlens report data/qbo-ledger.csv --db data/review.sqlite
 ```
@@ -313,23 +313,26 @@ What the pull does, and what it cannot know:
   (`QBO-Invoice-130`), because QuickBooks numbers each type separately.
 - **Who and when.** The user comes from the report's "created by" column, since the entity
   has none. The entry time is the entity's `CreateTime`; for other transactions it is the
-  report's create date, and where that is a date alone the time is estimated at noon and the
-  line is marked `entered_at_estimated`. QuickBooks writes times with the company's offset,
-  so they are used as given. Set `QBO_TIMEZONE` only to the company's own zone (report times
-  carry no zone and are taken to be in it); the pull warns if a time arrives in UTC without it.
-- **Nothing dropped silently.** Description-only lines, beginning-balance rows, lines on
+  report's create date (a full timestamp in the sandbox; when a transaction's rows differ,
+  the earliest), and where only a date is given the time is estimated at noon and the line is
+  marked `entered_at_estimated`. QuickBooks writes both with the company's offset, so they
+  are used as given. `QBO_TIMEZONE` converts both, so set it only to the company's own zone
+  (a report time with no offset is taken to be in it already); the pull warns if a time
+  arrives in UTC without it, and counts any create date it cannot read.
+- **Nothing dropped silently.** Description-only lines, beginning-balance rows, transactions
+  whose rows are all zero, lines on
   accounts the query did not return, unbalanced entries, journal entries the report does not
   list and journal entries the report lists but the query did not return are all counted and
   printed.
 - **One review history per company.** The sidecar names the ledger `qbo:<realm id>`, so a
   re-pull (whose CSV digest differs) keeps the same notes and decisions.
 
-A sandbox company is small (a few dozen entries a quarter): enough to see the tests fire,
-far too few for the model tier or Benford analysis to mean anything, and the pull says so.
-Intuit meters read calls under its partner program; a pull makes a handful. The tests never
-touch the network: they replay the JSON in `tests/fixtures/qbo/`, which is hand-shaped from
-Intuit's documentation until a sanitized recording of a sandbox pull (`pull-qbo --record`)
-replaces it.
+A sandbox company is small (about a hundred entries in its busiest quarter): enough to see
+the tests fire, far too few for the model tier or Benford analysis to mean anything, and the
+pull warns below 50 entries. Intuit meters read calls under its partner program; a pull makes
+a handful. The tests never touch the network: they replay `tests/fixtures/qbo/pull/`, a
+sanitized recording of a real sandbox pull (`pull-qbo --record`, Intuit's sample company,
+July–September 2026). Its README says what the recording settled about Intuit's responses.
 
 ## Ask the ledger from Claude Desktop
 

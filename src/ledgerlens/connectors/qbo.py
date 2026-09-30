@@ -550,7 +550,7 @@ def leftovers(text: str, realm_id: str, users: Mapping[str, str]) -> list[str]:
 
 def _real_names(users: Mapping[str, str]) -> list[str]:
     """Names to scrub: not empty, and not already a stand-in (data that was sanitized before,
-    like the hand-shaped fixtures, names its users qbo-user-N)."""
+    like a committed recording, names its users qbo-user-N)."""
     stand_ins = set(users.values())
     return [n for n in users if n and n not in stand_ins]
 
