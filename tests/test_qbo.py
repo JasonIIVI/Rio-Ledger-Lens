@@ -590,19 +590,45 @@ def test_a_create_date_whose_offset_has_no_colon_is_read_on_every_python():
     assert qbo.parse_report_datetime("2026-09-02 @ 3:14 PM", posting) == (datetime(2026, 9, 2, 12), True)
 
 
-def gl_report(create_date: str) -> dict:
-    """A two-line Check in the report's shape, with the column keys in ColKey metadata."""
+def gl_report(create_date: str, first_row_stamp: str | None = None, amount: str = "54.55") -> dict:
+    """A two-line Check in the report's shape, with the column keys in ColKey metadata; the
+    first row in report order can carry a create date of its own."""
     keys = ["tx_date", "txn_type", "create_date", "create_by", "debt_amt", "credit_amt"]
 
-    def section(account_id, name, debit, credit):
-        cells = ["2026-07-16", "Check", create_date, "qbo-user-1", debit, credit]
+    def section(account_id, name, stamp, debit, credit):
+        cells = ["2026-07-16", "Check", stamp, "qbo-user-1", debit, credit]
         data = [{"value": v, "id": "57"} if k == "txn_type" else {"value": v} for k, v in zip(keys, cells)]
         return {"type": "Section", "Header": {"ColData": [{"value": name, "id": account_id}]},
                 "Rows": {"Row": [{"type": "Data", "ColData": data}]}}
 
+    first = create_date if first_row_stamp is None else first_row_stamp
     return {"Columns": {"Column": [{"ColTitle": k, "MetaData": [{"Name": "ColKey", "Value": k}]}
                                    for k in keys]},
-            "Rows": {"Row": [section("35", "Checking", "", "54.55"), section("56", "Fuel", "54.55", "")]}}
+            "Rows": {"Row": [section("35", "Checking", first, "", amount),
+                             section("56", "Fuel", create_date, amount, "")]}}
+
+
+def test_a_transaction_is_keyed_when_its_earliest_row_was_created_whatever_the_row_order():
+    # In the sandbox, nine invoices' sales-tax rows carry a later create_date than their other
+    # rows; which row comes first depends only on the order of the report's account sections.
+    later_first = gl_report("2026-09-01T15:04:04-0700", first_row_stamp="2026-09-04T12:59:17-0700")
+    lines = qbo.general_ledger_to_lines(later_first, {})
+    assert {line["entered_at"] for line in lines} == {datetime(2026, 9, 1, 15, 4, 4)}
+    blank_first = qbo.PullStats()
+    lines = qbo.general_ledger_to_lines(gl_report("2026-09-01T15:04:04-0700", first_row_stamp=""),
+                                        {}, None, blank_first)
+    assert {line["entered_at"] for line in lines} == {datetime(2026, 9, 1, 15, 4, 4)}
+    assert not any(line["entered_at_estimated"] for line in lines)
+    assert blank_first.estimated_entered_at == 0
+
+
+def test_a_transaction_with_only_zero_rows_is_set_aside_not_counted_as_an_entry():
+    # QuickBooks' own "Created by QB Online to link credits to charges." payment is all .00
+    stats = qbo.PullStats()
+    assert qbo.general_ledger_to_lines(gl_report("2026-08-18T10:00:00-0700", amount=".00"),
+                                       {}, None, stats) == []
+    assert (stats.other_transactions, stats.zero_transactions, stats.zero_amount_lines) == (0, 1, 2)
+    assert "1 transaction(s) with only zero lines" in "\n".join(stats.describe())
 
 
 def test_a_create_date_this_tool_cannot_read_is_counted_and_said_not_called_date_only():

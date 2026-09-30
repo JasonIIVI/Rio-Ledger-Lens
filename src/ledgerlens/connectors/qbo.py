@@ -996,6 +996,7 @@ class PullStats:
     description_only_lines: int = 0
     other_detail_lines: int = 0
     zero_amount_lines: int = 0
+    zero_transactions: int = 0
     unknown_account_lines: int = 0
     rows_without_txn_id: int = 0
     estimated_entered_at: int = 0
@@ -1013,7 +1014,8 @@ class PullStats:
             f"other transactions {self.other_transactions}",
             f"Set aside: {self.description_only_lines} description-only line(s), "
             f"{self.other_detail_lines} other non-posting line(s), {self.zero_amount_lines} zero line(s), "
-            f"{self.rows_without_txn_id} report row(s) with no transaction (balances)",
+            f"{self.rows_without_txn_id} report row(s) with no transaction (balances), "
+            f"{self.zero_transactions} transaction(s) with only zero lines",
             f"Estimated: entry time on {self.estimated_entered_at} entrie(s) (no time of day given), "
             f"user on {self.unknown_users} entrie(s) ({UNKNOWN_USER})",
             f"Checks: {self.unknown_account_lines} line(s) on accounts the Account query did not "
@@ -1285,17 +1287,19 @@ def general_ledger_to_lines(report: Mapping[str, Any], accounts: Mapping[str, Ac
 
     lines: list[dict[str, Any]] = []
     for (token, txn_id), rows in groups.items():
-        first = rows[0][0]
-        posting = _date(first["tx_date"])
-        created = first.get("create_date", "")
-        entered_at, estimated = parse_report_datetime(created, posting, zone)
-        user = first.get("create_by") or UNKNOWN_USER
-        stats.other_transactions += 1
-        stats.estimated_entered_at += estimated
-        # a silent fallback once passed a whole pull off as "date only" (see is_report_date)
-        stats.unreadable_entered_at += estimated and bool(created.strip()) and not is_report_date(created)
-        stats.unknown_users += user == UNKNOWN_USER
-        line_no = 0
+        posting = _date(rows[0][0]["tx_date"])
+        # Rows of one transaction can carry different create dates (the sandbox stamps some
+        # invoices' tax rows days later), and which row comes first is only the order of the
+        # account sections: the entry time is the earliest readable stamp, when it was keyed.
+        stamped = []
+        for values, _ in rows:
+            created = (values.get("create_date") or "").strip()
+            when, guessed = parse_report_datetime(created, posting, zone)
+            stamped.append((guessed, not created, when, created, values))
+        estimated, _, entered_at, _, keyed = min(stamped, key=lambda s: s[:3])
+        user = (keyed.get("create_by") or next((v.get("create_by") for v, _ in rows if v.get("create_by")), "")
+                or UNKNOWN_USER)
+        entry: list[dict[str, Any]] = []
         for values, account_cell in rows:
             debit, credit = _money(values.get("debt_amt")), _money(values.get("credit_amt"))
             if debit < 0:
@@ -1310,9 +1314,17 @@ def general_ledger_to_lines(report: Mapping[str, Any], accounts: Mapping[str, Ac
             label = values.get("txn_type") or token
             description = (values.get("memo") or values.get("name")
                            or (f"{label} {values['doc_num']}" if values.get("doc_num") else label))
-            line_no += 1
-            lines.append(_line(entry_id_for(token, txn_id), line_no, posting, entered_at, account,
+            entry.append(_line(entry_id_for(token, txn_id), len(entry) + 1, posting, entered_at, account,
                                description, debit, credit, source_for(token), user, estimated))
+        if not entry:  # e.g. QuickBooks' own .00 payment linking a credit memo to a charge
+            stats.zero_transactions += 1
+            continue
+        stats.other_transactions += 1
+        stats.estimated_entered_at += estimated
+        # a silent fallback once passed a whole pull off as "date only" (see is_report_date)
+        stats.unreadable_entered_at += any(s[0] and s[3] and not is_report_date(s[3]) for s in stamped)
+        stats.unknown_users += user == UNKNOWN_USER
+        lines.extend(entry)
     return lines
 
 
