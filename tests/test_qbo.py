@@ -776,6 +776,34 @@ def test_a_stamp_ranks_by_what_it_tells_and_only_the_stamp_used_counts_as_unread
     assert any("1 entrie(s) whose create date this tool cannot read" in line for line in lost.describe())
 
 
+@pytest.mark.parametrize("stamp, first_row_stamp, expected, counts", [
+    # the keying date is the audit signal: an earlier date wins over a later time of day ...
+    ("2026-09-05T10:00:00-0700", "2026-09-01", (datetime(2026, 9, 1, 12), True), (1, 0)),
+    ("2026-09-05T10:00:00-0700", "2026-09-01 @ 3:14 PM", (datetime(2026, 9, 1, 12), True), (1, 1)),
+    # ... and within a day a time of day wins over a date alone
+    ("2026-09-01T10:00:00-0700", "2026-09-01", (datetime(2026, 9, 1, 10), False), (0, 0)),
+    # a date that was read beats the same date taken from an unreadable value
+    ("2026-09-02", "2026-09-02 @ 3:14 PM", (datetime(2026, 9, 2, 12), True), (1, 0)),
+    ("2026-09-02 @ 3:14 PM", "2026-09-02", (datetime(2026, 9, 2, 12), True), (1, 0)),
+    # with no date anywhere, an unreadable value is what the warning is about, not a blank
+    ("", "garbled", (datetime(2026, 7, 16, 12), True), (1, 1)),
+    ("garbled", "", (datetime(2026, 7, 16, 12), True), (1, 1)),
+])
+def test_the_entry_time_is_the_earliest_date_a_row_gives(stamp, first_row_stamp, expected, counts):
+    stats = qbo.PullStats()
+    lines = qbo.general_ledger_to_lines(gl_report(stamp, first_row_stamp=first_row_stamp), {}, None, stats)
+    assert {(line["entered_at"], line["entered_at_estimated"]) for line in lines} == {expected}
+    assert (stats.estimated_entered_at, stats.unreadable_entered_at) == counts
+    assert any("cannot read" in line for line in stats.describe()) == bool(counts[1])
+
+
+def test_the_user_comes_from_another_row_when_the_keyed_row_names_none():
+    lines = qbo.general_ledger_to_lines(gl_report("2026-09-04T12:59:17-0700", first_row_stamp="2026-09-01T15:04:04-0700",
+                                                  first_row_user=""), {})
+    assert {(line["entered_at"], line["created_by"]) for line in lines} == {
+        (datetime(2026, 9, 1, 15, 4, 4), "qbo-user-1")}
+
+
 def test_a_report_time_in_utc_is_flagged_like_a_journal_entry_time():
     stats = qbo.PullStats()
     lines = qbo.general_ledger_to_lines(gl_report("2026-09-02T22:14:27Z"), {}, None, stats)
@@ -803,17 +831,29 @@ def test_a_create_time_that_is_not_a_timestamp_is_estimated_and_counted_not_a_cr
     assert {(line["entered_at"], line["entered_at_estimated"]) for line in lines} == {
         (datetime(2026, 9, 1, 12), True)}
     assert (stats.estimated_entered_at, stats.unreadable_entered_at) == (1, 1)
+    # a date alone, or none at all, is an estimate the tool expects: not "unreadable"
+    for created, when in (("2026-09-01", datetime(2026, 9, 1, 12)), ("   ", datetime(2026, 8, 19, 12))):
+        entry["MetaData"]["CreateTime"] = created
+        quiet = qbo.PullStats()
+        lines = qbo.journal_entries_to_lines([entry], {}, None, None, quiet)
+        assert {line["entered_at"] for line in lines} == {when}
+        assert (quiet.estimated_entered_at, quiet.unreadable_entered_at) == (1, 0), created
 
 
 def test_a_journal_entry_with_no_posting_line_is_set_aside_like_a_report_transaction():
-    entry = {"Id": "9", "TxnDate": "2026-09-01", "MetaData": {"CreateTime": "2026-09-01T10:00:00-07:00"},
-             "Line": [{"Amount": 0, "DetailType": "JournalEntryLineDetail",
-                       "JournalEntryLineDetail": {"PostingType": "Debit", "AccountRef": {"value": "35"}}},
-                      {"DetailType": "DescriptionOnly", "Description": "memo only"}]}
+    zero = {"Id": "9", "TxnDate": "2026-09-01", "Adjustment": True, "MetaData": {"CreateTime": "2026-09-01T17:00:00Z"},
+            "Line": [{"Amount": 0, "DetailType": "JournalEntryLineDetail",
+                      "JournalEntryLineDetail": {"PostingType": "Debit", "AccountRef": {"value": "35"}}},
+                     {"DetailType": "DescriptionOnly", "Description": "memo only"}]}
+    note = {"Id": "10", "TxnDate": "2026-09-01", "Line": [{"DetailType": "DescriptionOnly", "Description": "note"}]}
     stats = qbo.PullStats()
-    assert qbo.journal_entries_to_lines([entry], {}, None, None, stats) == []
-    assert (stats.journal_entries, stats.zero_transactions) == (0, 1)
-    assert (stats.zero_amount_lines, stats.description_only_lines, stats.unknown_users) == (1, 1, 0)
+    assert qbo.journal_entries_to_lines([zero, note], {}, None, None, stats) == []
+    assert (stats.journal_entries, stats.zero_transactions) == (0, 2)
+    assert (stats.zero_amount_lines, stats.description_only_lines) == (1, 2)
+    # nothing about an entry that never reaches the ledger is counted as if it did
+    assert (stats.adjusting_entries, stats.estimated_entered_at, stats.unreadable_entered_at,
+            stats.utc_times_without_zone, stats.unknown_users) == (0, 0, 0, 0, 0)
+    assert "2 transaction(s) with no posting line" in "\n".join(stats.describe())
 
 
 def test_a_transaction_with_only_zero_rows_is_set_aside_not_counted_as_an_entry():
@@ -822,7 +862,7 @@ def test_a_transaction_with_only_zero_rows_is_set_aside_not_counted_as_an_entry(
     assert qbo.general_ledger_to_lines(gl_report("2026-08-18T10:00:00-0700", amount=".00"),
                                        {}, None, stats) == []
     assert (stats.other_transactions, stats.zero_transactions, stats.zero_amount_lines) == (0, 1, 2)
-    assert "1 transaction(s) with only zero lines" in "\n".join(stats.describe())
+    assert "1 transaction(s) with no posting line" in "\n".join(stats.describe())
 
 
 def test_a_create_date_this_tool_cannot_read_is_counted_and_said_not_called_date_only():
@@ -857,7 +897,7 @@ def test_unknown_accounts_users_and_missing_entries_are_counted_not_dropped():
     assert lines[0]["created_by"] == "qbo-unknown" and lines[0]["entered_at_estimated"]
     assert lines[0]["description"] == "Journal entry 9"
     assert (stats.unknown_account_lines, stats.zero_amount_lines, stats.other_detail_lines,
-            stats.unknown_users, stats.estimated_entered_at) == (1, 1, 1, 1, 1)
+            stats.unknown_users, stats.estimated_entered_at, stats.unreadable_entered_at) == (1, 1, 1, 1, 1, 0)
 
 
 def test_an_unbalanced_entry_is_counted():

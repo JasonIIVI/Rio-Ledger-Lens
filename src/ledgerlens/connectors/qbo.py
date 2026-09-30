@@ -1015,7 +1015,7 @@ class PullStats:
             f"Set aside: {self.description_only_lines} description-only line(s), "
             f"{self.other_detail_lines} other non-posting line(s), {self.zero_amount_lines} zero line(s), "
             f"{self.rows_without_txn_id} report row(s) with no transaction (balances), "
-            f"{self.zero_transactions} transaction(s) with only zero lines",
+            f"{self.zero_transactions} transaction(s) with no posting line",
             f"Estimated: entry time on {self.estimated_entered_at} entrie(s) (no readable time of day), "
             f"user on {self.unknown_users} entrie(s) ({UNKNOWN_USER})",
             f"Checks: {self.unknown_account_lines} line(s) on accounts the Account query did not "
@@ -1024,8 +1024,8 @@ class PullStats:
             f"{self.je_ids_missing_from_query} journal entrie(s) in the GL report the query did "
             "not return (not in the ledger)",
         ] + ([f"Warning: {self.utc_times_without_zone} entry time(s) arrived in UTC and "
-              "no QBO_TIMEZONE is set, so they are not on the company's clock like the rest; "
-              "set QBO_TIMEZONE to the company's own time zone"]
+              "no QBO_TIMEZONE is set: unless the company keeps UTC, they are not on its "
+              "clock; set QBO_TIMEZONE to the company's own time zone"]
              if self.utc_times_without_zone else []) + (
             [f"Warning: {self.unreadable_entered_at} entrie(s) whose create date this tool cannot "
              "read; their entry time is estimated at noon on the date the value starts with, "
@@ -1133,6 +1133,16 @@ class ReportStamp:
     def rank(self) -> int:
         """What the stamp tells: its own time of day (0), its own date (1), nothing (2)."""
         return {"time": 0, "date": 1, "unreadable-date": 1}.get(self.kind, 2)
+
+    @property
+    def order(self) -> tuple:
+        """How rows' stamps compete for a transaction's entry time. The keying date is the
+        audit signal, so the earliest date any row gives wins; within that day a time of day
+        beats a date alone, and a date that was read beats one taken from an unreadable
+        value. Only when no row gives a date does the posting date stand in, and then an
+        unreadable value is kept over a blank so that the warning says why."""
+        return (self.rank == 2, self.when.date(), self.rank, self.when,
+                self.kind in ("unreadable-date", "blank"))
 
 
 def read_report_stamp(value: str, posting_date: datetime, zone: str | None = None) -> ReportStamp:
@@ -1282,7 +1292,7 @@ def journal_entries_to_lines(entries: list[Mapping[str, Any]], accounts: Mapping
                                      entered_at, account, line.get("Description") or fallback,
                                      amount if side == "Debit" else 0.0,
                                      amount if side == "Credit" else 0.0, "Manual", user, estimated))
-        if not entry_lines:  # set aside like a report transaction with only zero rows
+        if not entry_lines:  # no posting line (all zero or description-only): set aside
             stats.zero_transactions += 1
             continue
         stats.journal_entries += 1
@@ -1326,11 +1336,9 @@ def general_ledger_to_lines(report: Mapping[str, Any], accounts: Mapping[str, Ac
         posting = _date(rows[0][0]["tx_date"])
         # Rows of one transaction can carry different create dates (the sandbox stamps some
         # invoices' tax rows later), and which row comes first is only the order of the
-        # account sections: the entry time is the stamp that says most (a time of day, then
-        # a date, then nothing but the posting date), the earliest among equals.
+        # account sections: see ReportStamp.order for which stamp keys the entry.
         stamp, keyed = min(((read_report_stamp(values.get("create_date", ""), posting, zone), values)
-                            for values, _ in rows),
-                           key=lambda s: (s[0].rank, s[0].when, not s[0].unreadable))
+                            for values, _ in rows), key=lambda s: s[0].order)
         estimated, entered_at = stamp.estimated, stamp.when
         user = (keyed.get("create_by") or next((v.get("create_by") for v, _ in rows if v.get("create_by")), "")
                 or UNKNOWN_USER)
@@ -1351,7 +1359,7 @@ def general_ledger_to_lines(report: Mapping[str, Any], accounts: Mapping[str, Ac
                            or (f"{label} {values['doc_num']}" if values.get("doc_num") else label))
             entry.append(_line(entry_id_for(token, txn_id), len(entry) + 1, posting, entered_at, account,
                                description, debit, credit, source_for(token), user, estimated))
-        if not entry:  # e.g. QuickBooks' own .00 payment linking a credit memo to a charge
+        if not entry:  # no posting line: e.g. QuickBooks' own .00 payment linking a credit
             stats.zero_transactions += 1
             continue
         stats.other_transactions += 1
