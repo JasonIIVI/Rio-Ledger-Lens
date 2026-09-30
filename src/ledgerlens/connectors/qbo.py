@@ -948,6 +948,9 @@ TXN_SOURCE = {
     "Bill": "AP", "BillPayment": "AP", "BillPaymentCheck": "AP", "BillPaymentCreditCard": "AP",
     "VendorCredit": "AP", "Expense": "AP", "Check": "AP", "Purchase": "AP",
     "CreditCardExpense": "AP", "CreditCardCredit": "AP", "PurchaseOrder": "AP",
+    # both seen in a real sandbox pull: a purchase paid in cash, and a remittance that
+    # settles what is owed to a tax agency; neither is system-generated
+    "CashExpense": "AP", "SalesTaxPayment": "AP",
     "Invoice": "AR", "Payment": "AR", "SalesReceipt": "AR", "CreditMemo": "AR",
     "RefundReceipt": "AR", "Refund": "AR",
     "Deposit": "Bank", "Transfer": "Bank",

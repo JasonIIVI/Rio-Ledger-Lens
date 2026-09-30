@@ -478,7 +478,8 @@ def pulled():
 @pytest.mark.parametrize("label, token, source", [
     ("Journal Entry", "JournalEntry", "Manual"), ("Bill Payment (Check)", "BillPaymentCheck", "AP"),
     ("Bill Payment (Credit Card)", "BillPaymentCreditCard", "AP"), ("Expense", "Expense", "AP"),
-    ("Credit Card Expense", "CreditCardExpense", "AP"), ("Invoice", "Invoice", "AR"),
+    ("Credit Card Expense", "CreditCardExpense", "AP"), ("Cash Expense", "CashExpense", "AP"),
+    ("Sales Tax Payment", "SalesTaxPayment", "AP"), ("Invoice", "Invoice", "AR"),
     ("Sales Receipt", "SalesReceipt", "AR"), ("Refund", "Refund", "AR"), ("Deposit", "Deposit", "Bank"),
     ("Transfer", "Transfer", "Bank"), ("Paycheck", "Paycheck", "Payroll"),
     ("Payroll Check", "PayrollCheck", "Payroll"), ("Inventory Qty Adjust", "InventoryQtyAdjust", "System"),
