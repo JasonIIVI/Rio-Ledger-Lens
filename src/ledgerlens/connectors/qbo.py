@@ -1075,25 +1075,38 @@ def _account(accounts: Mapping[str, Account], ref_id: Any, ref_name: Any, stats:
     return Account(label, label, str(ref_name or f"Unknown account {label}"), UNKNOWN_ACCOUNT_TYPE)
 
 
+#: The timestamp shapes Intuit writes (``2025-12-28T10:15:00-08:00`` from the API,
+#: ``...-0800`` in the GL report, ``...Z``, fractional seconds), read with strptime: on
+#: fromisoformat, Python 3.9 refuses ``-0800`` and 3.12 takes ``2025-12-28-0800`` (a date
+#: and an offset) for 08:00, so the two supported Pythons built different ledgers.
+_TIMESTAMP_FORMATS = tuple(
+    f"%Y-%m-%d{sep}{clock}{fraction}{offset}"
+    for sep in ("T", " ") for clock in ("%H:%M:%S", "%H:%M") for fraction in (".%f", "")
+    for offset in ("%z", "") if not (fraction and clock == "%H:%M"))
+
+
 def parse_qbo_datetime(value: str, zone: str | None = None) -> datetime:
-    """An API timestamp (``2025-12-28T10:15:00-08:00``, or ``...Z``) as a naive datetime:
-    the clock time as given, or converted to ``zone`` first when one is named."""
+    """A QuickBooks timestamp as a naive datetime: the clock time as given, or converted to
+    ``zone`` first when one is named and the value carries an offset."""
     text = value.strip()
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
-    # The GL report writes the offset as -0700; Python 3.9's fromisoformat reads only -07:00
-    text = _COMPACT_OFFSET.sub(r"\1:\2", text)
-    moment = datetime.fromisoformat(text)
+    for fmt in _TIMESTAMP_FORMATS:
+        try:
+            moment = datetime.strptime(text, fmt)
+            break
+        except ValueError:
+            continue
+    else:
+        raise ValueError(f"not a QuickBooks timestamp: {value!r}")
     if moment.tzinfo is not None and zone:
         moment = moment.astimezone(_zone(zone))
     return moment.replace(tzinfo=None)
 
 
 _UTC_SUFFIX = re.compile(r"(Z|[+-]00:?00)$")
-_COMPACT_OFFSET = re.compile(r"(\d\d:\d\d(?::\d\d(?:\.\d+)?)?[+-]\d\d)(\d\d)$")
-_REPORT_TIME_FORMATS = ("%Y-%m-%d %H:%M:%S", "%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y %H:%M:%S")
+_ISO_TIMESTAMP = re.compile(r"\d{4}-\d\d-\d\d[T ]\d\d:\d\d")  # a date, then a time of day
+_REPORT_TIME_FORMATS = ("%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y %H:%M:%S")
 _REPORT_DATE_FORMATS = ("%Y-%m-%d", "%m/%d/%Y")
-_LEADING_DATE = re.compile(r"\d{4}-\d\d-\d\d")
+_LEADING_DATE = re.compile(r"(\d{4}-\d\d-\d\d)|(\d\d/\d\d/\d{4})")
 
 
 def parse_report_datetime(value: str, posting_date: datetime,
@@ -1108,7 +1121,7 @@ def parse_report_datetime(value: str, posting_date: datetime,
     """
     text = (value or "").strip()
     if text:
-        if "T" in text or re.search(r"[+-]\d\d:?\d\d$|Z$", text):
+        if _ISO_TIMESTAMP.match(text):
             try:
                 return parse_qbo_datetime(text, zone), False
             except ValueError:
@@ -1126,7 +1139,8 @@ def parse_report_datetime(value: str, posting_date: datetime,
         leading = _LEADING_DATE.match(text)
         if leading:
             try:
-                return datetime.strptime(leading.group(), "%Y-%m-%d").replace(hour=ESTIMATED_HOUR), True
+                day = datetime.strptime(leading.group(), "%Y-%m-%d" if leading.group(1) else "%m/%d/%Y")
+                return day.replace(hour=ESTIMATED_HOUR), True
             except ValueError:
                 pass
     return posting_date.replace(hour=ESTIMATED_HOUR, minute=0, second=0, microsecond=0), True

@@ -664,6 +664,25 @@ def test_a_create_date_whose_offset_has_no_colon_is_read_on_every_python():
     assert qbo.parse_report_datetime("2026-09-02 @ 3:14 PM", posting) == (datetime(2026, 9, 2, 12), True)
 
 
+@pytest.mark.parametrize("value, expected", [
+    # every shape Intuit writes, read the same on Python 3.9 and 3.12
+    ("2026-09-02T15:14:27-0700", (datetime(2026, 9, 2, 15, 14, 27), False)),
+    ("2026-09-02T15:14:27-07:00", (datetime(2026, 9, 2, 15, 14, 27), False)),
+    ("2026-09-30T10:22:13.294-07:00", (datetime(2026, 9, 30, 10, 22, 13, 294000), False)),
+    ("2026-09-02T22:14:27Z", (datetime(2026, 9, 2, 22, 14, 27), False)),
+    ("2026-09-02 15:14:27-0700", (datetime(2026, 9, 2, 15, 14, 27), False)),
+    ("2025-10-09 01:02:03", (datetime(2025, 10, 9, 1, 2, 3), False)),
+    # a date and an offset but no time: 3.12's fromisoformat read the offset as 07:00
+    ("2026-09-02-0700", (datetime(2026, 9, 2, 12), True)),
+    ("2026-09-02+00:00", (datetime(2026, 9, 2, 12), True)),
+    # an unreadable value keeps the date it starts with in either of the report's date formats
+    ("09/02/2026 at 3 PM", (datetime(2026, 9, 2, 12), True)),
+    ("2026-13-45T99:99", (datetime(2026, 7, 16, 12), True)),
+])
+def test_report_timestamps_are_read_by_explicit_formats(value, expected):
+    assert qbo.parse_report_datetime(value, datetime(2026, 7, 16)) == expected
+
+
 def gl_report(create_date: str, first_row_stamp: str | None = None, amount: str = "54.55") -> dict:
     """A two-line Check in the report's shape, with the column keys in ColKey metadata; the
     first row in report order can carry a create date of its own."""
