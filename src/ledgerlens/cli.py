@@ -31,6 +31,7 @@ from .connectors.tokens import (
     TokenStoreError,
     default_token_dir,
     ensure_private_dir,
+    repository_root,
 )
 from .env import load_dotenv
 from .generate import generate_ledger
@@ -319,6 +320,9 @@ def cmd_qbo_auth(args: argparse.Namespace) -> int:
         except qbo.QboAuthError as exc:
             print(f"error: {exc}")
             return 1
+    if not qbo.REALM_ID.fullmatch(callback.realm_id):
+        print(f"error: the sign-in returned a realm id this tool cannot use: {callback.realm_id!r}")
+        return 1
     try:
         # Every check the save makes, before the single-use code is spent.
         store = TokenStore.for_realm(config.environment, callback.realm_id, args.token_dir)
@@ -350,15 +354,47 @@ SYNTHETIC_LEDGER = Path("data/ledger.csv")
 FIXTURE_REALM = "sandbox-fixtures"
 
 
+def _refuse_output(out: Path) -> str | None:
+    """Why a pull may not write ``out`` (and its sidecar), or None.
+
+    The sidecar is ``<stem>.identity.json``, so only a ``.csv`` name keeps it one-to-one
+    with its ledger (``data/ledger.txt`` would take over ``data/ledger.csv``'s). The
+    synthetic ledger is refused however it is spelled (case, ``..``, from another
+    directory), by file identity. And pulled books stay in the repository's ignored
+    ``data/`` directory, never anywhere git would pick them up.
+    """
+    if out.suffix.lower() != ".csv":
+        return (f"--out must be a .csv file: its identity file is {out.stem}.identity.json, "
+                "which a ledger with another suffix would share")
+    root = repository_root(out.parent if out.parent.exists() else Path.cwd())
+    synthetic = [Path.cwd() / SYNTHETIC_LEDGER] + ([root / SYNTHETIC_LEDGER] if root else [])
+    if out.exists() and any(s.exists() and out.samefile(s) for s in synthetic):
+        return (f"{out} is the synthetic ledger the eval and the README's numbers come from; "
+                "choose another --out (the default is data/qbo-ledger.csv)")
+    if root is not None:
+        data = root / "data"
+        inside = (out.parent.exists() and data.exists() and out.parent.samefile(data)) or \
+            out.resolve().parent == data.resolve()
+        if not inside:
+            return (f"{out} is inside the git checkout at {root} but not in its data/ directory, "
+                    "where git ignores ledgers; pulled books are never written where they could "
+                    "be committed")
+    return None
+
+
 def cmd_pull_qbo(args: argparse.Namespace) -> int:
     """Pull a period from QuickBooks Online (or replay fixtures) into a ledger CSV and sidecar."""
     if args.start > args.end:
         print(f"error: --start {args.start} is after --end {args.end}")
         return 2
     out = Path(args.out)
-    if out.resolve() == SYNTHETIC_LEDGER.resolve():
-        print(f"refused: {SYNTHETIC_LEDGER} is the synthetic ledger the eval and the README's "
-              "numbers come from; choose another --out (the default is data/qbo-ledger.csv)")
+    refusal = _refuse_output(out)
+    if refusal:
+        print(f"refused: {refusal}")
+        return 2
+    if args.realm_id and not qbo.REALM_ID.fullmatch(args.realm_id):
+        print(f"error: --realm-id {args.realm_id!r} is not letters, digits, '_' and '-' starting "
+              "with a letter or digit")
         return 2
     store = None
     if args.fixtures:
@@ -389,6 +425,10 @@ def cmd_pull_qbo(args: argparse.Namespace) -> int:
         if not realm:
             print("error: no realm id: set QBO_REALM_ID in .env, pass --realm-id, or run "
                   "`ledgerlens qbo-auth` first")
+            return 2
+        if not qbo.REALM_ID.fullmatch(realm):
+            print(f"error: realm id {realm!r} is not letters, digits, '_' and '-' starting with a "
+                  "letter or digit")
             return 2
         config = config.with_realm(realm)
         try:

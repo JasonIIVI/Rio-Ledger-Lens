@@ -69,6 +69,9 @@ REQUEST_TIMEOUT = 30.0
 USER_AGENT = "ledgerlens-qbo-connector"
 
 _COMPANY_PATH = re.compile(r"^/v3/company/[^/]+")
+#: A realm id every part of the tool accepts: the token file name, the URL, and the
+#: ``qbo:<realm>`` identity ingest reads back (Intuit's are decimal strings).
+REALM_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
 _FORM = "application/x-www-form-urlencoded"
 _LOOPBACK_HOSTS = ("localhost", "127.0.0.1")
 

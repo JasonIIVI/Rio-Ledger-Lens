@@ -609,7 +609,9 @@ def test_pull_qbo_from_fixtures_writes_a_ledger_every_command_reads(qbo_env, cap
     (["--record", "rec"], {"QBO_ENVIRONMENT": "production", "QBO_REALM_ID": "1"}, "only sandbox data"),
     ([], {}, "no realm id"),
     ([], {"QBO_REALM_ID": "4620816365"}, "no tokens for sandbox company 4620816365.*qbo-auth"),
-    (["--out", "data/ledger.csv"], {}, "synthetic ledger"),
+    (["--out", "data/ledger.txt"], {}, "must be a .csv file"),
+    (["--realm-id", "_x"], {}, "not letters, digits"),
+    ([], {"QBO_REALM_ID": "12 34"}, "not letters, digits"),
 ])
 def test_pull_qbo_refuses_what_it_cannot_do_with_a_message(qbo_env, capsys, argv, env, expected):
     if env is not None:
@@ -774,3 +776,41 @@ def test_nothing_is_spent_when_the_tokens_could_not_be_saved(qbo_env, capsys, mo
     assert main(["pull-qbo", "--start", "2025-10-01", "--end", "2025-12-31",
                  "--record", str(qbo_env.root / "rec")]) == 2
     assert "is a file" in capsys.readouterr().out and sent == []
+
+
+def _replay_to(out, *extra):
+    return main(["pull-qbo", "--start", "2025-10-01", "--end", "2025-12-31",
+                 "--fixtures", str(QBO_FIXTURES / "pull"), "--out", str(out), *extra])
+
+
+def test_the_synthetic_ledger_and_its_identity_are_refused_however_spelled(qbo_env, capsys, monkeypatch):
+    (qbo_env.root / ".git").mkdir()  # the working directory is a checkout, as in real use
+    data = qbo_env.root / "data"
+    data.mkdir()
+    synthetic = data / "ledger.csv"
+    synthetic.write_text("the synthetic ledger\\n")
+    spellings = ["data/ledger.csv", "./data/../data/ledger.csv"]
+    if (qbo_env.root / "DATA" / "LEDGER.CSV").exists():  # a case-insensitive disk, as on macOS
+        spellings.append("data/LEDGER.csv")
+    for spelled in spellings:
+        assert _replay_to(spelled) == 2, spelled
+        assert "synthetic ledger" in capsys.readouterr().out
+    (qbo_env.root / "src").mkdir()
+    monkeypatch.chdir(qbo_env.root / "src")
+    assert _replay_to("../data/ledger.csv") == 2  # from another directory of the checkout
+    monkeypatch.chdir(qbo_env.root)
+    assert _replay_to("data/ledger.txt") == 2  # would take over data/ledger.identity.json
+    assert synthetic.read_text() == "the synthetic ledger\\n"
+    assert not (data / "ledger.identity.json").exists()
+
+
+def test_pulled_books_stay_in_the_checkouts_ignored_data_directory(qbo_env, capsys):
+    repo = qbo_env.root / "repo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "tests").mkdir()
+    assert _replay_to(repo / "tests" / "q.csv") == 2
+    assert "not in its data/ directory" in capsys.readouterr().out
+    assert _replay_to(repo / "q.csv") == 2
+    assert _replay_to(repo / "data" / "q.csv") == 0
+    assert (repo / "data" / "q.identity.json").exists()
+    assert _replay_to(qbo_env.root / "elsewhere" / "q.csv") == 0  # outside any checkout
