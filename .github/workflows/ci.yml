@@ -51,7 +51,7 @@ jobs:
         run: |
           set -euo pipefail
           export LC_ALL=C   # match bytes: grep in a UTF-8 locale skips lines holding invalid UTF-8
-          pattern='\.csv$|\.xlsx$|\.parquet$|\.sqlite$|^data/|^\.env$|\.sqlite3$|\.db$|(^|/)\.env(\..*)?$|(^|/)secrets/'
+          pattern='\.csv$|\.xlsx$|\.parquet$|\.sqlite$|^data/|^\.env$|\.sqlite3$|\.db$|(^|/)\.env(\..*)?$|(^|/)secrets/|qbo-(sandbox|production)-[^/]*\.json$'
           tmp=$(mktemp -d)
 
           # On its own line so a git failure fails the step instead of reading as "no match".

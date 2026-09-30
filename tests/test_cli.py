@@ -112,6 +112,7 @@ def test_narrate_without_a_key_explains_and_fails(tmp_path, capsys, monkeypatch)
 
 def test_narrate_caches_narratives_and_moves_on_next_time(tmp_path, capsys, monkeypatch, llm):
     from ledgerlens import cli
+    from ledgerlens.ingest import ledger_identity, load_csv
     from ledgerlens.narrate import Narrator
     from ledgerlens.review import ReviewStore
 
@@ -123,27 +124,29 @@ def test_narrate_caches_narratives_and_moves_on_next_time(tmp_path, capsys, monk
     monkeypatch.setattr(cli, "Narrator", lambda **kw: Narrator(client=client, **kw))
     db = tmp_path / "review.sqlite"
     ledger = str(tmp_path / "ledger.csv")
+    ident = ledger_identity(load_csv(ledger), ledger)
 
     assert main(["narrate", ledger, "--db", str(db), "--top", "4", "--no-model"]) == 0
     out = capsys.readouterr().out
     assert "Narrated 4/4" in out
     assert "read from cache" in out
-    assert len(ReviewStore(db).narrative_ids()) == 4
+    assert len(ReviewStore(db, ident).narrative_ids()) == 4
     assert client.calls[0]["output_config"]["effort"] == "medium"
 
     # Cached entries are skipped, so the next run narrates the next four down.
     assert main(["narrate", ledger, "--db", str(db), "--top", "4", "--no-model"]) == 0
     assert "Skipped 4" in capsys.readouterr().out
-    assert len(ReviewStore(db).narrative_ids()) == 8
+    assert len(ReviewStore(db, ident).narrative_ids()) == 8
     assert len(client.calls) == 8
 
     # --force redoes the top four instead of moving on.
     assert main(["narrate", ledger, "--db", str(db), "--top", "4", "--no-model", "--force"]) == 0
-    assert len(ReviewStore(db).narrative_ids()) == 8
+    assert len(ReviewStore(db, ident).narrative_ids()) == 8
     assert len(client.calls) == 12
 
 
 def test_report_attaches_an_existing_review_db_only(tmp_path, capsys):
+    from ledgerlens.ingest import ledger_identity, load_csv
     from ledgerlens.review import Decision, ReviewStore
 
     main(["generate", "--start", "2024-01-01", "--end", "2024-06-30",
@@ -155,11 +158,25 @@ def test_report_attaches_an_existing_review_db_only(tmp_path, capsys):
     assert "without review columns" in capsys.readouterr().out
     assert not missing.exists()  # a report must not create a review database
 
-    db = tmp_path / "review.sqlite"
-    ReviewStore(db).record(Decision("JE-2024-000001", "dismiss", "ana"))
+    db, csv = tmp_path / "review.sqlite", str(tmp_path / "ledger.csv")
+    ident = ledger_identity(load_csv(csv), csv)
+    ReviewStore(db, ident).record(Decision("JE-2024-000001", "dismiss", "ana"))
+    other = ReviewStore(db, "csv:" + "b" * 64)  # another ledger's decisions, same file
+    for entry in ("JE-2024-000001", "JE-2024-000002"):
+        other.record(Decision(entry, "escalate", "bo"))
     code = main(["report", str(tmp_path / "ledger.csv"), "--no-model", "--db", str(db),
                  "--out", str(tmp_path / "b.xlsx")])
     assert code == 0
+    # The workpaper's review section is this ledger's, and the other ledger is only counted.
+    import openpyxl
+
+    sheet = openpyxl.load_workbook(tmp_path / "b.xlsx")["Summary"]
+    summary = {row[0].value: row[1].value for row in sheet.iter_rows() if row[0].value}
+    assert summary["Review rows for ledger"] == ident
+    assert summary["Decisions recorded"] == 1
+    assert summary["  dismiss"] == 1 and "  escalate" not in summary
+    assert summary["Other ledgers in this database (not shown)"] == (
+        "1 ledger(s): 0 narrated, 2 decided entries")
 
 
 def test_eval_narratives_select_writes_a_skeleton_and_will_not_clobber_it(tmp_path, capsys):
@@ -286,6 +303,70 @@ def test_eval_narratives_keeps_other_ledgers_out_of_the_committed_paths(tmp_path
     assert "not the default synthetic ledger" in (tmp_path / "r.md").read_text()
 
 
+def test_eval_narratives_names_a_missing_or_damaged_case_file(tmp_path, capsys):
+    """Run from a directory that is not the checkout, the default case path is missing: a
+    message and exit 2, not a traceback; a file that is not a case set likewise."""
+    main(["generate", "--start", "2024-01-01", "--end", "2024-06-30",
+          "--out-dir", str(tmp_path)])
+    capsys.readouterr()
+    common = ["eval-narratives", str(tmp_path / "ledger.csv"),
+              "--runs-dir", str(tmp_path / "runs"), "--out", str(tmp_path / "report.md")]
+    assert main(common + ["--cases", str(tmp_path / "missing.json")]) == 2
+    assert "case file not found" in capsys.readouterr().out
+    (tmp_path / "damaged.json").write_text("{not json")
+    assert main(common + ["--cases", str(tmp_path / "damaged.json")]) == 2
+    assert "damaged.json" in capsys.readouterr().out
+
+    # Every case the loader refuses is a message too, whatever the reason.
+    good = {"entry_id": "JE-2024-000001", "archetype": "a", "tests_fired": "JET-01",
+            "why_chosen": "w"}
+    refused = {
+        "a pattern that is not a regex": {"cases": [{**good, "must_mention": ["1,?322("]}]},
+        "a misspelt key": {"cases": [{**good, "overides": {}}]},
+        "a missing field": {"cases": [{"entry_id": "JE-2024-000001"}]},
+        "no case list": {"about": "x"},
+        "a list, not an object": [good],
+        "overrides that are not an object": {"cases": [{**good, "overrides": 5}]},
+        "overrides that are null": {"cases": [{**good, "overrides": None}]},
+        "a pattern list that is a string": {"cases": [{**good, "must_mention": "1,322"}]},
+    }
+    for why, payload in refused.items():
+        (tmp_path / "refused.json").write_text(json.dumps(payload))
+        assert main(common + ["--cases", str(tmp_path / "refused.json")]) == 2, why
+        out = capsys.readouterr().out
+        assert out.startswith("error:") and "refused.json" in out, why
+    assert main(common + ["--cases", str(tmp_path)]) == 2  # a directory
+    assert capsys.readouterr().out.startswith("error:")
+
+
+def test_eval_narratives_checks_override_lines_before_narrating_anything(
+        tmp_path, capsys, monkeypatch, llm):
+    """An override on a line the entry lacks is a stale case set, not a traceback mid-run."""
+    from ledgerlens import cli
+    from ledgerlens.ingest import load_csv
+    from ledgerlens.narrate import Narrator
+
+    monkeypatch.chdir(tmp_path)
+    main(["generate", "--start", "2024-01-01", "--end", "2024-06-30", "--out-dir", str(tmp_path)])
+    ledger, labels = str(tmp_path / "ledger.csv"), str(tmp_path / "labels.csv")
+    cases = tmp_path / "cases.json"
+    main(["eval-narratives", ledger, "--select", "--labels", labels, "--cases", str(cases)])
+    payload = json.loads(cases.read_text())
+    last = payload["cases"][-1]
+    beyond = int(load_csv(ledger).query("entry_id == @last['entry_id']")["line_no"].max()) + 1
+    last["overrides"] = {"lines": {str(beyond): {"description": "an extra line"}}}
+    cases.write_text(json.dumps(payload))
+    client = llm.client()
+    monkeypatch.setattr(cli, "Narrator", lambda **kw: Narrator(client=client, **kw))
+    capsys.readouterr()
+
+    assert main(["eval-narratives", ledger, "--cases", str(cases), "--out", str(tmp_path / "r.md"),
+                 "--runs-dir", str(tmp_path / "runs")]) == 2
+    out = capsys.readouterr().out
+    assert f"{last['entry_id']}: no line {beyond} to override" in out
+    assert client.calls == [] and not (tmp_path / "runs" / "results.jsonl").exists()
+
+
 def test_eval_narratives_rejects_a_limit_below_one(capsys):
     """--limit 0 must not mean "every case", which is a paid run."""
     with pytest.raises(SystemExit) as refused:
@@ -356,7 +437,7 @@ def test_narrate_and_report_refuse_a_database_they_cannot_open_without_a_traceba
     main(["generate", "--start", "2024-01-01", "--end", "2024-03-31", "--out-dir", str(tmp_path)])
     ledger, out = str(tmp_path / "ledger.csv"), str(tmp_path / "w.xlsx")
     future = tmp_path / "future.sqlite"
-    ReviewStore(future)
+    ReviewStore(future, "csv:" + "a" * 64)
     with sqlite3.connect(str(future)) as raw:
         raw.execute("PRAGMA user_version = 99")
     capsys.readouterr()
@@ -366,9 +447,112 @@ def test_narrate_and_report_refuse_a_database_they_cannot_open_without_a_traceba
     # narrate opens the store before it builds an API client, so this needs no key.
     assert main(["narrate", ledger, "--no-model", "--db", str(future)]) == 2
     assert "newer LedgerLens" in capsys.readouterr().out
+    assert main(["adopt-legacy", ledger, "--db", str(future)]) == 2
+    assert "newer LedgerLens" in capsys.readouterr().out
 
     notes = tmp_path / "notes.sqlite"
     notes.write_text("not a database\n")
     assert main(["report", ledger, "--no-model", "--db", str(notes), "--out", out]) == 2
     assert "not a SQLite database" in capsys.readouterr().out
     assert notes.read_text() == "not a database\n"
+
+
+def test_narrate_files_each_ledger_under_its_own_identity(tmp_path, capsys, monkeypatch, llm):
+    """Two ledgers that share entry ids share one database and never each other's notes."""
+    from ledgerlens import cli
+    from ledgerlens.ingest import ledger_identity, load_csv
+    from ledgerlens.narrate import Narrator
+    from ledgerlens.review import ReviewStore
+
+    monkeypatch.chdir(tmp_path)
+    client = llm.client()
+    monkeypatch.setattr(cli, "Narrator", lambda **kw: Narrator(client=client, **kw))
+    db = tmp_path / "review.sqlite"
+    ledgers = []
+    for end in ("2024-03-31", "2024-06-30"):
+        out = tmp_path / end
+        main(["generate", "--start", "2024-01-01", "--end", end, "--out-dir", str(out)])
+        ledgers.append(str(out / "ledger.csv"))
+    capsys.readouterr()
+    for ledger in ledgers:
+        assert main(["narrate", ledger, "--db", str(db), "--top", "4", "--no-model"]) == 0
+        out = capsys.readouterr().out
+        assert "Skipped" not in out  # the second ledger's run starts from nothing of its own
+    identities = [ledger_identity(load_csv(path), path) for path in ledgers]
+    assert identities[0] != identities[1]
+    for ident in identities:
+        assert len(ReviewStore(db, ident).narrative_ids()) == 4
+    assert ReviewStore(db, identities[0]).ledgers()["ledger_id"].tolist() == sorted(identities)
+    assert len(client.calls) == 8
+
+
+def test_narrate_refuses_to_ignore_legacy_rows_unless_told_to(tmp_path, capsys, monkeypatch, llm):
+    """Rows from before ledgers were keyed are adopted or set aside on purpose, never bought again."""
+    import sqlite3
+
+    from ledgerlens import cli
+    from ledgerlens.ingest import ledger_identity, load_csv
+    from ledgerlens.narrate import Narrator
+    from ledgerlens.review import ReviewStore
+
+    monkeypatch.chdir(tmp_path)
+    main(["generate", "--start", "2024-01-01", "--end", "2024-03-31", "--out-dir", str(tmp_path)])
+    ledger, db = str(tmp_path / "ledger.csv"), tmp_path / "review.sqlite"
+    ReviewStore(db, ledger_identity(load_csv(ledger), ledger))
+    with sqlite3.connect(str(db)) as raw:  # a note from before ledgers were keyed
+        raw.execute("INSERT INTO narratives (entry_id, summary, generated_at, ledger_id) VALUES "
+                    "('JE-2024-000001', 'old', '2026-09-23T00:00:00+00:00', 'legacy')")
+    client = llm.client()
+    monkeypatch.setattr(cli, "Narrator", lambda **kw: Narrator(client=client, **kw))
+    capsys.readouterr()
+
+    # The refusal comes before anything is narrated: asked for four notes, it buys none.
+    assert main(["narrate", ledger, "--db", str(db), "--top", "4", "--no-model"]) == 2
+    out = capsys.readouterr().out
+    assert "adopt-legacy" in out and client.calls == []
+    assert ReviewStore(db, ledger_identity(load_csv(ledger), ledger)).narrative_ids() == set()
+    fresh = tmp_path / "fresh.sqlite"
+    ReviewStore(fresh, ledger_identity(load_csv(ledger), ledger))
+    assert main(["adopt-legacy", ledger, "--db", str(fresh)]) == 0  # no legacy rows at all
+    assert "Nothing to adopt" in capsys.readouterr().out
+    assert main(["adopt-legacy", ledger, "--db", str(tmp_path / "absent.sqlite")]) == 2
+    assert main(["adopt-legacy", ledger, "--db", str(db)]) == 0
+    assert "Adopted 1 narrative(s) and 0 decision(s)" in capsys.readouterr().out
+    assert main(["adopt-legacy", ledger, "--db", str(db)]) == 2
+    assert "already holds" in capsys.readouterr().out
+    assert main(["narrate", ledger, "--db", str(db), "--top", "0", "--no-model"]) == 0
+    assert "Skipped 1" in capsys.readouterr().out
+
+    # Rows for entries this ledger does not have are refused; the ledger may
+    # then start from scratch when told so.
+    other = tmp_path / "other.sqlite"
+    ReviewStore(other, ledger_identity(load_csv(ledger), ledger))
+    with sqlite3.connect(str(other)) as raw:
+        raw.execute("INSERT INTO narratives (entry_id, summary, generated_at, ledger_id) VALUES "
+                    "('JE-9999-000001', 'stray', '2026-09-23T00:00:00+00:00', 'legacy')")
+    assert main(["adopt-legacy", ledger, "--db", str(other)]) == 2
+    assert "not in this ledger" in capsys.readouterr().out
+    assert main(["narrate", ledger, "--db", str(other), "--top", "1", "--no-model",
+                 "--ignore-legacy"]) == 0
+    assert len(client.calls) == 1  # told to start from scratch, it narrates
+    assert len(ReviewStore(other, ledger_identity(load_csv(ledger), ledger)).narrative_ids()) == 1
+
+
+@pytest.mark.parametrize("payload", ['{"ledger_id": "qbo 123"}', ""])
+def test_a_malformed_identity_sidecar_stops_every_command_with_a_message(
+        tmp_path, capsys, monkeypatch, payload):
+    """A sidecar that names no ledger is never guessed around, and never a traceback."""
+    from ledgerlens.review import ReviewStore
+
+    monkeypatch.chdir(tmp_path)
+    main(["generate", "--start", "2024-01-01", "--end", "2024-03-31", "--out-dir", str(tmp_path)])
+    ledger, db = str(tmp_path / "ledger.csv"), tmp_path / "review.sqlite"
+    ReviewStore(db, "csv:" + "a" * 64)
+    (tmp_path / "ledger.identity.json").write_text(payload)
+    capsys.readouterr()
+    for argv in (["narrate", ledger, "--no-model", "--top", "0", "--db", str(db)],
+                 ["report", ledger, "--no-model", "--db", str(db), "--out", str(tmp_path / "w.xlsx")],
+                 ["adopt-legacy", ledger, "--db", str(db)]):
+        assert main(argv) == 2, argv[0]
+        out = capsys.readouterr().out
+        assert "error:" in out and "ledger.identity.json" in out, argv[0]

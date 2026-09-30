@@ -29,6 +29,7 @@ Three design choices worth stating:
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterable
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -52,6 +53,11 @@ REVIEW_STATE_COLUMNS = (
     "narrative_seen_by_reviewer",
 )
 
+#: Rows written before review data was keyed by ledger (schema < 4) sit under
+#: this id after migration. A store is never bound to it; adopt_legacy()
+#: copies such rows into the ledger they were written for.
+LEGACY_LEDGER_ID = "legacy"
+
 NARRATIVES_TABLE = """
 CREATE TABLE IF NOT EXISTS narratives (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -62,16 +68,18 @@ CREATE TABLE IF NOT EXISTS narratives (
     suggested_control   TEXT,
     confidence          TEXT,
     model               TEXT,
-    generated_at        TEXT NOT NULL
+    generated_at        TEXT NOT NULL,
+    ledger_id           TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS ix_narratives_entry ON narratives(entry_id);
+CREATE INDEX IF NOT EXISTS ix_narratives_ledger_entry ON narratives(ledger_id, entry_id);
 """
 
 #: The schema this code writes, stamped in ``PRAGMA user_version``. Each step
 #: in :data:`_MIGRATIONS` moves a file up by one. 1 = v0.3.0 (narratives keyed
 #: by entry), 2 = versioned narratives and narrative_id on decisions, 3 = the
-#: append-only triggers including the REPLACE guards.
-SCHEMA_VERSION = 3
+#: append-only triggers including the REPLACE guards, 4 = ledger_id on both
+#: tables (rows from before it sit under :data:`LEGACY_LEDGER_ID`).
+SCHEMA_VERSION = 4
 
 TABLES = """
 CREATE TABLE IF NOT EXISTS decisions (
@@ -83,10 +91,11 @@ CREATE TABLE IF NOT EXISTS decisions (
     risk_score   REAL,
     model_score  REAL,
     narrative_id INTEGER REFERENCES narratives(id),
-    decided_at   TEXT    NOT NULL
+    decided_at   TEXT    NOT NULL,
+    ledger_id    TEXT    NOT NULL
 );
-CREATE INDEX IF NOT EXISTS ix_decisions_entry ON decisions(entry_id);
-CREATE INDEX IF NOT EXISTS ix_decisions_time  ON decisions(decided_at);
+CREATE INDEX IF NOT EXISTS ix_decisions_time         ON decisions(decided_at);
+CREATE INDEX IF NOT EXISTS ix_decisions_ledger_entry ON decisions(ledger_id, entry_id);
 """ + NARRATIVES_TABLE
 
 TRIGGERS = """
@@ -193,10 +202,13 @@ def _schema_version(conn: sqlite3.Connection, path: Path) -> tuple[int, bool]:
         return 1, False
     if "decisions_no_replace" not in _triggers(conn):
         return 2, False
-    # Stamping began at 3, so an unstamped file is never newer than that. A
-    # literal on purpose: returning SCHEMA_VERSION here would skip every step
-    # above 3 the day the constant moves.
-    return 3, False
+    if "ledger_id" not in decisions:
+        return 3, False
+    # The newest shape this ladder recognises, as a literal: returning
+    # SCHEMA_VERSION here would skip every later step the day the constant
+    # moves. (Stamping began at 3, so an unstamped file is normally 3 or
+    # older; a v4 file with its stamp cleared walks nothing it already has.)
+    return 4, False
 
 
 def _refuse_newer(version: int, path: Path, verb: str) -> None:
@@ -222,8 +234,10 @@ def _require_current_schema(conn: sqlite3.Connection, path: Path) -> None:
     if version < SCHEMA_VERSION:
         raise RuntimeError(
             f"{path} is not a current review database (no tables, or an older schema). "
-            "Open it once with the dashboard or `ledgerlens narrate` to create or migrate it; "
-            "a read-only connection will not."
+            "An empty file gets its tables from `ledgerlens narrate` or the dashboard; an older "
+            f"one should be backed up, then migrated with `ledgerlens adopt-legacy LEDGER --db "
+            f"{path}`, which also files its rows from before ledgers were keyed under that ledger "
+            "(no API calls). A read-only connection will not migrate it."
         )
     missing = sorted(set(GUARDS) - _triggers(conn))
     if missing:
@@ -266,9 +280,32 @@ def _v2_to_v3(conn: sqlite3.Connection) -> str:
     return _TRIGGERS_V3
 
 
+def _v3_to_v4(conn: sqlite3.Connection) -> str:
+    """Key both tables by ledger.
+
+    ADD COLUMN is the only route: the update triggers refuse an UPDATE, and a
+    rebuild would renumber narratives that decisions point at. So a migrated
+    file carries DEFAULT 'legacy' where a fresh file has no default; the
+    default is what files the old rows, and nothing this version writes
+    relies on it (a store always names its ledger). The single-column
+    indexes give way to the composite ones a fresh file has.
+    """
+    script = ""
+    for table in ("decisions", "narratives"):
+        if "ledger_id" not in _columns(conn, table):
+            script += (f"ALTER TABLE {table} ADD COLUMN ledger_id TEXT NOT NULL "
+                       f"DEFAULT '{LEGACY_LEDGER_ID}';\n")
+    return script + (
+        "DROP INDEX IF EXISTS ix_decisions_entry;\n"
+        "DROP INDEX IF EXISTS ix_narratives_entry;\n"
+        "CREATE INDEX IF NOT EXISTS ix_decisions_ledger_entry ON decisions(ledger_id, entry_id);\n"
+        "CREATE INDEX IF NOT EXISTS ix_narratives_ledger_entry ON narratives(ledger_id, entry_id);\n"
+    )
+
+
 #: Each step takes a file from version n to n + 1, as one transaction that
 #: also writes the new stamp, so a crash mid-way leaves the file where it was.
-_MIGRATIONS = {1: _v1_to_v2, 2: _v2_to_v3}
+_MIGRATIONS = {1: _v1_to_v2, 2: _v2_to_v3, 3: _v3_to_v4}
 
 
 def _migrate(conn: sqlite3.Connection, path: Path) -> None:
@@ -328,11 +365,34 @@ def _narrative_dict(row: sqlite3.Row) -> dict:
     return data
 
 
-class ReviewStore:
-    """Append-only store of reviewer decisions and generated narratives."""
+def _check_ledger_id(ledger_id) -> str:
+    """The identity a store is bound to: ``csv:<digest>`` or ``qbo:<realm>``, never blank."""
+    if not isinstance(ledger_id, str) or not ledger_id or any(c.isspace() for c in ledger_id):
+        raise ValueError(
+            f"a store is bound to one ledger by its identity string, got {ledger_id!r} "
+            "(see ingest.ledger_identity)"
+        )
+    if ledger_id == LEGACY_LEDGER_ID:
+        raise ValueError(
+            "a store is never bound to 'legacy': those are rows from before review data was "
+            "keyed by ledger; adopt_legacy() files them under the ledger they were written for"
+        )
+    return ledger_id
 
-    def __init__(self, path: str | Path = DEFAULT_DB, *, _read_only: bool = False) -> None:
+
+class ReviewStore:
+    """Append-only store of reviewer decisions and generated narratives, for one ledger.
+
+    Every read and write is scoped to the ledger the store was bound to at
+    open (``ledger_id``): two ledgers can share entry ids (the generator's
+    are ``JE-<year>-<seq>`` whatever the seed), and a note or decision from
+    one must never show beside the other's entry. :meth:`ledgers` is the one
+    view across ledgers.
+    """
+
+    def __init__(self, path: str | Path, ledger_id: str, *, _read_only: bool = False) -> None:
         self.path = Path(path)
+        self.ledger_id = _check_ledger_id(ledger_id)
         self.is_read_only = _read_only
         if _read_only:
             # No mkdir and no DDL: a reader never creates, migrates or touches the file.
@@ -353,8 +413,8 @@ class ReviewStore:
             raise RuntimeError(f"{self.path} cannot be opened as a SQLite database ({exc})") from exc
 
     @classmethod
-    def read_only(cls, path: str | Path) -> ReviewStore:
-        """Open an existing database for reading only.
+    def read_only(cls, path: str | Path, ledger_id: str) -> ReviewStore:
+        """Open an existing database for reading only, bound to one ledger.
 
         SQLite itself refuses every write on this connection (URI ``mode=ro``)
         and no schema statement runs, so the file is never created, migrated
@@ -362,7 +422,7 @@ class ReviewStore:
         read-only is then a property of the connection, not of which methods
         the tools happen to call.
         """
-        return cls(path, _read_only=True)
+        return cls(path, ledger_id, _read_only=True)
 
     def _connect(self) -> sqlite3.Connection:
         if self.is_read_only:
@@ -389,26 +449,30 @@ class ReviewStore:
 
         with closing(self._connect()) as conn:
             if decision.narrative_id is not None:
-                # The recorded narrative must be one written for this entry; a
-                # decision that pointed at another entry's note would be worse
-                # than one that recorded nothing.
+                # The recorded narrative must be one written for this entry in
+                # this ledger; a decision that pointed at another entry's note,
+                # or another ledger's, would be worse than one that recorded
+                # nothing.
                 seen = conn.execute(
-                    "SELECT entry_id FROM narratives WHERE id = ?", (decision.narrative_id,)
+                    "SELECT entry_id, ledger_id FROM narratives WHERE id = ?",
+                    (decision.narrative_id,),
                 ).fetchone()
-                if seen is None or seen["entry_id"] != decision.entry_id:
+                if seen is None or (seen["entry_id"], seen["ledger_id"]) != (
+                        decision.entry_id, self.ledger_id):
                     raise ValueError(
                         f"narrative {decision.narrative_id} is not a narrative for "
-                        f"entry {decision.entry_id}"
+                        f"entry {decision.entry_id} in ledger {self.ledger_id}"
                     )
             cur = conn.execute(
                 "INSERT INTO decisions "
                 "(entry_id, decision, reviewer, note, risk_score, model_score, narrative_id, "
-                " decided_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                " decided_at, ledger_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     decision.entry_id, decision.decision, decision.reviewer.strip(),
                     decision.note, decision.risk_score, decision.model_score,
                     decision.narrative_id,
                     datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    self.ledger_id,
                 ),
             )
             conn.commit()
@@ -418,8 +482,8 @@ class ReviewStore:
         """Every decision ever recorded against one entry, oldest first."""
         with closing(self._connect()) as conn:
             return pd.read_sql_query(
-                "SELECT * FROM decisions WHERE entry_id = ? ORDER BY id",
-                conn, params=(entry_id,),
+                "SELECT * FROM decisions WHERE ledger_id = ? AND entry_id = ? ORDER BY id",
+                conn, params=(self.ledger_id, entry_id),
             )
 
     def current(self) -> pd.DataFrame:
@@ -427,15 +491,18 @@ class ReviewStore:
         with closing(self._connect()) as conn:
             return pd.read_sql_query(
                 "SELECT d.* FROM decisions d "
-                "JOIN (SELECT entry_id, MAX(id) AS id FROM decisions GROUP BY entry_id) last "
+                "JOIN (SELECT entry_id, MAX(id) AS id FROM decisions WHERE ledger_id = ? "
+                "      GROUP BY entry_id) last "
                 "  ON d.id = last.id "
                 "ORDER BY d.decided_at DESC",
-                conn,
+                conn, params=(self.ledger_id,),
             )
 
     def decided_ids(self) -> set:
         with closing(self._connect()) as conn:
-            rows = conn.execute("SELECT DISTINCT entry_id FROM decisions").fetchall()
+            rows = conn.execute(
+                "SELECT DISTINCT entry_id FROM decisions WHERE ledger_id = ?", (self.ledger_id,)
+            ).fetchall()
         return {r["entry_id"] for r in rows}
 
     def summary(self) -> pd.DataFrame:
@@ -466,7 +533,7 @@ class ReviewStore:
             cur = conn.execute(
                 "INSERT INTO narratives "
                 "(entry_id, summary, why_flagged, evidence_to_request, suggested_control, "
-                " confidence, model, generated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                " confidence, model, generated_at, ledger_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     entry_id,
                     narrative.get("summary", ""),
@@ -476,6 +543,7 @@ class ReviewStore:
                     narrative.get("confidence", ""),
                     model,
                     datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    self.ledger_id,
                 ),
             )
             conn.commit()
@@ -485,13 +553,16 @@ class ReviewStore:
         """The latest narrative written for an entry, with its ``id``, or None."""
         with closing(self._connect()) as conn:
             row = conn.execute(
-                "SELECT * FROM narratives WHERE entry_id = ? ORDER BY id DESC LIMIT 1",
-                (entry_id,),
+                "SELECT * FROM narratives WHERE ledger_id = ? AND entry_id = ? "
+                "ORDER BY id DESC LIMIT 1",
+                (self.ledger_id, entry_id),
             ).fetchone()
         return None if row is None else _narrative_dict(row)
 
     def narrative_by_id(self, narrative_id: int) -> dict | None:
-        """One specific version - the one a decision recorded, typically."""
+        """One specific version - the one a decision recorded, typically.
+
+        By id, across ledgers: the dict says which ledger it belongs to."""
         with closing(self._connect()) as conn:
             row = conn.execute(
                 "SELECT * FROM narratives WHERE id = ?", (int(narrative_id),)
@@ -502,15 +573,16 @@ class ReviewStore:
         """Every version written for one entry, oldest first."""
         with closing(self._connect()) as conn:
             return pd.read_sql_query(
-                "SELECT * FROM narratives WHERE entry_id = ? ORDER BY id",
-                conn, params=(entry_id,),
+                "SELECT * FROM narratives WHERE ledger_id = ? AND entry_id = ? ORDER BY id",
+                conn, params=(self.ledger_id, entry_id),
             )
 
     def narrative_versions(self, entry_id: str) -> list[dict]:
         """The same history as dicts, shaped like :meth:`get_narrative` (evidence as a list)."""
         with closing(self._connect()) as conn:
             rows = conn.execute(
-                "SELECT * FROM narratives WHERE entry_id = ? ORDER BY id", (entry_id,)
+                "SELECT * FROM narratives WHERE ledger_id = ? AND entry_id = ? ORDER BY id",
+                (self.ledger_id, entry_id),
             ).fetchall()
         return [_narrative_dict(row) for row in rows]
 
@@ -524,18 +596,126 @@ class ReviewStore:
             if latest_only:
                 return pd.read_sql_query(
                     "SELECT n.* FROM narratives n "
-                    "JOIN (SELECT entry_id, MAX(id) AS id FROM narratives GROUP BY entry_id) "
-                    "  last ON n.id = last.id "
+                    "JOIN (SELECT entry_id, MAX(id) AS id FROM narratives WHERE ledger_id = ? "
+                    "      GROUP BY entry_id) last ON n.id = last.id "
                     "ORDER BY n.entry_id",
-                    conn,
+                    conn, params=(self.ledger_id,),
                 )
-            return pd.read_sql_query("SELECT * FROM narratives ORDER BY entry_id, id", conn)
+            return pd.read_sql_query(
+                "SELECT * FROM narratives WHERE ledger_id = ? ORDER BY entry_id, id",
+                conn, params=(self.ledger_id,),
+            )
 
     def narrative_ids(self) -> set:
         """Entries that have at least one narrative."""
         with closing(self._connect()) as conn:
-            rows = conn.execute("SELECT DISTINCT entry_id FROM narratives").fetchall()
+            rows = conn.execute(
+                "SELECT DISTINCT entry_id FROM narratives WHERE ledger_id = ?", (self.ledger_id,)
+            ).fetchall()
         return {r["entry_id"] for r in rows}
+
+    # --- across ledgers ---------------------------------------------------
+
+    def ledgers(self) -> pd.DataFrame:
+        """Every ledger with rows in this file, the bound one included.
+
+        Columns ``ledger_id, narratives, decisions``: entries with at least
+        one narrative or decision, which is how :meth:`narrative_ids` and
+        :meth:`decided_ids` count. With :meth:`other_ledgers`, the counts
+        across ledgers; :meth:`narrative_by_id` looks a note up by id across
+        them (its dict says which ledger), :meth:`adopt_legacy` copies legacy
+        rows in, and every other reader is filtered by the bound ledger.
+        """
+        with closing(self._connect()) as conn:
+            return pd.read_sql_query(
+                "SELECT ledger_id, "
+                "       COUNT(DISTINCT CASE WHEN kind = 'n' THEN entry_id END) AS narratives, "
+                "       COUNT(DISTINCT CASE WHEN kind = 'd' THEN entry_id END) AS decisions "
+                "FROM (SELECT ledger_id, entry_id, 'n' AS kind FROM narratives "
+                "      UNION ALL "
+                "      SELECT ledger_id, entry_id, 'd' FROM decisions) "
+                "GROUP BY ledger_id ORDER BY ledger_id",
+                conn,
+            )
+
+    def other_ledgers(self) -> pd.DataFrame:
+        """:meth:`ledgers` without the bound ledger: what this file holds that is not shown."""
+        ledgers = self.ledgers()
+        return ledgers[ledgers["ledger_id"] != self.ledger_id].reset_index(drop=True)
+
+    def adopt_legacy(self, entry_ids: Iterable[str] | None = None) -> dict:
+        """Copy every 'legacy' row into the bound ledger, as new rows.
+
+        Rows from before schema 4 do not say which ledger they were written
+        for; the person running this does. The originals stay (append-only:
+        the copies are the record of the adoption). Narratives are copied
+        first, so each copied decision's ``narrative_id`` points at the copy
+        of the note it recorded; ``generated_at``, ``model``, ``reviewer`` and
+        ``decided_at`` are kept as written. Refused when the bound ledger
+        already holds rows, and when ``entry_ids`` is given and a legacy row
+        names an entry outside it, the surest sign the rows belong to another
+        ledger. Returns the counts and the old-to-new narrative id map.
+        """
+        known = None if entry_ids is None else set(entry_ids)
+        with closing(self._connect()) as conn:
+            # The check and the copy see one file; a second adopter waits, then is refused.
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                mine = conn.execute(
+                    "SELECT (SELECT COUNT(*) FROM narratives WHERE ledger_id = ?) "
+                    "     + (SELECT COUNT(*) FROM decisions WHERE ledger_id = ?)",
+                    (self.ledger_id, self.ledger_id),
+                ).fetchone()[0]
+                if mine:
+                    raise ValueError(
+                        f"ledger {self.ledger_id} already holds {mine} row(s); legacy rows are "
+                        "adopted only into a ledger with none"
+                    )
+                notes = conn.execute(
+                    "SELECT * FROM narratives WHERE ledger_id = ? ORDER BY id", (LEGACY_LEDGER_ID,)
+                ).fetchall()
+                decisions = conn.execute(
+                    "SELECT * FROM decisions WHERE ledger_id = ? ORDER BY id", (LEGACY_LEDGER_ID,)
+                ).fetchall()
+                if known is not None:
+                    strays = sorted({r["entry_id"] for r in notes + decisions} - known)
+                    if strays:
+                        raise ValueError(
+                            f"{len(strays)} legacy row(s) name entries not in this ledger (e.g. "
+                            f"{strays[0]}); they were written for a different ledger"
+                        )
+                remap: dict[int, int] = {}
+                for r in notes:
+                    cur = conn.execute(
+                        "INSERT INTO narratives (ledger_id, entry_id, summary, why_flagged, "
+                        " evidence_to_request, suggested_control, confidence, model, generated_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (self.ledger_id, r["entry_id"], r["summary"], r["why_flagged"],
+                         r["evidence_to_request"], r["suggested_control"], r["confidence"],
+                         r["model"], r["generated_at"]),
+                    )
+                    remap[r["id"]] = int(cur.lastrowid)
+                for r in decisions:
+                    old = r["narrative_id"]
+                    if old is not None and old not in remap:
+                        raise RuntimeError(
+                            f"legacy decision {r['id']} records narrative {old}, which is not a "
+                            "legacy narrative"
+                        )
+                    conn.execute(
+                        "INSERT INTO decisions (ledger_id, entry_id, decision, reviewer, note, "
+                        " risk_score, model_score, narrative_id, decided_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (self.ledger_id, r["entry_id"], r["decision"], r["reviewer"], r["note"],
+                         r["risk_score"], r["model_score"], None if old is None else remap[old],
+                         r["decided_at"]),
+                    )
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
+        return {"ledger_id": self.ledger_id, "narratives": len(notes),
+                "decisions": len(decisions), "narrative_ids": remap}
 
     # --- both together ----------------------------------------------------
 

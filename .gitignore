@@ -20,6 +20,8 @@ data/*.csv
 data/*.parquet
 data/*.sqlite
 data/*.xlsx
+# the ledger identity sidecar carries a QuickBooks realm id
+data/*.json
 out/
 *.xlsx
 # Narrative eval run rows are deliberately committed under evals/narratives/runs/
@@ -32,6 +34,9 @@ out/
 .env.*
 !.env.example
 secrets/
+# a token file that strayed in from ~/.config/ledgerlens, and its atomic-write temp
+qbo-*.json
+.qbo-*.tmp
 
 # Local tooling
 .claude/

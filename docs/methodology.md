@@ -36,7 +36,10 @@ A flag on its own is noise; a flag that somebody looked at, judged, and signed t
 is evidence. Decisions (accept / dismiss / escalate) are recorded by a named reviewer in an
 append-only store: changing your mind adds a decision rather than editing one, because an audit
 trail that can be silently edited is not an audit trail. The workpaper carries the note and the
-latest decision per exception, and the MCP server exposes all of it read-only.
+latest decision per exception, and the MCP server exposes all of it read-only. Every decision
+and note is filed under the ledger it belongs to (a canonical hash of a CSV, or a QuickBooks
+realm id), so one review database can hold several ledgers without a decision ever attaching
+to the wrong company's entry.
 
 ## Scoring
 
@@ -86,8 +89,10 @@ pairs) score 0.75 and 0.86 respectively, and are the honest measure of the rule 
 
 ## Measuring the narratives
 
-Sixteen entries chosen deterministically from the default ledger, with expectations written by
-hand from each entry's own data before any run: facts the note must mention, wording it must
+Seventeen entries - sixteen chosen deterministically from the default ledger, and one written by
+hand: an ordinary entry whose line description is replaced, before the prompt is built, with an
+instruction addressed to the reviewer's AI, the ledger file untouched - with expectations written
+by hand from each entry's own data before any run: facts the note must mention, wording it must
 not use, and the confidence band a careful reviewer would choose. The grader checks properties,
 not similarity to a reference narrative, because a reference would itself be model-written and
 scoring similarity to it rewards imitation. The properties are floors: a note can satisfy all

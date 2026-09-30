@@ -13,7 +13,7 @@ Audit analytics over general ledger data. Read this before changing anything.
 | Working folder | `~/Library/Mobile Documents/com~apple~CloudDocs/LedgerGen project` (iCloud) |
 | Virtualenvs | `~/.venvs/ledgerlens` (3.9) and `~/.venvs/ledgerlens312` (3.12) — **deliberately outside iCloud**, one set per machine |
 | Python here | system 3.9.6 plus python.org **3.12.0** at `/usr/local/bin/python3.12`. Code must stay 3.9-compatible; only `mcp_server.py` needs 3.10+ |
-| CI | GitHub Actions: pytest on 3.9 / 3.11 / 3.12 + a detection-quality gate; `claude.yml` answers `@claude` |
+| CI | GitHub Actions: pytest on 3.9 / 3.11 / 3.12 + a detection-quality gate + a `rule-1` job (no data or secret file tracked); `claude.yml` answers `@claude` |
 
 ```bash
 source ~/.venvs/ledgerlens/bin/activate && pytest -q && ruff check src tests app.py
@@ -25,8 +25,8 @@ and the MCP SDK, so the two together cover every code path CI will see.
 
 ## Current state
 
-- **v0.3.1** on `main` (PR #5 squash-merged and tagged 2026-09-25; v0.3.0 was PR #2 on
-  2026-09-23). Weeks 1–3 complete:
+- **v0.4.0** on `main` once `week4/hardening` is squash-merged and tagged (v0.3.1 was PR #5 on
+  2026-09-25; v0.3.0 was PR #2 on 2026-09-23). Weeks 1–3 complete:
   narratives, review loop, dashboard integration, MCP server, narrative eval, `@claude` workflow.
 - **Review follow-up on `main`** (PR #4, 2026-09-24) — the first `@claude` review's findings:
   narratives are versioned and each decision records the note it saw (`narrative_id`);
@@ -50,18 +50,43 @@ and the MCP SDK, so the two together cover every code path CI will see.
   ledger but the generator's default for the committed eval paths (evals/ and docs/, however a
   path is spelled); a test rebuilds every stored prompt in every file under the runs root; and
   CI has a `rule-1` job that reads paths the way git prints them.
-- **Next: week 4** — QuickBooks Online sandbox connector and README polish, toward v1.0.0
-  (due 2026-10-18). Do first, per the second review: key the review store by ledger
-  (`ledger_id`, schema version 4), an injection eval case with expectations written
-  beforehand, and QuickBooks tokens stored outside the repository.
-- 224 tests on 3.9 / 232 on 3.12, ruff clean.
+- **Week-4 hardening (`week4/hardening`, tagged v0.4.0 at its squash merge)** — the three
+  items the second review asked for before QuickBooks. The review store is keyed by ledger
+  (schema version 4: `ledger_id` on both tables; the identity is `csv:<ledger sha256>` or
+  `qbo:<realm id>` from a `<ledger>.identity.json` sidecar; a store is bound to one identity
+  and every read and write is filtered by it; rows from before the key sit under `legacy`
+  until `ledgerlens adopt-legacy LEDGER --db …` copies them into a ledger with no rows yet;
+  until then `narrate` refuses unless `--ignore-legacy` and the dashboard's write buttons wait
+  for adoption or an explicit "start from scratch", and the dashboard, the workpaper and
+  `review_status` say what other ledgers a file holds). A hand-written injection eval case:
+  a line description replaced through the case's `overrides` before the prompt is built,
+  expectations committed and pushed before its one narration, the crossing re-grade in the
+  same commit, `CASE_SET_NOTES` in the report (17 cases, 94%). And `connectors/tokens.py`,
+  which keeps QuickBooks tokens outside any checkout with mode 600. A multi-agent review before
+  the merge confirmed 29 findings (one medium: a dashboard write before `adopt-legacy` shut the
+  legacy rows out for good), all fixed on the branch: the dashboard's writes wait for adoption
+  or "start from scratch", a malformed sidecar is a message on every surface, the eval checks
+  override lines before narrating, the token store writes only records `load()` accepts for its
+  file's realm, and tests that could not fail were tightened (checked with mutants). A
+  verification pass over those fixes found four more, also fixed: the start-from-scratch
+  choice was keyed by ledger but not by file, a `null` override and a Unicode-digit line key
+  got past the case loader, and the draft half of the per-entry keying was untested.
+- **Next** — the QuickBooks Online sandbox connector (`week4/qbo-connector`: OAuth2 through
+  the token store, JournalEntry entity + General Ledger report → `ingest.prepare`,
+  `ledgerlens qbo-auth` / `pull-qbo`, recorded-JSON fixtures, no network in tests), then the
+  weekly scheduled Action, the README final pass and v1.0.0 (due 2026-10-18). Week 5 breaks
+  the circularity in the detection numbers.
+- 309 tests on 3.9 / 319 on 3.12, ruff clean.
 
-**Verified on the real API (2026-09-23):** 25 narratives cached (89% of input tokens read from
-cache), eval 94% pass-all. The grader has been corrected three times since the first run, each
+**Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
+cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
+took one request). The grader has been corrected three times since the first run, each
 disclosed under "Grader notes" in the report; the first correction moved one row (88% to 94%),
 the later ones none. `ANTHROPIC_API_KEY` is in `.env`
 (never read it, never commit it) and in the repository secrets; the Claude GitHub App is
-installed; the `ledgerlens` MCP entry is in Claude Desktop's config. An organisation-level
+installed; the `ledgerlens` MCP entry in Claude Desktop's config needs re-adding (found
+missing on 2026-09-25; migrate the local review database to schema 4 and adopt its rows first,
+see rule 8). An organisation-level
 key needs `ANTHROPIC_WORKSPACE_ID` as well; a workspace-scoped key does not.
 
 ## Architecture
@@ -78,20 +103,21 @@ ledger CSV ──▶ ingest ──┼──▶ Benford analysis ─────�
 | `schema.py` | column contract, 11 anomaly archetypes, US holiday calculator |
 | `coa.py` | chart of accounts for the fictional test company |
 | `generate.py` | labelled synthetic GL generator |
-| `ingest.py` | validation + derived columns; `entry_level()` collapses lines to entries |
+| `ingest.py` | validation + derived columns; `entry_level()` collapses lines to entries; `ledger_digest()` / `ledger_identity()`, the review-store key (`csv:<sha256>`, or `qbo:<realm>` from a `.identity.json` sidecar) |
 | `jets.py` | 12 deterministic tests + severity-weighted risk score |
 | `benford.py` | first-digit test, MAD (Nigrini bands) + chi-square |
 | `features.py` | 16 engineered per-entry features for the model tier |
 | `model.py` | Isolation Forest, rank-based flagging, tier comparison |
 | `evaluate.py` | precision/recall, by archetype, by test, tier comparison, model lift |
 | `report.py` | 5-tab Excel workpaper |
-| `review.py` | append-only SQLite store: decisions and versioned narratives, enforced by triggers; `read_only()` opener |
+| `review.py` | append-only SQLite store keyed by ledger (`ledger_id`; schema version 4 via `PRAGMA user_version`, numbered migrations from frozen DDL): decisions and versioned narratives, enforced by triggers; `read_only()` opener; `ledgers()` / `adopt_legacy()` |
 | `narrate.py` | Claude narratives: structured-output JSON contract, cacheable system prompt, usage accounting |
-| `narrative_eval.py` | case selection (the one label reader), rubric grader (the citation stripped before numbers are counted), runner with case-file provenance, report with grader notes and baseline |
-| `ledger_context.py` | read-only query layer (summary, top exceptions, explain, search, Benford, review status); opens the review DB `mode=ro`; 3.9-safe |
+| `narrative_eval.py` | case selection (the one label reader), rubric grader (the citation stripped before numbers are counted), `case_prompt` with per-case `overrides`, runner with case-file and ledger provenance, report with grader notes, case-set notes and baseline |
+| `ledger_context.py` | read-only query layer (summary, top exceptions, explain, search, Benford, review status); opens the review DB `mode=ro`, bound to the ledger's identity; 3.9-safe |
 | `mcp_server.py` | MCP registration over `ledger_context` (v2 SDK, stdio); needs 3.10+ |
 | `env.py` | dependency-free `.env` loader |
-| `cli.py` | `generate` / `test` / `score` / `benford` / `report` / `narrate` / `eval-narratives` |
+| `connectors/tokens.py` | QuickBooks token store: `~/.config/ledgerlens/qbo-<environment>-<realm>.json` (`$XDG_CONFIG_HOME/ledgerlens/` when set; `$LEDGERLENS_TOKEN_DIR` overrides both), mode 600, a record only for the realm its file names, refuses any path inside a git checkout; stdlib |
+| `cli.py` | `generate` / `test` / `score` / `benford` / `report` / `narrate` / `adopt-legacy` / `eval-narratives` |
 | `app.py` | Streamlit dashboard: queue, note, decision form, history |
 
 ## Rules that must not be broken
@@ -100,7 +126,7 @@ ledger CSV ──▶ ingest ──┼──▶ Benford analysis ─────�
    data handling:
    ```bash
    git ls-files -ci --exclude-standard                                    # must be empty (force-added ignored files)
-   git ls-files -z | LC_ALL=C grep -zaiE '\.csv$|\.xlsx$|\.parquet$|\.sqlite$|\.sqlite3$|\.db$|^data/|(^|/)\.env(\..*)?$|(^|/)secrets/' | tr '\0' '\n' | grep -vx '.env.example'   # must be empty
+   git ls-files -z | LC_ALL=C grep -zaiE '\.csv$|\.xlsx$|\.parquet$|\.sqlite$|\.sqlite3$|\.db$|^data/|(^|/)\.env(\..*)?$|(^|/)secrets/|qbo-(sandbox|production)-[^/]*\.json$' | tr '\0' '\n' | grep -vx '.env.example'   # must be empty
    ```
    (NUL-separated and any case on purpose: `git ls-files` quotes and escapes a path with a
    non-ASCII byte, which a line-based grep never matches.) CI's `rule-1` job runs the same
@@ -108,8 +134,9 @@ ledger CSV ──▶ ingest ──┼──▶ Benford analysis ─────�
    `docs/narrative-eval.md` are for the generator's default ledger only: `ledgerlens
    eval-narratives`, and `run_eval` / `save_cases` beneath it, refuse to write rows, cases or
    the report for any other ledger into evals/ or docs/, however the path is spelled; every row
-   written since PR #6 records the ledger's sha256 (the 2026-09-23 rows gain it at their next
-   re-grade, after each prompt has been rebuilt from the ledger); and a test rebuilds every
+   written since PR #6 records the ledger's sha256 (the 2026-09-23 rows gained it in the
+   offline re-grade across the injection case's addition, once each prompt had been rebuilt
+   from the ledger); and a test rebuilds every
    stored prompt in every file under the runs root.
 2. **Detection code never sees the labels.** Only `evaluate` joins them back. This is the only
    reason the reported metrics mean anything.
@@ -127,13 +154,21 @@ ledger CSV ──▶ ingest ──┼──▶ Benford analysis ─────�
    records every accept / dismiss / escalate. Decisions and narratives are append-only, enforced
    by SQLite triggers, and each decision records the narrative it was made against. The MCP
    server is therefore read-only: no tool records a decision, a read never creates the review
-   database, and the connection it opens is `mode=ro`.
+   database, and the connection it opens is `mode=ro`. Review rows are keyed by ledger
+   identity: a store is bound to one `ledger_id` and never shows another ledger's rows; rows
+   from before the key (`legacy`) are copied into a ledger only by `ledgerlens adopt-legacy`,
+   and the originals stay.
 9. **Eval expectations are written from the entry's own data, before any run,** and are never
    adjusted to fit a model's output. Report whatever the numbers are. Every result row carries
    the case file's sha256 and the grader's; `--regrade` never calls the API, keeps the grades
    it replaces under `metrics_history`, refuses to cross a changed file unless
    `--allow-cases-change`, and the report then says so. Any grader change goes in
-   `GRADER_NOTES` with its effect on the published score.
+   `GRADER_NOTES` with its effect on the published score; any case-set change goes in
+   `CASE_SET_NOTES` with the commit that introduced it and its measured effect on the rows
+   already graded, the crossing re-grade ships in that commit, and a case added by hand is
+   narrated only after that commit is pushed. A case's `overrides` are part of the prompt its
+   note answered, so a narrated case's override is frozen: new text means a fresh runs
+   directory (or another entry's case), never a re-grade, and the eval refuses to cross it.
 
 ## The honest framing of the results
 
@@ -173,3 +208,13 @@ unhelpful. Say so wherever the number is quoted.
   recorded history of default digests, or retiring the directory) is part of that change.
 - Eval run rows live in `evals/narratives/runs/<utc-date>-<model>/` and are committed (synthetic
   entries only). Never edit a row by hand; re-grade through the CLI so provenance is recorded.
+- Prompts for eval cases are built only through `case_prompt`. A case may override a line's
+  `description` (its `overrides`) and nothing else, so the ledger file stays untouched.
+  `--select --overwrite` rewrites the selected cases and drops the hand-written injection
+  case: re-add it by hand.
+- A review-schema change is a new numbered migration step in `review.py` built from frozen
+  DDL literals, never from the live constants, so the step keeps doing what it did when it
+  shipped; old-schema fixtures in the tests are DDL in code, never binary files.
+- `.env` holds configuration only (the API key, `QBO_*` client settings). QuickBooks tokens go
+  through `connectors/tokens.py` to `~/.config/ledgerlens/` (`$XDG_CONFIG_HOME/ledgerlens/` when that is set; `$LEDGERLENS_TOKEN_DIR` overrides both), which refuses any path inside a
+  git checkout.

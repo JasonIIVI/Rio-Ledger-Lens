@@ -19,10 +19,10 @@ import streamlit as st
 from ledgerlens import evaluate, jets
 from ledgerlens.benford import benford_test
 from ledgerlens.env import load_dotenv
-from ledgerlens.ingest import load_csv, load_labels
+from ledgerlens.ingest import IdentityError, ledger_identity, load_csv, load_labels
 from ledgerlens.model import combine, score_ledger
 from ledgerlens.narrate import NarrativeError, Narrator, build_prompt, entry_context
-from ledgerlens.review import DECISIONS, Decision, ReviewStore
+from ledgerlens.review import DECISIONS, LEGACY_LEDGER_ID, Decision, ReviewStore
 
 load_dotenv()
 st.set_page_config(page_title="LedgerLens", layout="wide")
@@ -33,12 +33,15 @@ DATA = Path("data")
 @st.cache_data(show_spinner=False)
 def load(ledger_path: str, labels_path: str):
     df = load_csv(ledger_path)
+    # Computed here so it is cached with the frame it describes: the store is
+    # bound to the ledger on screen, never to a stale one.
+    ledger_id = ledger_identity(df, ledger_path)
     flags = jets.run_all(df)
     scored = jets.score_entries(df, flags)
     scores, report = score_ledger(df)
     combined = combine(scored, scores)
     labels = load_labels(labels_path) if Path(labels_path).exists() else None
-    return df, flags, combined, scores, report, labels
+    return df, flags, combined, scores, report, labels, ledger_id
 
 
 def md(text: str) -> str:
@@ -78,15 +81,46 @@ if not Path(ledger_path).exists():
     st.warning("No ledger found. Run `ledgerlens generate` first.")
     st.stop()
 
-df, flags, combined, scores, report, labels = load(ledger_path, labels_path)
+try:
+    df, flags, combined, scores, report, labels, ledger_id = load(ledger_path, labels_path)
+except IdentityError as exc:  # a sidecar that names no ledger: never guess which one it is
+    st.error(str(exc))
+    st.stop()
 
 # The store is cheap to open and its reads are deliberately never cached: a
-# decision recorded a second ago has to show on the very next rerun.
+# decision recorded a second ago has to show on the very next rerun. It is
+# bound to this ledger's identity, so another ledger's notes never show here.
 try:
-    store = ReviewStore(db_path)
+    store = ReviewStore(db_path, ledger_id)
 except RuntimeError as exc:  # a file from a newer version, or not a review database at all
     st.error(str(exc))
     st.stop()
+st.sidebar.caption(f"Review rows keyed by `{ledger_id}`")
+others = store.other_ledgers()
+if not others.empty:
+    # Surfaced, never shown as this ledger's: a file can hold several ledgers' review.
+    st.sidebar.caption(f"This database also holds rows for {len(others)} other ledger(s): " + ", ".join(
+        f"`{r.ledger_id[:16]}…` ({int(r.narratives)} narrated, {int(r.decisions)} decided)"
+        for r in others.itertuples()))
+# adopt_legacy copies only into a ledger with no rows, so on a file upgraded
+# from before ledgers were keyed, the first note or decision written here would
+# shut the legacy rows out for good, and `ledgerlens narrate` would then buy
+# every note again. Writes therefore wait for a choice, as narrate's refusal
+# does: adopt the rows from the command line, or start this ledger over. The
+# choice is made for one file: keyed like every per-entry widget, it is asked
+# again when the sidebar points at another database.
+writes_blocked = False
+if LEGACY_LEDGER_ID in set(others["ledger_id"]) and ledger_id not in set(store.ledgers()["ledger_id"]):
+    st.sidebar.warning(
+        "Rows from before review data was keyed by ledger sit under 'legacy', and this ledger "
+        "has none yet. If they were written for it, adopt them first: `ledgerlens adopt-legacy "
+        f"{ledger_path} --db {db_path}` (no API calls). A note or a decision recorded here first "
+        "would make adopting them impossible, and narrating would buy every note again."
+    )
+    writes_blocked = not st.sidebar.checkbox(
+        "Start this ledger's review from scratch", key=f"start-fresh-{db_path}|{ledger_id}",
+        help="The dashboard's --ignore-legacy: the legacy rows stay where they are, unadopted.",
+    )
 current = store.current()
 
 # ---- headline numbers ----
@@ -178,7 +212,11 @@ with tab_queue:
         # version written in between (a rewrite, another reviewer) would
         # otherwise be recorded as the one they saw. So the id on screen is
         # remembered per entry, and read back before it is overwritten.
-        shown_key = f"shown-{picked}"
+        # Every per-entry key names the ledger and the file too: two ledgers can
+        # share entry ids, and a draft, a remembered note id or the double-click
+        # guard for one must never act on the other's entry.
+        entry_key = f"{db_path}|{ledger_id}|{picked}"
+        shown_key = f"shown-{entry_key}"
         seen_id = st.session_state.get(shown_key)
         st.session_state[shown_key] = narrative["id"] if narrative else None
         if narrative:
@@ -187,7 +225,8 @@ with tab_queue:
             st.caption("No narrative yet for this entry.")
         has_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
         if st.button("Rewrite narrative" if narrative else "Write narrative",
-                     disabled=not has_key, key=f"narrate-{picked}"):
+                     disabled=not has_key or writes_blocked,
+                     key=f"narrate-{entry_key}") and not writes_blocked:
             try:
                 with st.spinner("Asking Claude..."):
                     narrator = Narrator()
@@ -206,27 +245,31 @@ with tab_queue:
 
         # ---- decision: a named human, append-only ----
         st.markdown("**Record a decision**")
-        choice_key, note_key = f"choice-{picked}", f"note-{picked}"
+        choice_key, note_key = f"choice-{entry_key}", f"note-{entry_key}"
         # The form is not cleared on submit: a refused submit (the note changed
         # while the reviewer was reading it) must not discard what they typed.
         # The draft is cleared here instead, on the rerun after a decision was
         # recorded, and each entry keeps its own draft in the meantime.
-        if st.session_state.pop("clear-decision", None) == picked:
+        if st.session_state.pop("clear-decision", None) == entry_key:
             for key in (choice_key, note_key):
                 st.session_state.pop(key, None)
-        with st.form(key=f"decision-{picked}"):
+        with st.form(key=f"decision-{entry_key}"):
             choice = st.radio("Decision", DECISIONS, horizontal=True,
                               format_func=str.capitalize, key=choice_key)
             note = st.text_area("Note", placeholder="What you checked, or why this is fine.",
                                 key=note_key)
-            submitted = st.form_submit_button("Record decision", disabled=not reviewer)
-        if not reviewer:
+            submitted = st.form_submit_button("Record decision",
+                                              disabled=not reviewer or writes_blocked)
+        if writes_blocked:
+            st.caption("Adopt the legacy rows first, or choose to start this ledger's review "
+                       "from scratch (see the sidebar).")
+        elif not reviewer:
             st.caption("Enter your name in the sidebar to record a decision.")
-        if submitted:
+        if submitted and not writes_blocked:
             latest_id = narrative["id"] if narrative else None
             # A form submits once per click, and this guard absorbs a double click:
             # an append-only log should not carry an accidental duplicate.
-            signature = (picked, choice, note.strip())
+            signature = (entry_key, choice, note.strip())
             if st.session_state.get("last_decision") == signature:
                 st.warning("That decision was just recorded.")
             elif seen_id != latest_id:
@@ -250,7 +293,7 @@ with tab_queue:
                 ))
                 st.session_state["last_decision"] = signature
                 st.session_state["flash"] = f"Recorded: {choice} by {reviewer}."
-                st.session_state["clear-decision"] = picked
+                st.session_state["clear-decision"] = entry_key
                 st.rerun()
 
         history = store.history(picked)
