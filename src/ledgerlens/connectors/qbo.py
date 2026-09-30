@@ -47,7 +47,7 @@ import pandas as pd
 
 from ..ingest import entry_level, identity_path, prepare
 from ..schema import ACCOUNT_TYPES, REQUIRED_COLUMNS
-from .tokens import ENVIRONMENTS, Tokens, TokenStore
+from .tokens import ENVIRONMENTS, Tokens, TokenStore, TokenStoreError
 
 AUTH_URL = "https://appcenter.intuit.com/connect/oauth2"
 TOKEN_URL = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer"
@@ -362,11 +362,22 @@ class Recorder:
         self.realm_id = realm_id
         self.users: dict[str, str] = {}
         self.written: list[Path] = []
+        #: Exchanges that could not be written. The caller still gets every response: a
+        #: token reply lost to a failed write would be a rotated refresh token lost for good.
+        self.failures: list[str] = []
         self._number = start
 
     def request(self, method: str, url: str, headers: Mapping[str, str],
                 body: bytes | None = None) -> Response:
         response = self.inner.request(method, url, headers, body)
+        try:
+            self._write(method, url, headers, body, response)
+        except Exception as exc:  # noqa: BLE001 (any failure to record must not lose the response)
+            self.failures.append(f"{method} {urllib.parse.urlsplit(url).path}: {exc}")
+        return response
+
+    def _write(self, method: str, url: str, headers: Mapping[str, str], body: bytes | None,
+               response: Response) -> None:
         canonical = canonical_request(method, url, body, _header(headers, "content-type"))
         try:
             payload: Any = response.json()
@@ -385,7 +396,6 @@ class Recorder:
         path.write_text(json.dumps(fixture, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         self.written.append(path)
         self._number += 10
-        return response
 
 
 def _slug(canonical: Mapping[str, Any]) -> str:
@@ -690,7 +700,12 @@ class QboClient:
         self.tokens = self.auth.refresh(self.tokens, now=self.now())
         self.refreshes += 1
         if self.token_store is not None:
-            self.token_store.save(self.tokens)
+            try:
+                self.token_store.save(self.tokens)
+            except (TokenStoreError, OSError) as exc:
+                raise QboAuthError(0, None, f"QuickBooks issued a new refresh token that could not "
+                                            f"be saved ({exc}); the old one no longer works, so "
+                                            f"{_SIGN_IN_AGAIN}") from None
 
     def request(self, method: str, path: str, *, query: Mapping[str, str] | None = None,
                 body: str | None = None, content_type: str | None = None) -> Any:

@@ -703,7 +703,7 @@ def test_qbo_auth_times_out_without_writing_anything(qbo_env, capsys):
     qbo_env.set(QBO_REDIRECT_URI=f"http://localhost:{_free_port()}/callback")
     assert main(["qbo-auth", "--timeout", "0.3", "--no-browser"]) == 1
     assert "no sign-in arrived" in capsys.readouterr().out
-    assert not qbo_env.tokens.exists()
+    assert list(qbo_env.tokens.iterdir()) == []  # the private directory is made first; no tokens
 
 
 def test_a_qbo_sidecar_keys_adopt_legacy_narrate_and_the_report(tmp_path, capsys, monkeypatch, llm):
@@ -743,3 +743,29 @@ def test_a_qbo_sidecar_keys_adopt_legacy_narrate_and_the_report(tmp_path, capsys
     cells = {str(c.value) for ws in openpyxl.load_workbook(out) for row in ws.iter_rows()
              for c in row if c.value is not None}
     assert "qbo:4620816365" in cells
+
+
+def test_nothing_is_spent_when_the_tokens_could_not_be_saved(qbo_env, capsys, monkeypatch):
+    """A code is single-use and a refresh rotates the token: a token directory the store
+    would refuse is refused before the browser opens or any request is sent."""
+    import webbrowser
+
+    from ledgerlens.connectors import qbo
+
+    qbo_env.set(QBO_REDIRECT_URI=f"http://localhost:{_free_port()}/callback")
+    store = _stored_tokens(qbo_env)
+    qbo_env.tokens.chmod(0o755)
+    sent = []
+    monkeypatch.setattr(qbo, "default_transport",
+                        lambda: SimpleNamespace(request=lambda *a, **k: sent.append(a)))
+    monkeypatch.setattr(webbrowser, "open", lambda url: sent.append(url))
+    assert main(["qbo-auth", "--timeout", "0.3"]) == 2
+    assert "mode is 755" in capsys.readouterr().out
+    assert main(["pull-qbo", "--start", "2025-10-01", "--end", "2025-12-31"]) == 2
+    assert "mode is 755" in capsys.readouterr().out
+    assert sent == [] and store.load().refresh_token == "STORED-REFRESH"
+    qbo_env.tokens.chmod(0o700)
+    (qbo_env.root / "rec").write_text("a file")
+    assert main(["pull-qbo", "--start", "2025-10-01", "--end", "2025-12-31",
+                 "--record", str(qbo_env.root / "rec")]) == 2
+    assert "is a file" in capsys.readouterr().out and sent == []

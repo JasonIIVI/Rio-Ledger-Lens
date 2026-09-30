@@ -628,3 +628,26 @@ def test_the_csv_and_sidecar_round_trip_to_the_realm_identity(pulled, tmp_path):
     assert back["entered_at_estimated"].dtype == bool
     pd.testing.assert_frame_equal(back[list(REQUIRED_COLUMNS)], frame[list(REQUIRED_COLUMNS)],
                                   check_dtype=False)
+
+
+# --- a rotated refresh token is never lost ------------------------------------------
+
+
+def test_a_refresh_that_cannot_be_saved_says_to_sign_in_again(outside):
+    store = TokenStore.for_realm("sandbox", "4620816365", outside)
+    store.save(issued())
+    outside.chmod(0o755)  # loosened after qbo-auth: loads, but a save is refused
+    client, _, _ = client_for([reply(body=TOKEN_REPLY)], store=store,
+                              tokens=issued(now=NOW - timedelta(hours=2)))
+    with pytest.raises(QboAuthError, match="could not be saved.*qbo-auth"):
+        client.request("GET", "/companyinfo/1")
+
+
+def test_a_recording_that_cannot_be_written_still_returns_the_response(tmp_path):
+    blocked = tmp_path / "rec"
+    blocked.write_text("a file, not a directory")
+    recorder = Recorder(ScriptedTransport([reply(body=TOKEN_REPLY)]), blocked, "4620816365")
+    got = recorder.request("POST", TOKEN, FORM, b"grant_type=refresh_token&refresh_token=R")
+    assert got.json()["refresh_token"] == "REFRESH-2"  # the rotated token reaches the caller
+    assert recorder.written == [] and len(recorder.failures) == 1
+    assert "/oauth2/v1/tokens/bearer" in recorder.failures[0]

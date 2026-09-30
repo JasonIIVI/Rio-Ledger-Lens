@@ -304,3 +304,18 @@ def test_load_refuses_a_record_for_another_realm_than_the_file_names(outside):
     assert custom.expected is None
     custom.save(sample())
     assert custom.load() == sample()
+
+
+def test_check_writable_refuses_before_anything_is_spent(outside):
+    store = TokenStore.for_realm("sandbox", "1", outside)
+    assert store.check_writable() == outside
+    assert stat.S_IMODE(outside.stat().st_mode) == DIR_MODE
+    outside.chmod(0o755)
+    with pytest.raises(TokenStoreError, match="mode is 755"):
+        store.check_writable()
+    outside.chmod(0o500)
+    try:
+        with pytest.raises(TokenStoreError, match="permission denied"):
+            store.check_writable()
+    finally:
+        outside.chmod(0o700)

@@ -25,7 +25,13 @@ import pandas as pd
 from . import evaluate, jets, narrative_eval
 from .benford import benford_test, segmented_benford
 from .connectors import qbo
-from .connectors.tokens import Tokens, TokenStore, TokenStoreError, default_token_dir
+from .connectors.tokens import (
+    Tokens,
+    TokenStore,
+    TokenStoreError,
+    default_token_dir,
+    ensure_private_dir,
+)
 from .env import load_dotenv
 from .generate import generate_ledger
 from .ingest import IdentityError, ledger_identity, load_csv, load_labels
@@ -289,6 +295,11 @@ def cmd_qbo_auth(args: argparse.Namespace) -> int:
     except qbo.QboConfigError as exc:
         print(f"error: {exc}")
         return 2
+    try:  # before the browser: a directory the tokens cannot go into wastes the sign-in
+        ensure_private_dir(Path(args.token_dir) if args.token_dir else default_token_dir())
+    except TokenStoreError as exc:
+        print(f"error: {exc}")
+        return 2
     auth = qbo.QboAuth(config, qbo.default_transport())
     state = qbo.new_state()
     try:
@@ -309,10 +320,11 @@ def cmd_qbo_auth(args: argparse.Namespace) -> int:
             print(f"error: {exc}")
             return 1
     try:
-        # The store first: a refused location must not waste the single-use code.
+        # Every check the save makes, before the single-use code is spent.
         store = TokenStore.for_realm(config.environment, callback.realm_id, args.token_dir)
+        store.check_writable()
         path = store.save(auth.exchange(callback.code, callback.realm_id))
-    except (qbo.QboError, TokenStoreError, ValueError) as exc:
+    except (qbo.QboError, TokenStoreError, OSError, ValueError) as exc:
         print(f"error: {exc}")
         return 1
     print(f"Signed in to {config.environment} company {callback.realm_id}. "
@@ -382,6 +394,7 @@ def cmd_pull_qbo(args: argparse.Namespace) -> int:
         try:
             store = TokenStore.for_realm(config.environment, realm, args.token_dir)
             tokens = store.load()
+            store.check_writable()  # a refresh rotates the token: it must be savable first
         except (TokenStoreError, ValueError) as exc:
             print(f"error: {exc}")
             return 2
@@ -389,14 +402,23 @@ def cmd_pull_qbo(args: argparse.Namespace) -> int:
             print(f"error: no tokens for {config.environment} company {realm} at {store.path}; "
                   "run `ledgerlens qbo-auth` first")
             return 2
-        transport = qbo.default_transport()
+        transport = None
         if args.record:
             record_dir = Path(args.record)
+            if record_dir.exists() and not record_dir.is_dir():
+                print(f"refused: --record {record_dir} is a file, not a directory")
+                return 2
             if record_dir.is_dir() and any(record_dir.glob("*.json")):
                 print(f"refused: {record_dir} already holds fixtures; a recording replaces them "
                       "whole, so remove them first (git rm) and record again")
                 return 2
-            transport = qbo.Recorder(transport, record_dir, realm)
+            try:  # before any request, so a recording can never fail after one was answered
+                record_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                print(f"error: cannot create {record_dir}: {exc}")
+                return 2
+            transport = qbo.Recorder(qbo.default_transport(), record_dir, realm)
+        transport = transport or qbo.default_transport()
 
     client = qbo.QboClient(config, tokens, transport, token_store=store)
     try:
@@ -426,6 +448,11 @@ def cmd_pull_qbo(args: argparse.Namespace) -> int:
     if isinstance(transport, qbo.Recorder):
         print(f"Recorded {len(transport.written)} sanitized fixture(s) in {transport.out_dir}; "
               "read them before committing")
+        if transport.failures:
+            print("error: some exchanges could not be recorded, so the set is incomplete:")
+            for failure in transport.failures:
+                print(f"  {failure}")
+            return 1
     print(f"Next: ledgerlens test {path}   ledgerlens report {path} --db data/review.sqlite")
     return 0
 
