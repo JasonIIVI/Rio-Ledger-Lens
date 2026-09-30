@@ -315,8 +315,8 @@ What the pull does, and what it cannot know:
   has none. The entry time is the entity's `CreateTime`; for other transactions it is the
   report's create date, and where that is a date alone the time is estimated at noon and the
   line is marked `entered_at_estimated`. QuickBooks writes times with the company's offset,
-  so they are used as given; `QBO_TIMEZONE` converts them to one zone instead, and the pull
-  warns if a time arrives in UTC without it.
+  so they are used as given. Set `QBO_TIMEZONE` only to the company's own zone (report times
+  carry no zone and are taken to be in it); the pull warns if a time arrives in UTC without it.
 - **Nothing dropped silently.** Description-only lines, beginning-balance rows, lines on
   accounts the query did not return, unbalanced entries, journal entries the report does not
   list and journal entries the report lists but the query did not return are all counted and

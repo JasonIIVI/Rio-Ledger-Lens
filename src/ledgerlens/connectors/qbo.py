@@ -496,7 +496,10 @@ def sanitize(payload: Any, realm_id: str, users: dict[str, str]) -> Any:
 
 
 def _name_pattern(name: str) -> re.Pattern:
-    return re.compile(rf"(?<!\w){re.escape(name)}(?!\w)")
+    """A name in any case, with any run of whitespace between its words (``JANE  DEV``,
+    a non-breaking space), and not inside a longer word (``Jane`` leaves ``Janet``)."""
+    words = r"\s+".join(re.escape(word) for word in name.split())
+    return re.compile(rf"(?<!\w){words}(?!\w)", re.IGNORECASE)
 
 
 def scrub_known(payload: Any, realm_id: str, users: Mapping[str, str]) -> Any:
@@ -514,7 +517,13 @@ def scrub_known(payload: Any, realm_id: str, users: Mapping[str, str]) -> Any:
 
     def walk(node: Any) -> Any:
         if isinstance(node, dict):
-            return {text(str(k)): walk(v) for k, v in node.items()}
+            out: dict[str, Any] = {}
+            for key, value in node.items():
+                clean = text(str(key))
+                if clean in out:  # two keys scrubbed to one: refuse rather than drop a value
+                    raise ValueError(f"two keys scrub to {clean!r}; the fixture cannot be written")
+                out[clean] = walk(value)
+            return out
         if isinstance(node, list):
             return [walk(item) for item in node]
         if isinstance(node, str):
@@ -528,9 +537,14 @@ def scrub_known(payload: Any, realm_id: str, users: Mapping[str, str]) -> Any:
 
 
 def leftovers(text: str, realm_id: str, users: Mapping[str, str]) -> list[str]:
-    """What a sanitized fixture should no longer contain but does: the realm id, a name."""
+    """What a sanitized fixture should no longer contain but does: the realm id anywhere (even
+    inside a longer number), or a name, compared case-folded with whitespace collapsed."""
     found = ["the realm id"] if realm_id and realm_id in text else []
-    found += [f"a user name ({users[n]})" for n in _real_names(users) if _name_pattern(n).search(text)]
+    folded = " ".join(text.casefold().split())
+    for name in _real_names(users):
+        wanted = " ".join(name.casefold().split())
+        if re.search(rf"(?<!\w){re.escape(wanted)}(?!\w)", folded):
+            found.append(f"a user name ({users[name]})")
     return found
 
 
@@ -1005,7 +1019,8 @@ class PullStats:
             "not return (not in the ledger)",
         ] + ([f"Warning: {self.utc_times_without_zone} journal-entry time(s) arrived in UTC and "
               "no QBO_TIMEZONE is set, so they are not on the company's clock like the rest; "
-              "set QBO_TIMEZONE"] if self.utc_times_without_zone else [])
+              "set QBO_TIMEZONE to the company's own time zone"]
+             if self.utc_times_without_zone else [])
 
 
 @dataclass(frozen=True)

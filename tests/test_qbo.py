@@ -840,3 +840,13 @@ def test_utc_journal_entry_times_without_a_zone_are_flagged_not_mixed_in_silentl
     lines = qbo.journal_entries_to_lines([entry], {}, None, "America/Los_Angeles", zoned)
     assert lines[0]["entered_at"] == datetime(2025, 10, 1, 16, 30) and zoned.utc_times_without_zone == 0
     assert qbo.parse_qbo_datetime("2025-10-01T23:30:00Z") == datetime(2025, 10, 1, 23, 30)
+
+
+def test_names_are_found_in_any_case_and_spacing_and_colliding_keys_are_refused():
+    users = {"Jane Dev": "qbo-user-1"}
+    out = qbo.scrub_known({"a": "JANE DEV paid", "b": "jane\u00a0dev", "c": "Jane  Dev", "d": "Janet"},
+                          "", users)
+    assert out == {"a": "qbo-user-1 paid", "b": "qbo-user-1", "c": "qbo-user-1", "d": "Janet"}
+    assert qbo.leftovers("paid by JANE\u00a0 dev", "", users) == ["a user name (qbo-user-1)"]
+    with pytest.raises(ValueError, match="two keys scrub to 'REALM'"):
+        qbo.scrub_known({"4620816365": "a", "REALM": "b"}, "4620816365", {})

@@ -31,7 +31,6 @@ from .connectors.tokens import (
     TokenStore,
     TokenStoreError,
     default_token_dir,
-    ensure_private_dir,
     repository_root,
 )
 from .env import load_dotenv
@@ -298,7 +297,8 @@ def cmd_qbo_auth(args: argparse.Namespace) -> int:
         print(f"error: {exc}")
         return 2
     try:  # before the browser: a directory the tokens cannot go into wastes the sign-in
-        ensure_private_dir(Path(args.token_dir) if args.token_dir else default_token_dir())
+        directory = Path(args.token_dir) if args.token_dir else default_token_dir()
+        TokenStore(directory / "qbo-preflight.json").check_writable()  # the store's own refusals
     except TokenStoreError as exc:
         print(f"error: {exc}")
         return 2
@@ -364,10 +364,10 @@ def _refuse_output(out: Path) -> str | None:
     directory), by file identity. And pulled books stay in the repository's ignored
     ``data/`` directory, never anywhere git would pick them up.
     """
-    if out.suffix.lower() != ".csv":
+    if out.suffix != ".csv":  # exactly: on a case-sensitive disk ledger.CSV shares a sidecar
         return (f"--out must be a .csv file: its identity file is {out.stem}.identity.json, "
                 "which a ledger with another suffix would share")
-    root = repository_root(out.parent if out.parent.exists() else Path.cwd())
+    root = repository_root(out.absolute().parent)  # walks ancestors, existing or not
     synthetic = [Path.cwd() / SYNTHETIC_LEDGER] + ([root / SYNTHETIC_LEDGER] if root else [])
     if out.exists() and any(s.exists() and out.samefile(s) for s in synthetic):
         return (f"{out} is the synthetic ledger the eval and the README's numbers come from; "
@@ -439,7 +439,8 @@ def cmd_pull_qbo(args: argparse.Namespace) -> int:
         try:
             store = TokenStore.for_realm(config.environment, realm, args.token_dir)
             tokens = store.load()
-            store.check_writable()  # a refresh rotates the token: it must be savable first
+            if tokens is not None:
+                store.check_writable()  # a refresh rotates the token: it must be savable first
         except (TokenStoreError, ValueError) as exc:
             print(f"error: {exc}")
             return 2
@@ -466,6 +467,17 @@ def cmd_pull_qbo(args: argparse.Namespace) -> int:
         transport = transport or qbo.default_transport()
 
     client = qbo.QboClient(config, tokens, transport, token_store=store)
+    code = 1  # what an exception out of the pull leaves behind
+    try:
+        code = _pull_and_write(client, args, out, realm, config.environment, transport)
+    finally:
+        if isinstance(transport, qbo.Recorder):  # every exit: nothing unchecked stays on disk
+            code = _finish_recording(transport, code)
+    return code
+
+
+def _pull_and_write(client: qbo.QboClient, args: argparse.Namespace, out: Path, realm: str,
+                    environment: str, transport: object) -> int:
     try:
         frame, stats = qbo.pull(client, args.start, args.end)
     except qbo.QboError as exc:
@@ -479,7 +491,7 @@ def cmd_pull_qbo(args: argparse.Namespace) -> int:
         return 1
 
     path = qbo.write_ledger_csv(frame, out)
-    sidecar = qbo.write_identity(path, realm, config.environment, args.start, args.end)
+    sidecar = qbo.write_identity(path, realm, environment, args.start, args.end)
     for line in stats.describe():
         print(line)
     entries = frame["entry_id"].nunique()
@@ -490,17 +502,24 @@ def cmd_pull_qbo(args: argparse.Namespace) -> int:
               "analysis need far more to say anything.")
     if isinstance(transport, qbo.RecordedTransport) and transport.unused:
         print(f"Warning: fixtures not used by this pull: {', '.join(transport.unused)}")
-    if isinstance(transport, qbo.Recorder):
-        transport.finish()
-        print(f"Recorded {len(transport.written)} sanitized fixture(s) in {transport.out_dir}; "
-              "read them before committing")
-        if transport.failures:
-            print("error: some exchanges could not be recorded, so the set is incomplete:")
-            for failure in transport.failures:
-                print(f"  {failure}")
-            return 1
     print(f"Next: ledgerlens test {path}   ledgerlens report {path} --db data/review.sqlite")
     return 0
+
+
+def _finish_recording(recorder: qbo.Recorder, code: int) -> int:
+    """Re-scrub and check every fixture written, whatever ended the pull, and say what is there."""
+    recorder.finish()
+    print(f"Recorded {len(recorder.written)} sanitized fixture(s) in {recorder.out_dir}; "
+          "read them before committing")
+    if recorder.failures:
+        print("error: some exchanges could not be recorded, so the set is incomplete:")
+        for failure in recorder.failures:
+            print(f"  {failure}")
+    if code or recorder.failures:
+        print(f"The recording is not a complete pull: remove {recorder.out_dir} before "
+              "recording again")
+        return 1
+    return code
 
 
 DEFAULT_CASES = str(narrative_eval.CASES_FILE)
