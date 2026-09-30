@@ -1252,11 +1252,10 @@ def journal_entries_to_lines(entries: list[Mapping[str, Any]], accounts: Mapping
     for entry in entries:
         txn_id = str(entry["Id"])
         posting = _date(entry["TxnDate"])
-        created = (entry.get("MetaData") or {}).get("CreateTime")
-        if created:
-            entered_at, estimated = parse_qbo_datetime(created, zone), False
-        else:
-            entered_at, estimated = parse_report_datetime("", posting)
+        # read like a report stamp: a shape the parser does not know is estimated and counted,
+        # never a traceback halfway through a pull
+        stamp = read_report_stamp((entry.get("MetaData") or {}).get("CreateTime") or "", posting, zone)
+        entered_at, estimated = stamp.when, stamp.estimated
         user = (headers.get(("JournalEntry", txn_id)) or {}).get("create_by") or UNKNOWN_USER
         fallback = entry.get("PrivateNote") or f"Journal entry {entry.get('DocNumber') or txn_id}"
         entry_lines: list[dict[str, Any]] = []
@@ -1288,10 +1287,11 @@ def journal_entries_to_lines(entries: list[Mapping[str, Any]], accounts: Mapping
         stats.journal_entries += 1
         stats.adjusting_entries += bool(entry.get("Adjustment"))
         stats.estimated_entered_at += estimated
+        stats.unreadable_entered_at += stamp.unreadable
         stats.unknown_users += user == UNKNOWN_USER
         # QuickBooks writes CreateTime with the company's offset, so "as given" is the
         # company's clock, the report's; a UTC time without a zone is not.
-        stats.utc_times_without_zone += not zone and bool(created and _UTC_SUFFIX.search(created.strip()))
+        stats.utc_times_without_zone += not zone and stamp.utc
         lines.extend(entry_lines)
     return lines
 

@@ -778,6 +778,23 @@ def test_a_report_time_in_utc_is_flagged_like_a_journal_entry_time():
     assert zoned.utc_times_without_zone == 0
 
 
+def test_a_create_time_that_is_not_a_timestamp_is_estimated_and_counted_not_a_crash():
+    # the parser reads only the shapes Intuit writes, the same on every Python ...
+    for value in ("2026-09-02-0700", "2026-09-01T10:00:00-07", "2026-09-01"):
+        with pytest.raises(ValueError, match="not a QuickBooks timestamp"):
+            qbo.parse_qbo_datetime(value)
+    # ... so a journal entry's CreateTime in another shape is read like a report stamp
+    entry = {"Id": "9", "TxnDate": "2026-08-19", "MetaData": {"CreateTime": "2026-09-01T10:00:00-07"},
+             "Line": [{"Amount": 5, "DetailType": "JournalEntryLineDetail",
+                       "JournalEntryLineDetail": {"PostingType": side, "AccountRef": {"value": "35"}}}
+                      for side in ("Debit", "Credit")]}
+    stats = qbo.PullStats()
+    lines = qbo.journal_entries_to_lines([entry], {}, None, None, stats)
+    assert {(line["entered_at"], line["entered_at_estimated"]) for line in lines} == {
+        (datetime(2026, 9, 1, 12), True)}
+    assert (stats.estimated_entered_at, stats.unreadable_entered_at) == (1, 1)
+
+
 def test_a_journal_entry_with_no_posting_line_is_set_aside_like_a_report_transaction():
     entry = {"Id": "9", "TxnDate": "2026-09-01", "MetaData": {"CreateTime": "2026-09-01T10:00:00-07:00"},
              "Line": [{"Amount": 0, "DetailType": "JournalEntryLineDetail",
