@@ -499,7 +499,8 @@ def pulled():
     ("Credit Card Expense", "CreditCardExpense", "AP"), ("Cash Expense", "CashExpense", "AP"),
     ("Sales Tax Payment", "SalesTaxPayment", "AP"), ("Invoice", "Invoice", "AR"),
     ("Sales Receipt", "SalesReceipt", "AR"), ("Refund", "Refund", "AR"), ("Deposit", "Deposit", "Bank"),
-    ("Transfer", "Transfer", "Bank"), ("Paycheck", "Paycheck", "Payroll"),
+    ("Transfer", "Transfer", "Bank"), ("Credit Card Payment", "CreditCardPayment", "Bank"),
+    ("Paycheck", "Paycheck", "Payroll"),
     ("Payroll Check", "PayrollCheck", "Payroll"), ("Inventory Qty Adjust", "InventoryQtyAdjust", "System"),
 ])
 def test_each_transaction_type_maps_to_a_ledger_source(label, token, source):
@@ -546,6 +547,7 @@ def test_the_pull_replays_every_fixture_and_builds_a_prepared_balanced_ledger(pu
     assert (stats.je_ids_missing_from_report, stats.je_ids_missing_from_query,
             stats.unknown_account_lines, stats.unknown_users) == (0, 0, 0, 0)
     assert "QBO-Payment-74" not in set(frame["entry_id"])  # QuickBooks' own .00 credit link
+    assert stats.unmapped_types == {}  # Inventory Qty Adjust is System on purpose
     assert set(frame["created_by"]) == {"qbo-user-1"} and not frame["entered_at_estimated"].any()
 
 
@@ -648,6 +650,20 @@ def test_other_transactions_are_rebuilt_from_the_report_whole_and_balanced(pulle
     # a parent account's own postings sit in a sub-section with no header of their own
     assert len(frame[frame["account_code"] == "45"]) == 15
     assert set(frame.loc[frame["account_code"] == "45", "account_name"]) == {"Landscaping Services"}
+
+
+def test_a_type_this_tool_does_not_map_is_named_not_filed_as_system_in_silence(tmp_path):
+    # the sandbox quarter has no such type, so Credit Card Credit 139 is relabelled
+    def edit(body):
+        for col_data, _ in qbo._report_rows(body):
+            if col_data[1] == {"value": "Credit Card Credit", "id": "139"}:
+                col_data[1]["value"] = "Sales Tax Adjustment"
+
+    frame, stats = qbo.pull(fixture_client(edited_recording(tmp_path, GL_FILE, edit)), START, END)
+    assert set(lines_of(frame, "QBO-SalesTaxAdjustment-139")["source"]) == {"System"}
+    assert stats.unmapped_types == {"SalesTaxAdjustment": 1}
+    assert any("1 entrie(s) of a type this tool does not map" in line and "SalesTaxAdjustment" in line
+               for line in stats.describe())
 
 
 def test_a_date_only_create_date_in_the_report_is_estimated_at_noon_on_that_date(tmp_path):

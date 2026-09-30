@@ -954,7 +954,11 @@ TXN_SOURCE = {
     "Invoice": "AR", "Payment": "AR", "SalesReceipt": "AR", "CreditMemo": "AR",
     "RefundReceipt": "AR", "Refund": "AR",
     "Deposit": "Bank", "Transfer": "Bank",
+    # paying down a card from the bank moves money between two balance-sheet accounts
+    "CreditCardPayment": "Bank",
     "Paycheck": "Payroll",
+    # a quantity or value adjustment QuickBooks posts, no counterparty: System on purpose
+    "InventoryQtyAdjust": "System",
 }
 UNKNOWN_ACCOUNT_TYPE = "Unknown"
 UNKNOWN_USER = "qbo-unknown"
@@ -975,6 +979,12 @@ def source_for(token: str) -> str:
     if token in TXN_SOURCE:
         return TXN_SOURCE[token]
     return "Payroll" if token.startswith("Payroll") else "System"
+
+
+def is_mapped(token: str) -> bool:
+    """Whether a type has a source of its own; the rest fall back to System, which a pull
+    names (Cash Expense and Sales Tax Payment once fell back without a word)."""
+    return token in TXN_SOURCE or token.startswith("Payroll")
 
 
 def entry_id_for(token: str, txn_id: str) -> str:
@@ -1006,6 +1016,7 @@ class PullStats:
     je_ids_missing_from_report: int = 0
     je_ids_missing_from_query: int = 0
     utc_times_without_zone: int = 0
+    unmapped_types: dict[str, int] = field(default_factory=dict)  # type -> entries
 
     def describe(self) -> list[str]:
         return [
@@ -1030,7 +1041,11 @@ class PullStats:
             [f"Warning: {self.unreadable_entered_at} entrie(s) whose create date this tool cannot "
              "read; their entry time is estimated at noon on the date the value starts with, "
              "else on the posting date, so the keying-time tests are weaker for them"]
-            if self.unreadable_entered_at else [])
+            if self.unreadable_entered_at else []) + (
+            [f"Warning: {sum(self.unmapped_types.values())} entrie(s) of a type this tool does "
+             "not map were given the System source: "
+             + ", ".join(f"{t} ({n})" for t, n in sorted(self.unmapped_types.items()))]
+            if self.unmapped_types else [])
 
 
 @dataclass(frozen=True)
@@ -1363,6 +1378,8 @@ def general_ledger_to_lines(report: Mapping[str, Any], accounts: Mapping[str, Ac
             stats.zero_transactions += 1
             continue
         stats.other_transactions += 1
+        if not is_mapped(token):
+            stats.unmapped_types[token] = stats.unmapped_types.get(token, 0) + 1
         stats.estimated_entered_at += estimated
         # a silent fallback once passed a whole pull off as "date only": say it instead
         stats.unreadable_entered_at += stamp.unreadable
