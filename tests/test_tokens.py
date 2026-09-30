@@ -269,7 +269,8 @@ def test_the_ignore_rules_cover_token_files_and_their_temps_but_not_fixtures():
         return subprocess.run(["git", "check-ignore", "-q", name], cwd=REPO_ROOT).returncode == 0
 
     for name in ("qbo-sandbox-1.json", "qbo-production-1.json", ".qbo-sandbox-1.json.k3j.tmp",
-                 "data/qbo-sandbox-1.json", "data/qbo-ledger.identity.json"):
+                 "data/qbo-sandbox-1.json", "data/qbo-ledger.identity.json",
+                 "data/ledger.identity.json", "data/qbo-ledger.csv"):
         assert ignored(name), name
     assert not ignored("tests/fixtures/qbo/pull/020-post-query-account.json")
 

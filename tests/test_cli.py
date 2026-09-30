@@ -704,3 +704,42 @@ def test_qbo_auth_times_out_without_writing_anything(qbo_env, capsys):
     assert main(["qbo-auth", "--timeout", "0.3", "--no-browser"]) == 1
     assert "no sign-in arrived" in capsys.readouterr().out
     assert not qbo_env.tokens.exists()
+
+
+def test_a_qbo_sidecar_keys_adopt_legacy_narrate_and_the_report(tmp_path, capsys, monkeypatch, llm):
+    """A QuickBooks pull's ledger is filed under qbo:<realm> on every surface that writes or
+    reads review rows, whatever the CSV's digest (a re-pull changes the digest, not the key)."""
+    import sqlite3
+
+    import openpyxl
+
+    from ledgerlens import cli
+    from ledgerlens.narrate import Narrator
+    from ledgerlens.review import ReviewStore
+
+    monkeypatch.chdir(tmp_path)
+    main(["generate", "--start", "2024-01-01", "--end", "2024-03-31", "--out-dir", str(tmp_path)])
+    ledger, db = str(tmp_path / "ledger.csv"), tmp_path / "review.sqlite"
+    (tmp_path / "ledger.identity.json").write_text('{"ledger_id": "qbo:4620816365"}')
+    ReviewStore(db, "qbo:4620816365")
+    with sqlite3.connect(str(db)) as raw:
+        raw.execute("INSERT INTO narratives (entry_id, summary, generated_at, ledger_id) VALUES "
+                    "('JE-2024-000001', 'old', '2026-09-23T00:00:00+00:00', 'legacy')")
+    capsys.readouterr()
+
+    assert main(["adopt-legacy", ledger, "--db", str(db)]) == 0
+    assert "into qbo:4620816365" in capsys.readouterr().out
+
+    client = llm.client()
+    monkeypatch.setattr(cli, "Narrator", lambda **kw: Narrator(client=client, **kw))
+    assert main(["narrate", ledger, "--db", str(db), "--top", "2", "--no-model"]) == 0
+    assert "rows keyed by qbo:4620816365" in capsys.readouterr().out
+    store = ReviewStore(db, "qbo:4620816365")
+    assert len(store.narrative_ids()) >= 2 and "JE-2024-000001" in store.narrative_ids()
+    assert set(store.ledgers()["ledger_id"]) == {"legacy", "qbo:4620816365"}
+
+    out = tmp_path / "wp.xlsx"
+    assert main(["report", ledger, "--no-model", "--db", str(db), "--out", str(out)]) == 0
+    cells = {str(c.value) for ws in openpyxl.load_workbook(out) for row in ws.iter_rows()
+             for c in row if c.value is not None}
+    assert "qbo:4620816365" in cells
