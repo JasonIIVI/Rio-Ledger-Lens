@@ -446,6 +446,7 @@ def cmd_pull_qbo(args: argparse.Namespace) -> int:
     if isinstance(transport, qbo.RecordedTransport) and transport.unused:
         print(f"Warning: fixtures not used by this pull: {', '.join(transport.unused)}")
     if isinstance(transport, qbo.Recorder):
+        transport.finish()
         print(f"Recorded {len(transport.written)} sanitized fixture(s) in {transport.out_dir}; "
               "read them before committing")
         if transport.failures:

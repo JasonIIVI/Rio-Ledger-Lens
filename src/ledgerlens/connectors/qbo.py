@@ -415,6 +415,28 @@ class Recorder:
         self.written.append(path)
         self._number += 10
 
+    def finish(self) -> list[str]:
+        """Scrub every written fixture again with every name learned during the recording (a
+        name first seen in a later response may already sit in an earlier one's memo), then
+        check none still holds the realm id or a user's name. A file that does is deleted and
+        reported: a recording goes into a public repository."""
+        for path in list(self.written):
+            try:
+                fixture = scrub_known(json.loads(path.read_text(encoding="utf-8")),
+                                      self.realm_id, self.users)
+                text = json.dumps(fixture, indent=2, ensure_ascii=False) + "\n"
+                leaked = leftovers(text, self.realm_id, self.users)
+                if leaked:
+                    path.unlink()
+                    self.written.remove(path)
+                    self.failures.append(f"{path.name}: still held {', '.join(leaked)} after "
+                                         "sanitizing, so it was deleted")
+                else:
+                    path.write_text(text, encoding="utf-8")
+            except Exception as exc:  # noqa: BLE001
+                self.failures.append(f"{path.name}: {exc}")
+        return self.failures
+
 
 def _slug(canonical: Mapping[str, Any]) -> str:
     body = canonical.get("body")
@@ -467,7 +489,53 @@ def sanitize(payload: Any, realm_id: str, users: dict[str, str]) -> Any:
             return text(node)
         return node
 
+    return scrub_known(walk(payload), realm_id, users)
+
+
+def _name_pattern(name: str) -> re.Pattern:
+    return re.compile(rf"(?<!\w){re.escape(name)}(?!\w)")
+
+
+def scrub_known(payload: Any, realm_id: str, users: Mapping[str, str]) -> Any:
+    """Replace every known user name wherever it appears (a memo, a payee, a key), longest
+    first, and the realm id wherever it appears, as text, as a number or as a key."""
+    names = sorted(_real_names(users), key=len, reverse=True)
+    patterns = [(_name_pattern(n), users[n]) for n in names]
+
+    def text(value: str) -> str:
+        if realm_id:
+            value = value.replace(realm_id, "REALM")
+        for pattern, stand_in in patterns:
+            value = pattern.sub(stand_in, value)
+        return value
+
+    def walk(node: Any) -> Any:
+        if isinstance(node, dict):
+            return {text(str(k)): walk(v) for k, v in node.items()}
+        if isinstance(node, list):
+            return [walk(item) for item in node]
+        if isinstance(node, str):
+            return text(node)
+        if isinstance(node, (int, float)) and not isinstance(node, bool) and realm_id \
+                and str(node) == realm_id:
+            return "REALM"
+        return node
+
     return walk(payload)
+
+
+def leftovers(text: str, realm_id: str, users: Mapping[str, str]) -> list[str]:
+    """What a sanitized fixture should no longer contain but does: the realm id, a name."""
+    found = ["the realm id"] if realm_id and realm_id in text else []
+    found += [f"a user name ({users[n]})" for n in _real_names(users) if _name_pattern(n).search(text)]
+    return found
+
+
+def _real_names(users: Mapping[str, str]) -> list[str]:
+    """Names to scrub: not empty, and not already a stand-in (data that was sanitized before,
+    like the hand-shaped fixtures, names its users qbo-user-N)."""
+    stand_ins = set(users.values())
+    return [n for n in users if n and n not in stand_ins]
 
 
 def _sanitize_report(report: dict, walk, user) -> dict:

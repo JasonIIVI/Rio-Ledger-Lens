@@ -757,3 +757,56 @@ def test_the_server_holds_both_loopback_addresses_localhost_can_mean():
         squatter.listen()
         with pytest.raises(QboAuthError, match=r"\[::1\].*in use"):
             CallbackServer(squatter.getsockname()[1])
+
+
+# --- a recording goes into a public repository --------------------------------------
+
+
+def test_a_known_name_is_replaced_wherever_it_appears_and_the_realm_in_any_form():
+    report = {"Columns": {"Column": [
+        {"ColTitle": "Name", "MetaData": [{"Name": "ColKey", "Value": "name"}]},
+        {"ColTitle": "Memo", "MetaData": [{"Name": "ColKey", "Value": "memo"}]},
+        {"ColTitle": "Created By", "MetaData": [{"Name": "ColKey", "Value": "create_by"}]}]},
+        "Rows": {"Row": [{"type": "Data", "ColData": [
+            {"value": "Jane Dev"}, {"value": "reimburse Jane Dev; Janet stays"}, {"value": "Jane Dev"}]}]}}
+    users: dict[str, str] = {}
+    out = sanitize(report, "9341453512345678", users)
+    cells = [c["value"] for c in out["Rows"]["Row"][0]["ColData"]]
+    assert cells == ["qbo-user-1", "reimburse qbo-user-1; Janet stays", "qbo-user-1"]
+    other = sanitize({"realm": 9341453512345678, "9341453512345678": "x", "Owner": "Jane Dev"},
+                     "9341453512345678", users)
+    assert other == {"realm": "REALM", "REALM": "x", "Owner": "qbo-user-1"}
+
+
+def test_finish_scrubs_names_learned_later_and_deletes_a_file_that_still_leaks(tmp_path):
+    early = {"QueryResponse": {"JournalEntry": [{"Id": "1", "PrivateNote": "Paid by Jane Dev"}]}}
+    later = {"QueryResponse": {"Purchase": [{"Id": "2", "MetaData": {"LastModifiedByRef": {"value": "Jane Dev"}}}]}}
+    recorder = Recorder(ScriptedTransport([reply(body=early), reply(body=later)]), tmp_path, "4620816365")
+    recorder.request("POST", f"{BASE}/query", TEXT, b"select * from JournalEntry")
+    recorder.request("POST", f"{BASE}/query", TEXT, b"select * from Purchase")
+    assert "Jane Dev" in recorder.written[0].read_text()  # the name was not known yet
+    assert recorder.finish() == []
+    assert "Jane Dev" not in recorder.written[0].read_text()
+    assert "Paid by qbo-user-1" in recorder.written[0].read_text()
+
+
+
+def test_finish_deletes_a_fixture_the_scrubber_missed(tmp_path, monkeypatch):
+    """The last line of defence: if scrubbing ever misses the realm or a name, the file goes."""
+    recorder = Recorder(ScriptedTransport([reply(body={"note": "company 4620816365"})]),
+                        tmp_path, "4620816365")
+    monkeypatch.setattr(qbo, "sanitize", lambda payload, realm, users: payload)
+    monkeypatch.setattr(qbo, "scrub_known", lambda payload, realm, users: payload)
+    recorder.request("GET", f"{BASE}/companyinfo/4620816365", {})
+    written = recorder.written[0]
+    failures = recorder.finish()
+    assert failures == [f"{written.name}: still held the realm id after sanitizing, so it was deleted"]
+    assert not written.exists() and recorder.written == []
+
+
+def test_leftovers_names_what_slipped_through():
+    assert qbo.leftovers('{"a": "4620816365 and Jane Dev"}', "4620816365", {"Jane Dev": "qbo-user-1"}) == [
+        "the realm id", "a user name (qbo-user-1)"]
+    assert qbo.leftovers('{"a": "Janet"}', "4620816365", {"Jane": "qbo-user-1"}) == []
+    already = {"qbo-user-1": "qbo-user-1", "qbo-user-2": "qbo-user-2"}  # re-recording sanitized data
+    assert qbo.leftovers('{"a": "qbo-user-1 qbo-user-2"}', "", already) == []
