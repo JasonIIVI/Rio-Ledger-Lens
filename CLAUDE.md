@@ -83,11 +83,17 @@ and the MCP SDK, so the two together cover every code path CI will see.
   sanitized `pull-qbo --record` of a sandbox pull replaces `pull/`; its README lists eight
   things the recording must confirm). Facts about Intuit's API were checked against its
   current documentation on 2026-09-30 (minor version 75; no documented `Retry-After`; the
-  transaction id on the `txn_type` cell; reads are metered).
+  transaction id on the `txn_type` cell; reads are metered). A security review and a
+  correctness review before the push found 16 problems (two medium: a rotated refresh token
+  could be lost before it was saved, and `--out` could take over the synthetic ledger or its
+  identity file however spelled); all fixed, and a check of those fixes found six more, also
+  fixed: the token directory is checked before any code or refresh is spent, redirects are
+  never followed, the callback server is threaded and holds both loopback addresses, a
+  recording is re-scrubbed and checked on every exit, and pulled books stay in `data/`.
 - **Next** — record the sandbox fixtures (needs the Intuit sandbox), then the weekly
   scheduled Action, the README final pass and v1.0.0 (due 2026-10-18). Week 5 breaks the
   circularity in the detection numbers.
-- 380 tests on 3.9 / 390 on 3.12, ruff clean.
+- 404 tests on 3.9 / 414 on 3.12, ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
