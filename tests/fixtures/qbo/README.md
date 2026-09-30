@@ -11,9 +11,9 @@ first matching request once, in file-name order.
 
 **`pull/` is recorded**: a sanitized `pull-qbo --record` of a real QuickBooks Online
 **sandbox** company (Intuit's sample company, fictional data), made on 2026-09-30 for the
-quarter 2026-07-01 to 2026-09-30, which holds most of the sample company's data: an
-unrecorded survey pull of April to September 2026 found 10 entries in Q2 and 116 in Q3,
-and Q4 2025 had none. Every file was read value by value before it was committed, and an
+quarter 2026-07-01 to 2026-09-30, which holds 116 entries: an unrecorded survey pull of
+April to September 2026 found 10 in Q2 and 116 in Q3, and Q4 2025 had none (January to
+March 2026 was not surveyed). Every file was read value by value before it was committed, and an
 independent audit found nothing identifying.
 
 ```bash
@@ -30,20 +30,22 @@ endpoint's reply is secret by nature.
 | `auth/` | the `qbo-auth` CLI test | the authorization-code grant's reply |
 
 What the quarter does not contain is reached in `test_qbo.py` without hand-shaped files:
-by editing a copy of the recording (`edited_recording`: account numbers, a description-only
-journal line, a line with its own description, the adjusting flag, a Sunday late-evening
-entry, a date-only `create_date`, a second user, a journal entry the query misses), or, for
-row-level cases, by a minimal report built in the test (`gl_report`: a later, blank or
-unreadable stamp on the first row, a user on one row only, an all-zero transaction, a UTC
-stamp).
+by editing a copy of the recording (`edited_recording`: a description-only journal line, a
+line with its own description, the adjusting flag, a Sunday late-evening entry, a date-only
+`create_date`, a second user, an unmapped transaction type, a journal entry the query
+misses; account numbers by editing a copy of the account rows), by a minimal report built
+in the test for row-level cases (`gl_report`: a later, earlier, blank or unreadable stamp on
+the first row, a different or missing user on it, a UTC stamp, and the all-zero
+transaction the recording has as Payment 74, in isolation), or by a minimal JournalEntry
+for entity-level ones (an unreadable or date-only `CreateTime`, no posting line).
 
 The recording found three defects the hand-shaped files could not. The report's
 `create_date` offset is written `-0700`, which Python 3.9 could not read: on 3.9 every
 report-built entry lost its time of day, and 65 of the 113 their keying date (3.12 read it).
 Cash Expense and Sales Tax Payment fell back to the `System` source. And an invoice's rows
 can carry different create dates (nine invoices' tax rows are stamped later, five of them
-on a later day), so the entry time comes from the stamp that says most, the earliest among
-equals, not from whichever row the report lists first. Timestamps are now read by explicit
+on a later day), so the entry time comes from the earliest date any row gives (a time of
+day preferred within that day), not from whichever row the report lists first. Timestamps are now read by explicit
 formats, so both Pythons read every value the same way.
 
 ## Sanitization (what `--record` does to a live response)

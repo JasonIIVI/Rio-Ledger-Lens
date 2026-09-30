@@ -310,25 +310,26 @@ What the pull does, and what it cannot know:
   account it hits: grouping its rows by transaction gives each one back whole and balanced.
 - **Sources and ids.** The transaction type becomes the ledger's `source` (a journal entry is
   Manual, an invoice AR, a bill payment AP, a deposit Bank) and part of the entry id
-  (`QBO-Invoice-130`), because QuickBooks numbers each type separately.
+  (`QBO-Invoice-130`), because QuickBooks numbers each type separately. A type the tool
+  does not map gets `System`, and the pull names it.
 - **Who and when.** The user comes from the report's "created by" column, since the entity
   has none. The entry time is the entity's `CreateTime`; for other transactions it is the
   report's create date (a full timestamp in the sandbox; when a transaction's rows differ,
-  the earliest readable one), and where only a date is given the time is estimated at noon
-  and the line is marked `entered_at_estimated`. QuickBooks writes both with the company's offset, so they
-  are used as given. `QBO_TIMEZONE` converts both, so set it only to the company's own zone
-  (a report time with no offset is taken to be in it already); the pull warns if a time
-  arrives in UTC without it, and counts any create date it cannot read.
+  the earliest date any row gives, a time of day preferred within that day), and where only a
+  date is given the time is estimated at noon and the line is marked `entered_at_estimated`.
+  QuickBooks writes both with the company's offset, so they are used as given. `QBO_TIMEZONE`
+  converts both, so set it only to the company's own zone (a report time with no offset is
+  taken to be in it already); the pull warns if a time arrives in UTC without it, and about
+  entries whose time it had to estimate because the create date it used cannot be read.
 - **Nothing dropped silently.** Description-only lines, beginning-balance rows, transactions
-  whose rows are all zero, lines on
-  accounts the query did not return, unbalanced entries, journal entries the report does not
+  with no posting line, lines on accounts the query did not return, unbalanced entries, journal entries the report does not
   list and journal entries the report lists but the query did not return are all counted and
   printed.
 - **One review history per company.** The sidecar names the ledger `qbo:<realm id>`, so a
   re-pull (whose CSV digest differs) keeps the same notes and decisions.
 
-A sandbox company is small (about a hundred entries in its busiest quarter): enough to see
-the tests fire, far too few for the model tier or Benford analysis to mean anything, and the
+A sandbox company is small (116 entries in the recorded quarter): enough to see the tests
+fire, far too few for the model tier or Benford analysis to mean anything, and the
 pull warns below 50 entries. Intuit meters read calls under its partner program; a pull makes
 a handful. The tests never touch the network: they replay `tests/fixtures/qbo/pull/`, a
 sanitized recording of a real sandbox pull (`pull-qbo --record`, Intuit's sample company,
