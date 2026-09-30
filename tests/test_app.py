@@ -329,4 +329,12 @@ def test_the_sidebar_names_a_qbo_ledger_by_its_realm(data_dir, tmp_path):
     db = tmp_path / "review.sqlite"
     at = _run(pulled, db, reviewer="ana")
     assert any("qbo:4620816365" in c.value for c in at.caption)
-    assert set(ReviewStore(db, "qbo:4620816365").ledgers()["ledger_id"]) <= {"qbo:4620816365"}
+    picked = at.selectbox(key="picked").value
+    assert not any("note #" in c.value for c in at.caption)
+    # A note filed under the realm is this ledger's note on screen; one under the CSV's
+    # digest (what the file would be keyed by without its sidecar) would not be.
+    note = {"summary": "s", "why_flagged": "w", "evidence_to_request": ["e"],
+            "suggested_control": "c", "confidence": "Low"}
+    note_id = ReviewStore(db, "qbo:4620816365").save_narrative(picked, note, model="m")
+    at = _run(pulled, db, reviewer="ana")
+    assert any(f"note #{note_id}" in c.value for c in at.caption)
