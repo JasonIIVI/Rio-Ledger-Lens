@@ -1016,20 +1016,20 @@ class PullStats:
             f"{self.other_detail_lines} other non-posting line(s), {self.zero_amount_lines} zero line(s), "
             f"{self.rows_without_txn_id} report row(s) with no transaction (balances), "
             f"{self.zero_transactions} transaction(s) with only zero lines",
-            f"Estimated: entry time on {self.estimated_entered_at} entrie(s) (no time of day given), "
+            f"Estimated: entry time on {self.estimated_entered_at} entrie(s) (no readable time of day), "
             f"user on {self.unknown_users} entrie(s) ({UNKNOWN_USER})",
             f"Checks: {self.unknown_account_lines} line(s) on accounts the Account query did not "
             f"return, {self.unbalanced_entries} unbalanced entrie(s), "
             f"{self.je_ids_missing_from_report} journal entrie(s) missing from the GL report, "
             f"{self.je_ids_missing_from_query} journal entrie(s) in the GL report the query did "
             "not return (not in the ledger)",
-        ] + ([f"Warning: {self.utc_times_without_zone} journal-entry time(s) arrived in UTC and "
+        ] + ([f"Warning: {self.utc_times_without_zone} entry time(s) arrived in UTC and "
               "no QBO_TIMEZONE is set, so they are not on the company's clock like the rest; "
               "set QBO_TIMEZONE to the company's own time zone"]
              if self.utc_times_without_zone else []) + (
-            [f"Warning: {self.unreadable_entered_at} create date(s) in a format this tool cannot "
-             "read; their entry time is estimated (the date they start with, else the posting "
-             "date, at noon), so the keying-time tests are weaker for them"]
+            [f"Warning: {self.unreadable_entered_at} entrie(s) whose create date this tool cannot "
+             "read; their entry time is estimated at noon on the date the value starts with, "
+             "else on the posting date, so the keying-time tests are weaker for them"]
             if self.unreadable_entered_at else [])
 
 
@@ -1109,52 +1109,70 @@ _REPORT_DATE_FORMATS = ("%Y-%m-%d", "%m/%d/%Y")
 _LEADING_DATE = re.compile(r"(\d{4}-\d\d-\d\d)|(\d\d/\d\d/\d{4})")
 
 
-def parse_report_datetime(value: str, posting_date: datetime,
-                          zone: str | None = None) -> tuple[datetime, bool]:
-    """A report's ``create_date`` as ``(entered_at, estimated)``.
+@dataclass(frozen=True)
+class ReportStamp:
+    """How a report ``create_date`` was read. ``kind`` is ``time`` (a time of day was read),
+    ``date`` (a date alone), ``unreadable-date`` (a format this tool does not read, but it
+    starts with a date, which is kept), ``unreadable`` (nothing could be taken from it) or
+    ``blank``; the last two stand in the posting date."""
 
-    A timestamp is used as given. A date alone keeps its date with the time
-    estimated at noon, because the date is the audit signal (an entry keyed
-    long after its posting date); so does an unreadable value that starts with
-    one, and an empty or dateless value falls back to the posting date at noon.
-    ``estimated`` is True for every fallback.
-    """
+    when: datetime
+    kind: str
+    utc: bool = False
+
+    @property
+    def estimated(self) -> bool:
+        return self.kind != "time"
+
+    @property
+    def unreadable(self) -> bool:
+        return self.kind.startswith("unreadable")
+
+    @property
+    def rank(self) -> int:
+        """What the stamp tells: its own time of day (0), its own date (1), nothing (2)."""
+        return {"time": 0, "date": 1, "unreadable-date": 1}.get(self.kind, 2)
+
+
+def read_report_stamp(value: str, posting_date: datetime, zone: str | None = None) -> ReportStamp:
+    """A report's ``create_date``. A timestamp is used as given. A date alone keeps its date
+    with the time estimated at noon, because the date is the audit signal (an entry keyed
+    long after its posting date); so does an unreadable value that starts with one. An empty
+    or dateless value stands in the posting date at noon."""
     text = (value or "").strip()
-    if text:
-        if _ISO_TIMESTAMP.match(text):
-            try:
-                return parse_qbo_datetime(text, zone), False
-            except ValueError:
-                pass
-        for fmt in _REPORT_TIME_FORMATS:
-            try:
-                return datetime.strptime(text, fmt), False
-            except ValueError:
-                continue
-        for fmt in _REPORT_DATE_FORMATS:
-            try:
-                return datetime.strptime(text, fmt).replace(hour=ESTIMATED_HOUR), True
-            except ValueError:
-                continue
-        leading = _LEADING_DATE.match(text)
-        if leading:
-            try:
-                day = datetime.strptime(leading.group(), "%Y-%m-%d" if leading.group(1) else "%m/%d/%Y")
-                return day.replace(hour=ESTIMATED_HOUR), True
-            except ValueError:
-                pass
-    return posting_date.replace(hour=ESTIMATED_HOUR, minute=0, second=0, microsecond=0), True
-
-
-def is_report_date(value: str) -> bool:
-    """Whether a ``create_date`` is a date alone, the one estimate that is expected."""
-    for fmt in _REPORT_DATE_FORMATS:
+    fallback = posting_date.replace(hour=ESTIMATED_HOUR, minute=0, second=0, microsecond=0)
+    if not text:
+        return ReportStamp(fallback, "blank")
+    if _ISO_TIMESTAMP.match(text):
         try:
-            datetime.strptime((value or "").strip(), fmt)
-            return True
+            return ReportStamp(parse_qbo_datetime(text, zone), "time", bool(_UTC_SUFFIX.search(text)))
+        except ValueError:
+            pass
+    for fmt in _REPORT_TIME_FORMATS:
+        try:
+            return ReportStamp(datetime.strptime(text, fmt), "time")
         except ValueError:
             continue
-    return False
+    for fmt in _REPORT_DATE_FORMATS:
+        try:
+            return ReportStamp(datetime.strptime(text, fmt).replace(hour=ESTIMATED_HOUR), "date")
+        except ValueError:
+            continue
+    leading = _LEADING_DATE.match(text)
+    if leading:
+        try:
+            day = datetime.strptime(leading.group(), "%Y-%m-%d" if leading.group(1) else "%m/%d/%Y")
+            return ReportStamp(day.replace(hour=ESTIMATED_HOUR), "unreadable-date")
+        except ValueError:
+            pass
+    return ReportStamp(fallback, "unreadable")
+
+
+def parse_report_datetime(value: str, posting_date: datetime,
+                          zone: str | None = None) -> tuple[datetime, bool]:
+    """A report's ``create_date`` as ``(entered_at, estimated)``; see ``read_report_stamp``."""
+    stamp = read_report_stamp(value, posting_date, zone)
+    return stamp.when, stamp.estimated
 
 
 def _date(value: str) -> datetime:
@@ -1237,18 +1255,11 @@ def journal_entries_to_lines(entries: list[Mapping[str, Any]], accounts: Mapping
         created = (entry.get("MetaData") or {}).get("CreateTime")
         if created:
             entered_at, estimated = parse_qbo_datetime(created, zone), False
-            # QuickBooks writes CreateTime with the company's offset, so "as given" is the
-            # company's clock, the report's; a UTC time without a zone is not.
-            stats.utc_times_without_zone += not zone and bool(_UTC_SUFFIX.search(created.strip()))
         else:
             entered_at, estimated = parse_report_datetime("", posting)
         user = (headers.get(("JournalEntry", txn_id)) or {}).get("create_by") or UNKNOWN_USER
-        stats.journal_entries += 1
-        stats.adjusting_entries += bool(entry.get("Adjustment"))
-        stats.estimated_entered_at += estimated
-        stats.unknown_users += user == UNKNOWN_USER
         fallback = entry.get("PrivateNote") or f"Journal entry {entry.get('DocNumber') or txn_id}"
-        line_no = 0
+        entry_lines: list[dict[str, Any]] = []
         for line in entry.get("Line") or []:
             detail_type = line.get("DetailType")
             if detail_type != "JournalEntryLineDetail":
@@ -1267,11 +1278,21 @@ def journal_entries_to_lines(entries: list[Mapping[str, Any]], accounts: Mapping
                 continue
             ref = detail.get("AccountRef") or {}
             account = _account(accounts, ref.get("value"), ref.get("name"), stats)
-            line_no += 1
-            lines.append(_line(entry_id_for("JournalEntry", txn_id), line_no, posting, entered_at,
-                               account, line.get("Description") or fallback,
-                               amount if side == "Debit" else 0.0,
-                               amount if side == "Credit" else 0.0, "Manual", user, estimated))
+            entry_lines.append(_line(entry_id_for("JournalEntry", txn_id), len(entry_lines) + 1, posting,
+                                     entered_at, account, line.get("Description") or fallback,
+                                     amount if side == "Debit" else 0.0,
+                                     amount if side == "Credit" else 0.0, "Manual", user, estimated))
+        if not entry_lines:  # set aside like a report transaction with only zero rows
+            stats.zero_transactions += 1
+            continue
+        stats.journal_entries += 1
+        stats.adjusting_entries += bool(entry.get("Adjustment"))
+        stats.estimated_entered_at += estimated
+        stats.unknown_users += user == UNKNOWN_USER
+        # QuickBooks writes CreateTime with the company's offset, so "as given" is the
+        # company's clock, the report's; a UTC time without a zone is not.
+        stats.utc_times_without_zone += not zone and bool(created and _UTC_SUFFIX.search(created.strip()))
+        lines.extend(entry_lines)
     return lines
 
 
@@ -1303,14 +1324,13 @@ def general_ledger_to_lines(report: Mapping[str, Any], accounts: Mapping[str, Ac
     for (token, txn_id), rows in groups.items():
         posting = _date(rows[0][0]["tx_date"])
         # Rows of one transaction can carry different create dates (the sandbox stamps some
-        # invoices' tax rows days later), and which row comes first is only the order of the
-        # account sections: the entry time is the earliest readable stamp, when it was keyed.
-        stamped = []
-        for values, _ in rows:
-            created = (values.get("create_date") or "").strip()
-            when, guessed = parse_report_datetime(created, posting, zone)
-            stamped.append((guessed, not created, when, created, values))
-        estimated, _, entered_at, _, keyed = min(stamped, key=lambda s: s[:3])
+        # invoices' tax rows later), and which row comes first is only the order of the
+        # account sections: the entry time is the stamp that says most (a time of day, then
+        # a date, then nothing but the posting date), the earliest among equals.
+        stamp, keyed = min(((read_report_stamp(values.get("create_date", ""), posting, zone), values)
+                            for values, _ in rows),
+                           key=lambda s: (s[0].rank, s[0].when, not s[0].unreadable))
+        estimated, entered_at = stamp.estimated, stamp.when
         user = (keyed.get("create_by") or next((v.get("create_by") for v, _ in rows if v.get("create_by")), "")
                 or UNKNOWN_USER)
         entry: list[dict[str, Any]] = []
@@ -1335,8 +1355,9 @@ def general_ledger_to_lines(report: Mapping[str, Any], accounts: Mapping[str, Ac
             continue
         stats.other_transactions += 1
         stats.estimated_entered_at += estimated
-        # a silent fallback once passed a whole pull off as "date only" (see is_report_date)
-        stats.unreadable_entered_at += any(s[0] and s[3] and not is_report_date(s[3]) for s in stamped)
+        # a silent fallback once passed a whole pull off as "date only": say it instead
+        stats.unreadable_entered_at += stamp.unreadable
+        stats.utc_times_without_zone += not zone and stamp.utc
         stats.unknown_users += user == UNKNOWN_USER
         lines.extend(entry)
     return lines

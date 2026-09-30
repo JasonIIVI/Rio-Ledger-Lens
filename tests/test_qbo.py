@@ -715,6 +715,49 @@ def test_a_transaction_is_keyed_when_its_earliest_row_was_created_whatever_the_r
     assert blank_first.estimated_entered_at == 0
 
 
+def test_a_stamp_ranks_by_what_it_tells_and_only_the_stamp_used_counts_as_unreadable():
+    # a value that falls back to the posting date says less than another row's own date
+    stats = qbo.PullStats()
+    lines = qbo.general_ledger_to_lines(gl_report("2026-09-03", first_row_stamp="garbled"), {}, None, stats)
+    assert {line["entered_at"] for line in lines} == {datetime(2026, 9, 3, 12)}
+    assert (stats.estimated_entered_at, stats.unreadable_entered_at) == (1, 0)
+    # an unreadable row beside a readable one leaves a real entry time and no warning
+    read = qbo.PullStats()
+    lines = qbo.general_ledger_to_lines(gl_report("2026-09-01T15:04:04-0700",
+                                                  first_row_stamp="2026-09-02 @ 3:14 PM"), {}, None, read)
+    assert {line["entered_at"] for line in lines} == {datetime(2026, 9, 1, 15, 4, 4)}
+    assert (read.estimated_entered_at, read.unreadable_entered_at) == (0, 0)
+    assert not any("cannot read" in line for line in read.describe())
+    # the stamp used is unreadable: counted once per entry, and said so
+    lost = qbo.PullStats()
+    qbo.general_ledger_to_lines(gl_report("09/02/2026 at 3 PM"), {}, None, lost)
+    assert (lost.estimated_entered_at, lost.unreadable_entered_at) == (1, 1)
+    assert any("1 entrie(s) whose create date this tool cannot read" in line for line in lost.describe())
+
+
+def test_a_report_time_in_utc_is_flagged_like_a_journal_entry_time():
+    stats = qbo.PullStats()
+    lines = qbo.general_ledger_to_lines(gl_report("2026-09-02T22:14:27Z"), {}, None, stats)
+    assert {line["entered_at"] for line in lines} == {datetime(2026, 9, 2, 22, 14, 27)}
+    assert stats.utc_times_without_zone == 1
+    assert any("QBO_TIMEZONE" in line for line in stats.describe())
+    zoned = qbo.PullStats()
+    lines = qbo.general_ledger_to_lines(gl_report("2026-09-02T22:14:27Z"), {}, "America/Los_Angeles", zoned)
+    assert {line["entered_at"] for line in lines} == {datetime(2026, 9, 2, 15, 14, 27)}
+    assert zoned.utc_times_without_zone == 0
+
+
+def test_a_journal_entry_with_no_posting_line_is_set_aside_like_a_report_transaction():
+    entry = {"Id": "9", "TxnDate": "2026-09-01", "MetaData": {"CreateTime": "2026-09-01T10:00:00-07:00"},
+             "Line": [{"Amount": 0, "DetailType": "JournalEntryLineDetail",
+                       "JournalEntryLineDetail": {"PostingType": "Debit", "AccountRef": {"value": "35"}}},
+                      {"DetailType": "DescriptionOnly", "Description": "memo only"}]}
+    stats = qbo.PullStats()
+    assert qbo.journal_entries_to_lines([entry], {}, None, None, stats) == []
+    assert (stats.journal_entries, stats.zero_transactions) == (0, 1)
+    assert (stats.zero_amount_lines, stats.description_only_lines, stats.unknown_users) == (1, 1, 0)
+
+
 def test_a_transaction_with_only_zero_rows_is_set_aside_not_counted_as_an_entry():
     # QuickBooks' own "Created by QB Online to link credits to charges." payment is all .00
     stats = qbo.PullStats()
@@ -729,7 +772,7 @@ def test_a_create_date_this_tool_cannot_read_is_counted_and_said_not_called_date
     lines = qbo.general_ledger_to_lines(gl_report("2026-09-02 @ 3:14 PM"), {}, None, stats)
     assert {line["entered_at"] for line in lines} == {datetime(2026, 9, 2, 12)}
     assert (stats.estimated_entered_at, stats.unreadable_entered_at) == (1, 1)
-    assert any("1 create date(s) in a format this tool cannot read" in line for line in stats.describe())
+    assert any("1 entrie(s) whose create date this tool cannot read" in line for line in stats.describe())
     read = qbo.PullStats()
     lines = qbo.general_ledger_to_lines(gl_report("2026-09-02T15:14:27-0700"), {}, None, read)
     assert {line["entered_at"] for line in lines} == {datetime(2026, 9, 2, 15, 14, 27)}
