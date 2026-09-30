@@ -303,7 +303,8 @@ ledgerlens report data/qbo-ledger.csv --db data/review.sqlite
 What the pull does, and what it cannot know:
 
 - **Three requests.** Every account (inactive ones included, so an old line still has a
-  name), the period's `JournalEntry` entities, and the `GeneralLedger` report. Journal
+  name), the period's `JournalEntry` entities, and the `GeneralLedger` report on an accrual
+  basis. Journal
   entries come from the entity, whose lines are complete. Every other transaction (invoices,
   bills, payments, deposits) is rebuilt from the report, which lists each posting under the
   account it hits: grouping its rows by transaction gives each one back whole and balanced.
@@ -313,10 +314,13 @@ What the pull does, and what it cannot know:
 - **Who and when.** The user comes from the report's "created by" column, since the entity
   has none. The entry time is the entity's `CreateTime`; for other transactions it is the
   report's create date, and where that is a date alone the time is estimated at noon and the
-  line is marked `entered_at_estimated`. `QBO_TIMEZONE` converts timestamps to one zone.
+  line is marked `entered_at_estimated`. QuickBooks writes times with the company's offset,
+  so they are used as given; `QBO_TIMEZONE` converts them to one zone instead, and the pull
+  warns if a time arrives in UTC without it.
 - **Nothing dropped silently.** Description-only lines, beginning-balance rows, lines on
-  accounts the query did not return, unbalanced entries and journal entries the report does
-  not list are all counted and printed.
+  accounts the query did not return, unbalanced entries, journal entries the report does not
+  list and journal entries the report lists but the query did not return are all counted and
+  printed.
 - **One review history per company.** The sidecar names the ledger `qbo:<realm id>`, so a
   re-pull (whose CSV digest differs) keeps the same notes and decisions.
 

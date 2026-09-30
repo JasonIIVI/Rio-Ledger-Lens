@@ -985,6 +985,8 @@ class PullStats:
     unknown_users: int = 0
     unbalanced_entries: int = 0
     je_ids_missing_from_report: int = 0
+    je_ids_missing_from_query: int = 0
+    utc_times_without_zone: int = 0
 
     def describe(self) -> list[str]:
         return [
@@ -998,8 +1000,12 @@ class PullStats:
             f"user on {self.unknown_users} entrie(s) ({UNKNOWN_USER})",
             f"Checks: {self.unknown_account_lines} line(s) on accounts the Account query did not "
             f"return, {self.unbalanced_entries} unbalanced entrie(s), "
-            f"{self.je_ids_missing_from_report} journal entrie(s) missing from the GL report",
-        ]
+            f"{self.je_ids_missing_from_report} journal entrie(s) missing from the GL report, "
+            f"{self.je_ids_missing_from_query} journal entrie(s) in the GL report the query did "
+            "not return (not in the ledger)",
+        ] + ([f"Warning: {self.utc_times_without_zone} journal-entry time(s) arrived in UTC and "
+              "no QBO_TIMEZONE is set, so they are not on the company's clock like the rest; "
+              "set QBO_TIMEZONE"] if self.utc_times_without_zone else [])
 
 
 @dataclass(frozen=True)
@@ -1056,6 +1062,7 @@ def parse_qbo_datetime(value: str, zone: str | None = None) -> datetime:
     return moment.replace(tzinfo=None)
 
 
+_UTC_SUFFIX = re.compile(r"(Z|[+-]00:?00)$")
 _REPORT_TIME_FORMATS = ("%Y-%m-%d %H:%M:%S", "%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y %H:%M:%S")
 _REPORT_DATE_FORMATS = ("%Y-%m-%d", "%m/%d/%Y")
 
@@ -1169,6 +1176,9 @@ def journal_entries_to_lines(entries: list[Mapping[str, Any]], accounts: Mapping
         created = (entry.get("MetaData") or {}).get("CreateTime")
         if created:
             entered_at, estimated = parse_qbo_datetime(created, zone), False
+            # QuickBooks writes CreateTime with the company's offset, so "as given" is the
+            # company's clock, the report's; a UTC time without a zone is not.
+            stats.utc_times_without_zone += not zone and bool(_UTC_SUFFIX.search(created.strip()))
         else:
             entered_at, estimated = parse_report_datetime("", posting)
         user = (headers.get(("JournalEntry", txn_id)) or {}).get("create_by") or UNKNOWN_USER
@@ -1292,13 +1302,18 @@ def pull(client: QboClient, start: date, end: date,
                               stats)
     entries = client.query(f"select * from JournalEntry where TxnDate >= '{start:%Y-%m-%d}' "
                            f"and TxnDate <= '{end:%Y-%m-%d}'")
+    # Accrual, explicitly: the report otherwise follows the company's preference, and a
+    # cash-basis report would drop unpaid invoices and bills beside basis-free journal entries.
     report = client.report("GeneralLedger", start_date=f"{start:%Y-%m-%d}",
-                           end_date=f"{end:%Y-%m-%d}", columns=",".join(GL_COLUMNS))
+                           end_date=f"{end:%Y-%m-%d}", accounting_method="Accrual",
+                           columns=",".join(GL_COLUMNS))
     headers = report_headers(report)
     lines = journal_entries_to_lines(entries, accounts, headers, zone, stats)
     lines += general_ledger_to_lines(report, accounts, zone, stats)
-    stats.je_ids_missing_from_report = sum(
-        ("JournalEntry", str(e["Id"])) not in headers for e in entries)
+    queried = {("JournalEntry", str(e["Id"])) for e in entries}
+    stats.je_ids_missing_from_report = len(queried - set(headers))
+    stats.je_ids_missing_from_query = sum(1 for key in headers
+                                          if key[0] == "JournalEntry" and key not in queried)
     return to_ledger_frame(lines, stats), stats
 
 

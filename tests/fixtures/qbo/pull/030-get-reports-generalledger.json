@@ -4,6 +4,10 @@
     "path": "/reports/GeneralLedger",
     "query": [
       [
+        "accounting_method",
+        "Accrual"
+      ],
+      [
         "columns",
         "tx_date,txn_type,doc_num,name,memo,split_acc,debt_amt,credit_amt,create_by,create_date"
       ],
@@ -510,7 +514,7 @@
                       "value": "qbo-user-2"
                     },
                     {
-                      "value": "2025-12-28 14:47:10"
+                      "value": "2025-12-28 22:47:10"
                     }
                   ]
                 }
@@ -918,7 +922,7 @@
                       "value": "qbo-user-2"
                     },
                     {
-                      "value": "2025-12-28 14:47:10"
+                      "value": "2025-12-28 22:47:10"
                     }
                   ]
                 }

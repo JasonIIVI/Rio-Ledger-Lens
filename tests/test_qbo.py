@@ -536,16 +536,17 @@ def test_journal_entries_come_from_the_entity_with_the_user_from_the_report(pull
     assert set(je["source"]) == {"Manual"} and set(je["created_by"]) == {"qbo-user-1"}
     assert je["entered_at"].iloc[0] == pd.Timestamp("2025-11-14 09:12:44")
     revenue = lines_of(frame, "QBO-JournalEntry-147")
-    assert revenue["entered_at"].iloc[0] == pd.Timestamp("2025-12-28 22:47:10")  # Z, as given
+    assert revenue["entered_at"].iloc[0] == pd.Timestamp("2025-12-28 22:47:10")  # the company's clock
     assert revenue["is_weekend"].all()  # Sunday 28 December
     assert list(revenue["account_type"]) == ["Asset", "Revenue"]
 
 
 def test_a_named_timezone_converts_api_timestamps_first():
-    frame, _ = qbo.pull(fixture_client(zone="America/Los_Angeles"),
-                        date(2025, 10, 1), date(2025, 12, 31))
-    assert lines_of(frame, "QBO-JournalEntry-147")["entered_at"].iloc[0] == pd.Timestamp("2025-12-28 14:47:10")
-    assert lines_of(frame, "QBO-JournalEntry-146")["entered_at"].iloc[0] == pd.Timestamp("2025-11-14 09:12:44")
+    frame, stats = qbo.pull(fixture_client(zone="America/New_York"),
+                            date(2025, 10, 1), date(2025, 12, 31))
+    assert lines_of(frame, "QBO-JournalEntry-147")["entered_at"].iloc[0] == pd.Timestamp("2025-12-29 01:47:10")
+    assert lines_of(frame, "QBO-JournalEntry-146")["entered_at"].iloc[0] == pd.Timestamp("2025-11-14 12:12:44")
+    assert stats.utc_times_without_zone == 0
 
 
 def test_other_transactions_are_rebuilt_from_the_report_whole_and_balanced(pulled):
@@ -810,3 +811,32 @@ def test_leftovers_names_what_slipped_through():
     assert qbo.leftovers('{"a": "Janet"}', "4620816365", {"Jane": "qbo-user-1"}) == []
     already = {"qbo-user-1": "qbo-user-1", "qbo-user-2": "qbo-user-2"}  # re-recording sanitized data
     assert qbo.leftovers('{"a": "qbo-user-1 qbo-user-2"}', "", already) == []
+
+
+def test_a_journal_entry_the_report_lists_but_the_query_missed_is_counted(tmp_path):
+    import shutil
+
+    shutil.copytree(PULL, tmp_path / "pull")
+    path = tmp_path / "pull" / "020-post-query-journalentry-p1.json"
+    fixture = json.loads(path.read_text())
+    fixture["response"]["body"]["QueryResponse"]["JournalEntry"].pop()  # JE 147 not returned
+    path.write_text(json.dumps(fixture))
+    frame, stats = qbo.pull(fixture_client(tmp_path / "pull"), date(2025, 10, 1), date(2025, 12, 31))
+    assert "QBO-JournalEntry-147" not in set(frame["entry_id"])
+    assert (stats.je_ids_missing_from_query, stats.je_ids_missing_from_report) == (1, 0)
+    assert "1 journal entrie(s) in the GL report the query did not return" in "\n".join(stats.describe())
+
+
+def test_utc_journal_entry_times_without_a_zone_are_flagged_not_mixed_in_silently():
+    entry = {"Id": "5", "TxnDate": "2025-10-01", "MetaData": {"CreateTime": "2025-10-01T23:30:00Z"},
+             "Line": [{"Amount": 1, "DetailType": "JournalEntryLineDetail",
+                       "JournalEntryLineDetail": {"PostingType": "Debit", "AccountRef": {"value": "1"}}}]}
+    stats = qbo.PullStats()
+    lines = qbo.journal_entries_to_lines([entry], {}, None, None, stats)
+    assert lines[0]["entered_at"] == datetime(2025, 10, 1, 23, 30)
+    assert stats.utc_times_without_zone == 1
+    assert any("QBO_TIMEZONE" in line for line in stats.describe())
+    zoned = qbo.PullStats()
+    lines = qbo.journal_entries_to_lines([entry], {}, None, "America/Los_Angeles", zoned)
+    assert lines[0]["entered_at"] == datetime(2025, 10, 1, 16, 30) and zoned.utc_times_without_zone == 0
+    assert qbo.parse_qbo_datetime("2025-10-01T23:30:00Z") == datetime(2025, 10, 1, 23, 30)

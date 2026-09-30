@@ -24,7 +24,7 @@ endpoint's reply is secret by nature.
 
 | Directory | Used by | What it exercises |
 |---|---|---|
-| `pull/` | `pull-qbo --fixtures`, `test_qbo.py` | Accounts (an `AcctNum`, an inactive account, a sub-account), two journal entries (a description-only line, a `-08:00` and a `Z` CreateTime, a Sunday period-end manual credit to revenue), and a GL report (nested sections, a beginning-balance row, an invoice with a tax line, a date-only and a timed `create_date`, journal-entry rows that are skipped) |
+| `pull/` | `pull-qbo --fixtures`, `test_qbo.py` | Accounts (an `AcctNum`, an inactive account, a sub-account), two journal entries (a description-only line, `-08:00` CreateTimes on the same clock as the report's create dates, a Sunday after-hours period-end manual credit to revenue), and a GL report (nested sections, a beginning-balance row, an invoice with a tax line, a date-only and a timed `create_date`, journal-entry rows that are skipped) |
 | `auth/` | the `qbo-auth` CLI test | the authorization-code grant's reply |
 
 ## Sanitization (what `--record` does to a live response)
@@ -50,3 +50,6 @@ and this section should then say what was found:
 6. Whether a 429 carries `Retry-After` (Intuit documents none and says to wait 60 s).
 7. The offset on `MetaData.CreateTime` for the sandbox company (`-07:00` / `-08:00`).
 8. Whether report column keys arrive as `MetaData` `ColKey`, as `ColType`, or only as titles.
+9. That `accounting_method=Accrual` is honoured by the GeneralLedger report.
+10. That `MetaData.CreateTime` carries the company's offset (so it is on the report's clock);
+    a pull warns when it arrives in UTC with no `QBO_TIMEZONE` set.

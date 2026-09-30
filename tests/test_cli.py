@@ -814,3 +814,15 @@ def test_pulled_books_stay_in_the_checkouts_ignored_data_directory(qbo_env, caps
     assert _replay_to(repo / "data" / "q.csv") == 0
     assert (repo / "data" / "q.identity.json").exists()
     assert _replay_to(qbo_env.root / "elsewhere" / "q.csv") == 0  # outside any checkout
+
+
+def test_a_replay_converts_times_with_qbo_timezone_like_the_recorded_pull(qbo_env, monkeypatch):
+    import pandas as pd
+
+    monkeypatch.setenv("QBO_TIMEZONE", "America/New_York")
+    assert _replay_to(qbo_env.root / "data" / "q.csv") == 0
+    ledger = pd.read_csv(qbo_env.root / "data" / "q.csv")
+    times = set(ledger.loc[ledger["entry_id"] == "QBO-JournalEntry-147", "entered_at"])
+    assert times == {"2025-12-29 01:47:10"}
+    monkeypatch.setenv("QBO_TIMEZONE", "Mars/Olympus")
+    assert _replay_to(qbo_env.root / "data" / "q.csv") == 2

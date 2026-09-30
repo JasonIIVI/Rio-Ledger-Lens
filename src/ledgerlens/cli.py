@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import webbrowser
 from datetime import date, datetime
@@ -399,7 +400,11 @@ def cmd_pull_qbo(args: argparse.Namespace) -> int:
     store = None
     if args.fixtures:
         realm = args.realm_id or FIXTURE_REALM
-        config = qbo.QboConfig.for_fixtures(realm)
+        try:  # a replay converts times the way the recorded pull did
+            config = qbo.QboConfig.for_fixtures(realm, os.environ.get("QBO_TIMEZONE") or None)
+        except qbo.QboConfigError as exc:
+            print(f"error: {exc}")
+            return 2
         tokens = Tokens.issued("TEST-ACCESS", "TEST-REFRESH", 3600, 86400, realm, "sandbox")
         try:
             transport = qbo.RecordedTransport(args.fixtures)
