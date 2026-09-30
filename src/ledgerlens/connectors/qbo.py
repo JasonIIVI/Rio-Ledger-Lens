@@ -996,6 +996,7 @@ class PullStats:
     unknown_account_lines: int = 0
     rows_without_txn_id: int = 0
     estimated_entered_at: int = 0
+    unreadable_entered_at: int = 0
     unknown_users: int = 0
     unbalanced_entries: int = 0
     je_ids_missing_from_report: int = 0
@@ -1010,7 +1011,7 @@ class PullStats:
             f"Set aside: {self.description_only_lines} description-only line(s), "
             f"{self.other_detail_lines} other non-posting line(s), {self.zero_amount_lines} zero line(s), "
             f"{self.rows_without_txn_id} report row(s) with no transaction (balances)",
-            f"Estimated: entry time on {self.estimated_entered_at} entrie(s) (date only), "
+            f"Estimated: entry time on {self.estimated_entered_at} entrie(s) (no time of day given), "
             f"user on {self.unknown_users} entrie(s) ({UNKNOWN_USER})",
             f"Checks: {self.unknown_account_lines} line(s) on accounts the Account query did not "
             f"return, {self.unbalanced_entries} unbalanced entrie(s), "
@@ -1020,7 +1021,11 @@ class PullStats:
         ] + ([f"Warning: {self.utc_times_without_zone} journal-entry time(s) arrived in UTC and "
               "no QBO_TIMEZONE is set, so they are not on the company's clock like the rest; "
               "set QBO_TIMEZONE to the company's own time zone"]
-             if self.utc_times_without_zone else [])
+             if self.utc_times_without_zone else []) + (
+            [f"Warning: {self.unreadable_entered_at} create date(s) in a format this tool cannot "
+             "read; their entry time is estimated (the date they start with, else the posting "
+             "date, at noon), so the keying-time tests are weaker for them"]
+            if self.unreadable_entered_at else [])
 
 
 @dataclass(frozen=True)
@@ -1071,6 +1076,8 @@ def parse_qbo_datetime(value: str, zone: str | None = None) -> datetime:
     text = value.strip()
     if text.endswith("Z"):
         text = text[:-1] + "+00:00"
+    # The GL report writes the offset as -0700; Python 3.9's fromisoformat reads only -07:00
+    text = _COMPACT_OFFSET.sub(r"\1:\2", text)
     moment = datetime.fromisoformat(text)
     if moment.tzinfo is not None and zone:
         moment = moment.astimezone(_zone(zone))
@@ -1078,8 +1085,10 @@ def parse_qbo_datetime(value: str, zone: str | None = None) -> datetime:
 
 
 _UTC_SUFFIX = re.compile(r"(Z|[+-]00:?00)$")
+_COMPACT_OFFSET = re.compile(r"(\d\d:\d\d(?::\d\d(?:\.\d+)?)?[+-]\d\d)(\d\d)$")
 _REPORT_TIME_FORMATS = ("%Y-%m-%d %H:%M:%S", "%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y %H:%M:%S")
 _REPORT_DATE_FORMATS = ("%Y-%m-%d", "%m/%d/%Y")
+_LEADING_DATE = re.compile(r"\d{4}-\d\d-\d\d")
 
 
 def parse_report_datetime(value: str, posting_date: datetime,
@@ -1088,12 +1097,13 @@ def parse_report_datetime(value: str, posting_date: datetime,
 
     A timestamp is used as given. A date alone keeps its date with the time
     estimated at noon, because the date is the audit signal (an entry keyed
-    long after its posting date); an empty or unreadable value falls back to
-    the posting date at noon. ``estimated`` is True for both fallbacks.
+    long after its posting date); so does an unreadable value that starts with
+    one, and an empty or dateless value falls back to the posting date at noon.
+    ``estimated`` is True for every fallback.
     """
     text = (value or "").strip()
     if text:
-        if "T" in text or re.search(r"[+-]\d\d:\d\d$|Z$", text):
+        if "T" in text or re.search(r"[+-]\d\d:?\d\d$|Z$", text):
             try:
                 return parse_qbo_datetime(text, zone), False
             except ValueError:
@@ -1108,7 +1118,24 @@ def parse_report_datetime(value: str, posting_date: datetime,
                 return datetime.strptime(text, fmt).replace(hour=ESTIMATED_HOUR), True
             except ValueError:
                 continue
+        leading = _LEADING_DATE.match(text)
+        if leading:
+            try:
+                return datetime.strptime(leading.group(), "%Y-%m-%d").replace(hour=ESTIMATED_HOUR), True
+            except ValueError:
+                pass
     return posting_date.replace(hour=ESTIMATED_HOUR, minute=0, second=0, microsecond=0), True
+
+
+def is_report_date(value: str) -> bool:
+    """Whether a ``create_date`` is a date alone, the one estimate that is expected."""
+    for fmt in _REPORT_DATE_FORMATS:
+        try:
+            datetime.strptime((value or "").strip(), fmt)
+            return True
+        except ValueError:
+            continue
+    return False
 
 
 def _date(value: str) -> datetime:
@@ -1257,10 +1284,13 @@ def general_ledger_to_lines(report: Mapping[str, Any], accounts: Mapping[str, Ac
     for (token, txn_id), rows in groups.items():
         first = rows[0][0]
         posting = _date(first["tx_date"])
-        entered_at, estimated = parse_report_datetime(first.get("create_date", ""), posting, zone)
+        created = first.get("create_date", "")
+        entered_at, estimated = parse_report_datetime(created, posting, zone)
         user = first.get("create_by") or UNKNOWN_USER
         stats.other_transactions += 1
         stats.estimated_entered_at += estimated
+        # a silent fallback once passed a whole pull off as "date only" (see is_report_date)
+        stats.unreadable_entered_at += estimated and bool(created.strip()) and not is_report_date(created)
         stats.unknown_users += user == UNKNOWN_USER
         line_no = 0
         for values, account_cell in rows:

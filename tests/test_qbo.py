@@ -576,6 +576,50 @@ def test_a_date_only_create_date_keeps_its_date_and_estimates_the_time():
         datetime(2025, 10, 9, 8, 2, 3), False)
 
 
+def test_a_create_date_whose_offset_has_no_colon_is_read_on_every_python():
+    # The sandbox's GL report writes create_date as 2026-09-02T15:14:27-0700. Python 3.9's
+    # fromisoformat wants -07:00, and the failed read put the posting date in its place.
+    posting = datetime(2026, 7, 16)
+    assert qbo.parse_report_datetime("2026-09-02T15:14:27-0700", posting) == (
+        datetime(2026, 9, 2, 15, 14, 27), False)
+    assert qbo.parse_report_datetime("2026-09-02T15:14:27-0700", posting, "UTC") == (
+        datetime(2026, 9, 2, 22, 14, 27), False)
+    assert qbo.parse_qbo_datetime("2026-09-02T15:14:27+0530", "UTC") == datetime(2026, 9, 2, 9, 44, 27)
+    # a format nobody expected keeps its date, the audit signal, rather than the posting date
+    assert qbo.parse_report_datetime("2026-09-02 @ 3:14 PM", posting) == (datetime(2026, 9, 2, 12), True)
+
+
+def gl_report(create_date: str) -> dict:
+    """A two-line Check in the report's shape, with the column keys in ColKey metadata."""
+    keys = ["tx_date", "txn_type", "create_date", "create_by", "debt_amt", "credit_amt"]
+
+    def section(account_id, name, debit, credit):
+        cells = ["2026-07-16", "Check", create_date, "qbo-user-1", debit, credit]
+        data = [{"value": v, "id": "57"} if k == "txn_type" else {"value": v} for k, v in zip(keys, cells)]
+        return {"type": "Section", "Header": {"ColData": [{"value": name, "id": account_id}]},
+                "Rows": {"Row": [{"type": "Data", "ColData": data}]}}
+
+    return {"Columns": {"Column": [{"ColTitle": k, "MetaData": [{"Name": "ColKey", "Value": k}]}
+                                   for k in keys]},
+            "Rows": {"Row": [section("35", "Checking", "", "54.55"), section("56", "Fuel", "54.55", "")]}}
+
+
+def test_a_create_date_this_tool_cannot_read_is_counted_and_said_not_called_date_only():
+    stats = qbo.PullStats()
+    lines = qbo.general_ledger_to_lines(gl_report("2026-09-02 @ 3:14 PM"), {}, None, stats)
+    assert {line["entered_at"] for line in lines} == {datetime(2026, 9, 2, 12)}
+    assert (stats.estimated_entered_at, stats.unreadable_entered_at) == (1, 1)
+    assert any("1 create date(s) in a format this tool cannot read" in line for line in stats.describe())
+    read = qbo.PullStats()
+    lines = qbo.general_ledger_to_lines(gl_report("2026-09-02T15:14:27-0700"), {}, None, read)
+    assert {line["entered_at"] for line in lines} == {datetime(2026, 9, 2, 15, 14, 27)}
+    assert (read.estimated_entered_at, read.unreadable_entered_at) == (0, 0)
+    assert not any("cannot read" in line for line in read.describe())
+    dated = qbo.PullStats()
+    qbo.general_ledger_to_lines(gl_report("2026-09-02"), {}, None, dated)
+    assert (dated.estimated_entered_at, dated.unreadable_entered_at) == (1, 0)
+
+
 def test_unknown_accounts_users_and_missing_entries_are_counted_not_dropped():
     stats = qbo.PullStats()
     entry = {"Id": "9", "TxnDate": "2025-10-01", "Line": [
