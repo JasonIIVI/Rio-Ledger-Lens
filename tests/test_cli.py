@@ -566,6 +566,7 @@ def test_a_malformed_identity_sidecar_stops_every_command_with_a_message(
 QBO_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "qbo"
 QBO_ENV = {"QBO_CLIENT_ID": "CLIENT-ID", "QBO_CLIENT_SECRET": "CLIENT-SECRET",
            "QBO_ENVIRONMENT": "sandbox"}
+QBO_PERIOD = ["--start", "2026-07-01", "--end", "2026-09-30"]  # the recorded sandbox quarter
 
 
 @pytest.fixture
@@ -588,17 +589,19 @@ def qbo_env(tmp_path, monkeypatch):
 
 def test_pull_qbo_from_fixtures_writes_a_ledger_every_command_reads(qbo_env, capsys):
     out = qbo_env.root / "data" / "qbo-ledger.csv"
-    code = main(["pull-qbo", "--start", "2025-10-01", "--end", "2025-12-31",
-                 "--fixtures", str(QBO_FIXTURES / "pull"), "--out", str(out)])
+    code = main(["pull-qbo", *QBO_PERIOD, "--fixtures", str(QBO_FIXTURES / "pull"), "--out", str(out)])
     printed = capsys.readouterr().out
     assert code == 0, printed
-    assert "Wrote 13 lines / 6 entries" in printed
+    assert "Wrote 297 lines / 116 entries" in printed
     assert "Identity qbo:sandbox-fixtures written to" in printed
-    assert "small population" in printed and "not used" not in printed
+    assert "small population" not in printed and "not used" not in printed  # 116 entries
     sidecar = out.with_suffix(".identity.json")
     assert json.loads(sidecar.read_text())["ledger_id"] == "qbo:sandbox-fixtures"
     assert main(["test", str(out)]) == 0
-    assert "QBO-JournalEntry-147" in capsys.readouterr().out
+    # the sandbox's round $25,000 opening-balance journal entry: a round amount (JET-01) keyed
+    # by hand by a user not on the generator's approver list (JET-12)
+    top = capsys.readouterr().out.split("Top 10 by risk score:")[1]
+    assert re.search(r"QBO-JournalEntry-8 .*JET-01.*JET-12.*\$25,000\.00", top)
     assert main(["report", str(out), "--no-model", "--out", str(qbo_env.root / "wp.xlsx")]) == 0
 
 
@@ -642,18 +645,17 @@ def test_a_live_pull_uses_the_stored_tokens_and_records_sanitized_fixtures(qbo_e
     live = qbo.RecordedTransport(QBO_FIXTURES / "pull")
     monkeypatch.setattr(qbo, "default_transport", lambda: live)
     recorded = qbo_env.root / "recorded"
-    code = main(["pull-qbo", "--start", "2025-10-01", "--end", "2025-12-31", "--record", str(recorded)])
+    code = main(["pull-qbo", *QBO_PERIOD, "--record", str(recorded)])
     printed = capsys.readouterr().out
     assert code == 0, printed
     assert "Identity qbo:4620816365" in printed and "Recorded 3 sanitized fixture(s)" in printed
     assert "STORED-ACCESS" not in "".join(p.read_text() for p in recorded.glob("*.json"))
     first = (qbo_env.root / "data" / "qbo-ledger.csv").read_text()
     (qbo_env.root / "data" / "qbo-ledger.csv").unlink()
-    assert main(["pull-qbo", "--start", "2025-10-01", "--end", "2025-12-31", "--realm-id",
-                 "4620816365", "--fixtures", str(recorded)]) == 0
+    assert main(["pull-qbo", *QBO_PERIOD, "--realm-id", "4620816365", "--fixtures", str(recorded)]) == 0
     assert (qbo_env.root / "data" / "qbo-ledger.csv").read_text() == first
     assert "not used" not in capsys.readouterr().out
-    assert main(["pull-qbo", "--start", "2025-10-01", "--end", "2025-12-31", "--record", str(recorded)]) == 2
+    assert main(["pull-qbo", *QBO_PERIOD, "--record", str(recorded)]) == 2
     assert "already holds fixtures" in capsys.readouterr().out
 
 
@@ -779,8 +781,7 @@ def test_nothing_is_spent_when_the_tokens_could_not_be_saved(qbo_env, capsys, mo
 
 
 def _replay_to(out, *extra):
-    return main(["pull-qbo", "--start", "2025-10-01", "--end", "2025-12-31",
-                 "--fixtures", str(QBO_FIXTURES / "pull"), "--out", str(out), *extra])
+    return main(["pull-qbo", *QBO_PERIOD, "--fixtures", str(QBO_FIXTURES / "pull"), "--out", str(out), *extra])
 
 
 def test_the_synthetic_ledger_and_its_identity_are_refused_however_spelled(qbo_env, capsys, monkeypatch):
@@ -822,8 +823,11 @@ def test_a_replay_converts_times_with_qbo_timezone_like_the_recorded_pull(qbo_en
     monkeypatch.setenv("QBO_TIMEZONE", "America/New_York")
     assert _replay_to(qbo_env.root / "data" / "q.csv") == 0
     ledger = pd.read_csv(qbo_env.root / "data" / "q.csv")
-    times = set(ledger.loc[ledger["entry_id"] == "QBO-JournalEntry-147", "entered_at"])
-    assert times == {"2025-12-29 01:47:10"}
+    # the recording's -07:00 (entity) and -0700 (report), three hours later in New York
+    times = set(ledger.loc[ledger["entry_id"] == "QBO-JournalEntry-6", "entered_at"])
+    assert times == {"2026-08-31 15:11:06"}
+    times = set(ledger.loc[ledger["entry_id"] == "QBO-Check-57", "entered_at"])
+    assert times == {"2026-09-02 18:14:27"}
     monkeypatch.setenv("QBO_TIMEZONE", "Mars/Olympus")
     assert _replay_to(qbo_env.root / "data" / "q.csv") == 2
 
@@ -838,7 +842,8 @@ def test_a_recording_that_ends_in_an_error_is_still_scrubbed_and_checked(qbo_env
     live_dir = qbo_env.root / "live"
     shutil.copytree(QBO_FIXTURES / "pull", live_dir)
     je = live_dir / "020-post-query-journalentry-p1.json"
-    je.write_text(je.read_text().replace("Q4 advertising accrual", "Accrual approved by Jane Dev"))
+    je.write_text(je.read_text().replace('"PrivateNote": "Opening Balance"',
+                                         '"PrivateNote": "Opening balance approved by Jane Dev"'))
     gl = live_dir / "030-get-reports-generalledger.json"
     gl.write_text(gl.read_text().replace('"qbo-user-1"', '"Jane Dev"')
                   .replace('"Value": "credit_amt"', '"Value": "credit_x"')
@@ -847,7 +852,7 @@ def test_a_recording_that_ends_in_an_error_is_still_scrubbed_and_checked(qbo_env
     _stored_tokens(qbo_env)
     monkeypatch.setattr(qbo, "default_transport", lambda: qbo.RecordedTransport(live_dir))
     recorded = qbo_env.root / "recorded"
-    assert main(["pull-qbo", "--start", "2025-10-01", "--end", "2025-12-31", "--record", str(recorded)]) == 1
+    assert main(["pull-qbo", *QBO_PERIOD, "--record", str(recorded)]) == 1
     printed = capsys.readouterr().out
     assert "multicurrency" in printed and "not a complete pull" in printed
     text = "".join(p.read_text() for p in recorded.glob("*.json"))

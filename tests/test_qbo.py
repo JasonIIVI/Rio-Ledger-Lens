@@ -455,7 +455,11 @@ def test_report_sends_sorted_parameters():
 
 # --- mapping ----------------------------------------------------------------------
 
-PULL = FIXTURES / "pull"
+PULL = FIXTURES / "pull"  # a sanitized recording of Intuit's sample sandbox company
+START, END = date(2026, 7, 1), date(2026, 9, 30)  # the recorded quarter
+ACCOUNTS_FILE = "010-post-query-account-p1.json"
+JE_FILE = "020-post-query-journalentry-p1.json"
+GL_FILE = "030-get-reports-generalledger.json"
 
 
 def fixture_body(name: str):
@@ -467,10 +471,24 @@ def fixture_client(directory=PULL, zone=None):
     return QboClient(config, issued(now=datetime.now(timezone.utc)), RecordedTransport(directory))
 
 
+def edited_recording(tmp_path, name, edit):
+    """A copy of the recording with one response body changed in place by ``edit``: the way
+    to reach a shape the recorded quarter does not happen to contain."""
+    import shutil
+
+    directory = tmp_path / "pull"
+    shutil.copytree(PULL, directory)
+    path = directory / name
+    fixture = json.loads(path.read_text())
+    edit(fixture["response"]["body"])
+    path.write_text(json.dumps(fixture))
+    return directory
+
+
 @pytest.fixture(scope="module")
 def pulled():
     client = fixture_client()
-    frame, stats = qbo.pull(client, date(2025, 10, 1), date(2025, 12, 31))
+    frame, stats = qbo.pull(client, START, END)
     assert client.transport.unused == []
     return frame, stats
 
@@ -496,13 +514,15 @@ def test_every_mapped_source_is_one_the_schema_knows():
 
 def test_accounts_use_acctnum_else_id_full_names_for_sub_accounts_and_the_classification():
     stats = qbo.PullStats()
-    accounts = qbo.accounts_by_id(fixture_body("010-post-query-account.json")["QueryResponse"]["Account"], stats)
-    assert accounts["35"] == qbo.Account("35", "1010", "Checking", "Asset")
-    assert accounts["76"].name == "Maintenance and Repair:Equipment Repairs"
-    assert accounts["76"].code == "76" and accounts["76"].sub_account
-    assert not accounts["13"].active
-    assert (stats.accounts, stats.inactive_accounts, stats.sub_accounts) == (11, 1, 1)
+    raw = fixture_body(ACCOUNTS_FILE)["QueryResponse"]["Account"]
+    accounts = qbo.accounts_by_id(raw, stats)
+    assert accounts["35"] == qbo.Account("35", "35", "Checking", "Asset")  # numbering is off
+    assert accounts["56"].name == "Automobile:Fuel" and accounts["56"].sub_account
+    assert accounts["18"].name == "Repair & Maintenance (deleted)" and not accounts["18"].active
+    assert (stats.accounts, stats.inactive_accounts, stats.sub_accounts) == (90, 1, 30)
     assert {a.type for a in accounts.values()} == {"Asset", "Liability", "Equity", "Revenue", "Expense"}
+    numbered = [dict(row, AcctNum="1010") if row["Id"] == "35" else row for row in raw]
+    assert qbo.accounts_by_id(numbered)["35"].code == "1010"
 
 
 def test_the_pull_replays_every_fixture_and_builds_a_prepared_balanced_ledger(pulled):
@@ -510,18 +530,23 @@ def test_the_pull_replays_every_fixture_and_builds_a_prepared_balanced_ledger(pu
     assert list(frame.columns[:len(REQUIRED_COLUMNS)]) == list(REQUIRED_COLUMNS)
     assert "entered_at_estimated" in frame.columns and "abs_amount" in frame.columns
     entries = entry_level(frame)
-    assert sorted(entries["entry_id"]) == [
-        "QBO-BillPaymentCheck-150", "QBO-Expense-140", "QBO-Invoice-130",
-        "QBO-JournalEntry-146", "QBO-JournalEntry-147", "QBO-Payment-131"]
+    # counted from the recording by a derivation written without this code
+    assert (len(entries), len(frame)) == (116, 297)
+    assert entries["entry_id"].str.split("-").str[1].value_counts().to_dict() == {
+        "Invoice": 27, "Bill": 14, "Expense": 14, "Payment": 13, "Check": 8, "BillPaymentCheck": 6,
+        "CashExpense": 6, "CreditCardExpense": 5, "Deposit": 4, "InventoryQtyAdjust": 4,
+        "SalesReceipt": 4, "BillPaymentCreditCard": 3, "JournalEntry": 3, "SalesTaxPayment": 2,
+        "CreditCardCredit": 1, "CreditMemo": 1, "Refund": 1}
     assert (entries["imbalance"] == 0).all() and stats.unbalanced_entries == 0
-    assert len(frame) == 13
+    assert round(frame["debit"].sum(), 2) == round(frame["credit"].sum(), 2) == 73693.65
     assert list(frame["posting_date"]) == sorted(frame["posting_date"])
-    assert stats.journal_entries == 2 and stats.other_transactions == 4
-    assert stats.adjusting_entries == 1
-    assert stats.description_only_lines == 1
-    assert stats.rows_without_txn_id == 1  # the beginning balance
-    assert stats.je_ids_missing_from_report == 0 and stats.unknown_account_lines == 0
-    assert "Set aside: 1 description-only line(s)" in "\n".join(stats.describe())
+    assert (stats.journal_entries, stats.adjusting_entries, stats.other_transactions) == (3, 0, 113)
+    assert (stats.rows_without_txn_id, stats.zero_amount_lines, stats.zero_transactions) == (12, 10, 1)
+    assert (stats.description_only_lines, stats.estimated_entered_at, stats.unreadable_entered_at) == (0, 0, 0)
+    assert (stats.je_ids_missing_from_report, stats.je_ids_missing_from_query,
+            stats.unknown_account_lines, stats.unknown_users) == (0, 0, 0, 0)
+    assert "QBO-Payment-74" not in set(frame["entry_id"])  # QuickBooks' own .00 credit link
+    assert set(frame["created_by"]) == {"qbo-user-1"} and not frame["entered_at_estimated"].any()
 
 
 def lines_of(frame, entry_id):
@@ -530,41 +555,90 @@ def lines_of(frame, entry_id):
 
 def test_journal_entries_come_from_the_entity_with_the_user_from_the_report(pulled):
     frame, _ = pulled
-    je = lines_of(frame, "QBO-JournalEntry-146")
-    assert list(je["line_no"]) == [1, 2]  # the description-only line is not a line
-    assert list(je["description"]) == ["November search campaign", "Q4 advertising accrual"]
-    assert list(je["debit"]) == [450.0, 0.0] and list(je["credit"]) == [0.0, 450.0]
-    assert set(je["source"]) == {"Manual"} and set(je["created_by"]) == {"qbo-user-1"}
-    assert je["entered_at"].iloc[0] == pd.Timestamp("2025-11-14 09:12:44")
-    revenue = lines_of(frame, "QBO-JournalEntry-147")
-    assert revenue["entered_at"].iloc[0] == pd.Timestamp("2025-12-28 22:47:10")  # the company's clock
-    assert revenue["is_weekend"].all()  # Sunday 28 December
-    assert list(revenue["account_type"]) == ["Asset", "Revenue"]
+    truck = lines_of(frame, "QBO-JournalEntry-6")
+    assert list(truck["line_no"]) == [1, 2]
+    assert list(truck["account_name"]) == ["Truck:Original Cost", "Opening Balance Equity"]
+    assert list(truck["debit"]) == [13495.0, 0.0] and list(truck["credit"]) == [0.0, 13495.0]
+    assert set(truck["description"]) == {"Opening Balance"}
+    assert set(truck["source"]) == {"Manual"} and set(truck["created_by"]) == {"qbo-user-1"}
+    # posted 19 August, keyed 31 August: CreateTime as given, on the company's clock (-07:00)
+    assert truck["posting_date"].iloc[0] == pd.Timestamp("2026-08-19")
+    assert truck["entered_at"].iloc[0] == pd.Timestamp("2026-08-31 12:11:06")
+    assert not truck["entered_at_estimated"].any()
+    notes = lines_of(frame, "QBO-JournalEntry-8")
+    assert list(notes["account_type"]) == ["Liability", "Equity"]
+    assert list(notes["credit"]) == [25000.0, 0.0] and list(notes["debit"]) == [0.0, 25000.0]
+
+
+def test_journal_entry_shapes_the_recorded_quarter_does_not_contain(tmp_path):
+    # The sandbox's three journal entries are two-line opening balances keyed on weekdays;
+    # a description-only line, the adjusting flag and a Sunday late-evening entry are made
+    # here on a copy of the recording.
+    def edit(body):
+        entry = next(e for e in body["QueryResponse"]["JournalEntry"] if e["Id"] == "8")
+        entry.update(TxnDate="2026-09-27", Adjustment=True,
+                     MetaData={"CreateTime": "2026-09-27T22:47:10-07:00"})
+        entry["Line"].insert(1, {"Id": "9", "DetailType": "DescriptionOnly", "Description": "loan schedule"})
+
+    frame, stats = qbo.pull(fixture_client(edited_recording(tmp_path, JE_FILE, edit)), START, END)
+    entry = lines_of(frame, "QBO-JournalEntry-8")
+    assert list(entry["line_no"]) == [1, 2]  # the description-only line is not a line
+    assert (stats.description_only_lines, stats.adjusting_entries) == (1, 1)
+    assert "Set aside: 1 description-only line(s)" in "\n".join(stats.describe())
+    assert entry["entered_at"].iloc[0] == pd.Timestamp("2026-09-27 22:47:10")
+    assert entry["is_weekend"].all()  # Sunday 27 September
 
 
 def test_a_named_timezone_converts_api_timestamps_first():
-    frame, stats = qbo.pull(fixture_client(zone="America/New_York"),
-                            date(2025, 10, 1), date(2025, 12, 31))
-    assert lines_of(frame, "QBO-JournalEntry-147")["entered_at"].iloc[0] == pd.Timestamp("2025-12-29 01:47:10")
-    assert lines_of(frame, "QBO-JournalEntry-146")["entered_at"].iloc[0] == pd.Timestamp("2025-11-14 12:12:44")
+    frame, stats = qbo.pull(fixture_client(zone="America/New_York"), START, END)
+    # -07:00 in the recording, so three hours later in New York; the report's create_date
+    # carries its offset as well, so the report-built entries move with the entity's
+    assert lines_of(frame, "QBO-JournalEntry-6")["entered_at"].iloc[0] == pd.Timestamp("2026-08-31 15:11:06")
+    assert lines_of(frame, "QBO-Check-57")["entered_at"].iloc[0] == pd.Timestamp("2026-09-02 18:14:27")
     assert stats.utc_times_without_zone == 0
 
 
 def test_other_transactions_are_rebuilt_from_the_report_whole_and_balanced(pulled):
     frame, _ = pulled
-    invoice = lines_of(frame, "QBO-Invoice-130")
-    assert list(invoice["account_name"]) == [
-        "Accounts Receivable (A/R)", "Board of Equalization Payable", "Services"]
-    assert list(invoice["debit"]) == [1080.0, 0.0, 0.0] and list(invoice["credit"]) == [0.0, 80.0, 1000.0]
-    assert list(invoice["description"]) == ["Amy's Bird Sanctuary", "Sales tax", "Landscaping services"]
+    invoice = lines_of(frame, "QBO-Invoice-12")
+    assert sorted(zip(invoice["account_name"], invoice["debit"], invoice["credit"])) == [
+        ("Accounts Receivable (A/R)", 2369.52, 0.0), ("Board of Equalization Payable", 0.0, 175.52),
+        ("Landscaping Services:Job Materials:Plants and Soil", 0.0, 1750.0),
+        ("Sales of Product Income", 0.0, 20.0), ("Sales of Product Income", 0.0, 24.0),
+        ("Services", 0.0, 400.0)]
     assert set(invoice["source"]) == {"AR"} and not invoice["entered_at_estimated"].any()
-    expense = lines_of(frame, "QBO-Expense-140")
-    assert "Maintenance and Repair:Equipment Repairs" in set(expense["account_name"])
-    assert expense["entered_at"].iloc[0] == pd.Timestamp("2025-11-03 16:05:00")
-    payment = lines_of(frame, "QBO-Payment-131")
-    assert payment["entered_at_estimated"].all()
-    assert payment["entered_at"].iloc[0] == pd.Timestamp("2025-10-20 12:00:00")
-    assert set(lines_of(frame, "QBO-BillPaymentCheck-150")["source"]) == {"AP"}
+    # its sales-tax row is stamped 2026-09-04 12:59:17; the invoice was keyed at the earliest
+    assert set(invoice["entered_at"]) == {pd.Timestamp("2026-09-01 15:04:04")}
+    fuel = lines_of(frame, "QBO-Check-57")
+    assert sorted(zip(fuel["account_name"], fuel["debit"], fuel["credit"])) == [
+        ("Automobile:Fuel", 54.55, 0.0), ("Checking", 0.0, 54.55)]
+    assert set(fuel["description"]) == {"Chin's Gas and Oil"} and set(fuel["source"]) == {"AP"}
+    # posted 16 July, keyed 2 September: the report's -0700 timestamp, read on every Python
+    assert fuel["posting_date"].iloc[0] == pd.Timestamp("2026-07-16")
+    assert fuel["entered_at"].iloc[0] == pd.Timestamp("2026-09-02 15:14:27")
+    sources = {entry_id: set(lines_of(frame, entry_id)["source"]) for entry_id in (
+        "QBO-CashExpense-131", "QBO-SalesTaxPayment-123", "QBO-BillPaymentCheck-104",
+        "QBO-CreditMemo-73", "QBO-InventoryQtyAdjust-110")}
+    assert sources == {"QBO-CashExpense-131": {"AP"}, "QBO-SalesTaxPayment-123": {"AP"},
+                       "QBO-BillPaymentCheck-104": {"AP"}, "QBO-CreditMemo-73": {"AR"},
+                       "QBO-InventoryQtyAdjust-110": {"System"}}
+    # a parent account's own postings sit in a sub-section with no header of their own
+    assert len(frame[frame["account_code"] == "45"]) == 15
+    assert set(frame.loc[frame["account_code"] == "45", "account_name"]) == {"Landscaping Services"}
+
+
+def test_a_date_only_create_date_in_the_report_is_estimated_at_noon_on_that_date(tmp_path):
+    # The sandbox writes full timestamps; a report that gives the date alone keeps the date
+    def edit(body):
+        text = json.dumps(body).replace('"2026-09-02T15:14:27-0700"', '"2026-09-02"')
+        body.clear()
+        body.update(json.loads(text))
+
+    frame, stats = qbo.pull(fixture_client(edited_recording(tmp_path, GL_FILE, edit)), START, END)
+    fuel = lines_of(frame, "QBO-Check-57")
+    assert fuel["entered_at_estimated"].all()
+    assert fuel["entered_at"].iloc[0] == pd.Timestamp("2026-09-02 12:00:00")
+    assert (stats.estimated_entered_at, stats.unreadable_entered_at) == (1, 0)
 
 
 def test_a_date_only_create_date_keeps_its_date_and_estimates_the_time():
@@ -692,12 +766,12 @@ def test_column_keys_fall_back_to_col_type_then_the_title():
 def test_the_csv_and_sidecar_round_trip_to_the_realm_identity(pulled, tmp_path):
     frame, _ = pulled
     path = qbo.write_ledger_csv(frame, tmp_path / "qbo-ledger.csv")
-    sidecar = qbo.write_identity(path, "4620816365", "sandbox", date(2025, 10, 1), date(2025, 12, 31),
+    sidecar = qbo.write_identity(path, "4620816365", "sandbox", START, END,
                                  pulled_at=datetime(2026, 9, 30, 15, 0, tzinfo=timezone.utc))
     assert sidecar == identity_path(path) == tmp_path / "qbo-ledger.identity.json"
     assert json.loads(sidecar.read_text()) == {
         "ledger_id": "qbo:4620816365", "source": "quickbooks-online", "environment": "sandbox",
-        "period": {"start": "2025-10-01", "end": "2025-12-31"}, "pulled_at": "2026-09-30T15:00:00+00:00"}
+        "period": {"start": "2026-07-01", "end": "2026-09-30"}, "pulled_at": "2026-09-30T15:00:00+00:00"}
     back = load_csv(path)
     assert ledger_identity(back, path) == "qbo:4620816365"
     assert list(back.columns[:len(qbo.EXPORT_COLUMNS)]) == list(qbo.EXPORT_COLUMNS)
@@ -885,15 +959,12 @@ def test_leftovers_names_what_slipped_through():
 
 
 def test_a_journal_entry_the_report_lists_but_the_query_missed_is_counted(tmp_path):
-    import shutil
+    def drop_six(body):
+        entries = body["QueryResponse"]["JournalEntry"]
+        entries[:] = [e for e in entries if e["Id"] != "6"]
 
-    shutil.copytree(PULL, tmp_path / "pull")
-    path = tmp_path / "pull" / "020-post-query-journalentry-p1.json"
-    fixture = json.loads(path.read_text())
-    fixture["response"]["body"]["QueryResponse"]["JournalEntry"].pop()  # JE 147 not returned
-    path.write_text(json.dumps(fixture))
-    frame, stats = qbo.pull(fixture_client(tmp_path / "pull"), date(2025, 10, 1), date(2025, 12, 31))
-    assert "QBO-JournalEntry-147" not in set(frame["entry_id"])
+    frame, stats = qbo.pull(fixture_client(edited_recording(tmp_path, JE_FILE, drop_six)), START, END)
+    assert "QBO-JournalEntry-6" not in set(frame["entry_id"])
     assert (stats.je_ids_missing_from_query, stats.je_ids_missing_from_report) == (1, 0)
     assert "1 journal entrie(s) in the GL report the query did not return" in "\n".join(stats.describe())
 

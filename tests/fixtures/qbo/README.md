@@ -9,14 +9,15 @@ first matching request once, in file-name order.
 
 ## Provenance
 
-**Every file here is hand-shaped for now**, from Intuit's published entity and report
-documentation (Account, JournalEntry, the GeneralLedger report, the OAuth token
-endpoint), not recorded from a live company. The names and amounts imitate Intuit's
-sample sandbox company. Before the connector's pull request merges, `pull/` is replaced
-by a sanitized recording of a real sandbox pull:
+**`pull/` is recorded**: a sanitized `pull-qbo --record` of a real QuickBooks Online
+**sandbox** company (Intuit's sample company, fictional data), made on 2026-09-30 for the
+quarter 2026-07-01 to 2026-09-30. It is the quarter where the sample company's data sits;
+the sandbox had nothing in Q4 2025. Every file was read value by value before it was
+committed, and an independent audit found nothing identifying.
 
 ```bash
-ledgerlens pull-qbo --start 2025-10-01 --end 2025-12-31 --record tests/fixtures/qbo/pull
+git rm tests/fixtures/qbo/pull/*.json   # a recording replaces the set whole
+ledgerlens pull-qbo --start 2026-07-01 --end 2026-09-30 --record tests/fixtures/qbo/pull
 ```
 
 `auth/` stays hand-shaped: a real code exchange cannot be replayed, and the token
@@ -24,8 +25,19 @@ endpoint's reply is secret by nature.
 
 | Directory | Used by | What it exercises |
 |---|---|---|
-| `pull/` | `pull-qbo --fixtures`, `test_qbo.py` | Accounts (an `AcctNum`, an inactive account, a sub-account), two journal entries (a description-only line, `-08:00` CreateTimes on the same clock as the report's create dates, a Sunday after-hours period-end manual credit to revenue), and a GL report (nested sections, a beginning-balance row, an invoice with a tax line, a date-only and a timed `create_date`, journal-entry rows that are skipped) |
+| `pull/` | `pull-qbo --fixtures`, `test_qbo.py`, `test_cli.py` | 90 accounts (one inactive, 30 sub-accounts, no account numbering); three journal entries (two-line opening balances); a GL report of 57 sections (nested two deep, parents' own postings in a sub-section with no header, 12 beginning-balance rows) and 307 transaction rows of 17 types (one transaction, Payment 74, all zero). Replayed: 116 entries / 297 lines, every one balanced. |
 | `auth/` | the `qbo-auth` CLI test | the authorization-code grant's reply |
+
+What the quarter does not contain (account numbers, a description-only journal line, the
+adjusting flag, a Sunday late-evening entry, a date-only or unreadable `create_date`, a
+journal entry the query misses) is reached in `test_qbo.py` by editing a copy of the
+recording (`edited_recording`), not by hand-shaped files.
+
+The recording found three defects the hand-shaped files could not: the report's
+`create_date` offset is written `-0700`, which Python 3.9 could not read (every
+report-built entry lost its keying date); Cash Expense and Sales Tax Payment fell back to
+the `System` source; and an invoice's rows can carry different create dates, so the entry
+time now comes from the earliest, not from whichever row the report lists first.
 
 ## Sanitization (what `--record` does to a live response)
 
@@ -37,19 +49,39 @@ stored, and response headers are limited to `content-type`, `retry-after` and
 `www-authenticate`. Intuit's sample-company data (customer and vendor names, amounts) is
 kept: it is Intuit's own demo data.
 
-## To confirm when the recording replaces `pull/`
+## What the recording settled
 
-These are shaped from documentation and third-party reports; the recording settles them,
-and this section should then say what was found:
+The questions below were shaped from documentation before any live call; this is what the
+2026-09-30 recording (and, for item 1, one request) showed.
 
-1. The casing of a 401's fault (`Fault/Error` or lower-case `fault/error`, or XML).
-2. That `select * from Account where Active IN (true, false)` returns inactive accounts.
-3. The format of the GL report's `create_date` (date only, or date and time; which format).
-4. That the transaction id is the `id` on the `txn_type` cell.
-5. Whether voided transactions appear in the GL report, and how.
-6. Whether a 429 carries `Retry-After` (Intuit documents none and says to wait 60 s).
-7. The offset on `MetaData.CreateTime` for the sandbox company (`-07:00` / `-08:00`).
-8. Whether report column keys arrive as `MetaData` `ColKey`, as `ColType`, or only as titles.
-9. That `accounting_method=Accrual` is honoured by the GeneralLedger report.
-10. That `MetaData.CreateTime` carries the company's offset (so it is on the report's clock);
-    a pull warns when it arrives in UTC with no `QBO_TIMEZONE` set.
+1. **A 401's fault is lower-case JSON.** Not in a successful pull, so one request with a
+   deliberately malformed bearer token was sent to the sandbox: `application/json`,
+   `{"fault": {"error": [{"message": "message=AuthenticationFailed; errorCode=003200;
+   statusCode=401", "detail": "Malformed bearer token: too short or too long", "code":
+   "3200"}], "type": "AUTHENTICATION"}}`, with `www-authenticate: Bearer realm="Intuit",
+   error="invalid_token"` and an `intuit_tid` header. `QboError` reads it; both casings
+   stay supported, since the API's other faults are documented as `Fault/Error`.
+2. **Inactive accounts come back.** `Active IN (true, false)` returned all 90 accounts,
+   one inactive: `Repair & Maintenance (deleted)` (QuickBooks adds the suffix).
+3. **`create_date` is a full timestamp**, `YYYY-MM-DDTHH:MM:SS-0700`: no fractional
+   seconds, and an offset **without a colon** (the report header's own `Time` has one).
+   ColType `TimeStamp`. None of the 307 rows is date-only; beginning-balance rows are blank.
+4. **The transaction id is on the `txn_type` cell** (`{"value": "Check", "id": "57"}`); no
+   `tx_date` cell carries one. The report's journal-entry ids match the entity's.
+5. **Not observed.** Nothing in the quarter is voided (no "void" anywhere). The only zero
+   rows are four Inventory Qty Adjusts' blank quantity rows and Payment 74, QuickBooks' own
+   `.00` "Created by QB Online to link credits to charges."
+6. **Not observed.** Every response was a 200; no throttling was provoked. The client
+   still waits Intuit's documented 60 s unless `Retry-After` says otherwise.
+7. **`MetaData.CreateTime` is `-07:00`** (Pacific daylight time) on all 3 journal entries
+   and 90 accounts. The one `-08:00` is a `LastUpdatedTime` dated in the future (the
+   sample data's, on the Mastercard account).
+8. **Every column carries a `ColKey`** in `MetaData`, as well as a title and a ColType
+   (`Date`, `String`, `TimeStamp`, `Money`). The columns came back in a different order
+   from the one requested, so they are mapped by key.
+9. **Accrual is echoed**: the request sends `accounting_method=Accrual` and the header
+   says `"ReportBasis": "Accrual"`. No cash-basis pull was recorded to compare against.
+10. **Both clocks agree.** Each journal entry's `CreateTime` and its report `create_date`
+    are the same wall-clock time with the same offset (`2026-08-31T12:11:06-07:00` and
+    `2026-08-31T12:11:06-0700` for journal entry 6): the company's clock, not UTC. With
+    `QBO_TIMEZONE` set, both are converted.

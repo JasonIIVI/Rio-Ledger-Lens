@@ -8,130 +8,169 @@
         "75"
       ]
     ],
-    "body": "select * from JournalEntry where TxnDate >= '2025-10-01' and TxnDate <= '2025-12-31' STARTPOSITION 1 MAXRESULTS 1000"
+    "body": "select * from JournalEntry where TxnDate >= '2026-07-01' and TxnDate <= '2026-09-30' STARTPOSITION 1 MAXRESULTS 1000"
   },
   "response": {
     "status": 200,
     "headers": {
-      "content-type": "application/json;charset=UTF-8"
+      "content-type": "application/json"
     },
     "body": {
       "QueryResponse": {
         "JournalEntry": [
           {
-            "Id": "146",
-            "SyncToken": "0",
+            "Adjustment": false,
+            "TotalAmt": 0,
             "domain": "QBO",
             "sparse": false,
-            "TxnDate": "2025-11-14",
-            "DocNumber": "1045",
-            "Adjustment": false,
-            "PrivateNote": "Q4 advertising accrual",
+            "Id": "8",
+            "SyncToken": "0",
+            "MetaData": {
+              "CreateTime": "2026-09-01T10:04:24-07:00",
+              "LastUpdatedTime": "2026-09-01T10:04:24-07:00"
+            },
+            "TxnDate": "2026-09-01",
             "CurrencyRef": {
               "value": "USD",
               "name": "United States Dollar"
             },
-            "MetaData": {
-              "CreateTime": "2025-11-14T09:12:44-08:00",
-              "LastUpdatedTime": "2025-11-14T09:12:44-08:00"
-            },
+            "PrivateNote": "Opening Balance",
             "Line": [
               {
                 "Id": "0",
-                "Description": "Accrue November campaign",
-                "DetailType": "DescriptionOnly",
-                "DescriptionLineDetail": {}
-              },
-              {
-                "Id": "1",
-                "Description": "November search campaign",
-                "Amount": 450.0,
-                "DetailType": "JournalEntryLineDetail",
-                "JournalEntryLineDetail": {
-                  "PostingType": "Debit",
-                  "AccountRef": {
-                    "value": "7",
-                    "name": "Advertising"
-                  }
-                }
-              },
-              {
-                "Id": "2",
-                "Amount": 450.0,
+                "Description": "Opening Balance",
+                "Amount": 25000.0,
                 "DetailType": "JournalEntryLineDetail",
                 "JournalEntryLineDetail": {
                   "PostingType": "Credit",
                   "AccountRef": {
-                    "value": "33",
-                    "name": "Accounts Payable (A/P)"
-                  },
-                  "Entity": {
-                    "Type": "Vendor",
-                    "EntityRef": {
-                      "value": "46",
-                      "name": "Books by Bessie"
-                    }
+                    "value": "44",
+                    "name": "Notes Payable"
                   }
-                }
+                },
+                "CustomExtensions": []
+              },
+              {
+                "Id": "1",
+                "Description": "Opening Balance",
+                "Amount": 25000.0,
+                "DetailType": "JournalEntryLineDetail",
+                "JournalEntryLineDetail": {
+                  "PostingType": "Debit",
+                  "AccountRef": {
+                    "value": "34",
+                    "name": "Opening Balance Equity"
+                  }
+                },
+                "CustomExtensions": []
               }
-            ]
+            ],
+            "TxnTaxDetail": {}
           },
           {
-            "Id": "147",
-            "SyncToken": "1",
+            "Adjustment": false,
+            "TotalAmt": 0,
             "domain": "QBO",
             "sparse": false,
-            "TxnDate": "2025-12-28",
-            "DocNumber": "1046",
-            "Adjustment": true,
-            "PrivateNote": "Year-end revenue true-up",
+            "Id": "7",
+            "SyncToken": "0",
+            "MetaData": {
+              "CreateTime": "2026-09-01T10:03:25-07:00",
+              "LastUpdatedTime": "2026-09-01T10:03:25-07:00"
+            },
+            "TxnDate": "2026-09-01",
             "CurrencyRef": {
               "value": "USD",
               "name": "United States Dollar"
             },
-            "MetaData": {
-              "CreateTime": "2025-12-28T22:47:10-08:00",
-              "LastUpdatedTime": "2025-12-28T22:47:10-08:00"
-            },
+            "PrivateNote": "Opening Balance",
             "Line": [
               {
                 "Id": "0",
-                "Amount": 12000.0,
-                "DetailType": "JournalEntryLineDetail",
-                "JournalEntryLineDetail": {
-                  "PostingType": "Debit",
-                  "AccountRef": {
-                    "value": "84",
-                    "name": "Accounts Receivable (A/R)"
-                  },
-                  "Entity": {
-                    "Type": "Customer",
-                    "EntityRef": {
-                      "value": "1",
-                      "name": "Amy's Bird Sanctuary"
-                    }
-                  }
-                }
-              },
-              {
-                "Id": "1",
-                "Amount": 12000.0,
+                "Description": "Opening Balance",
+                "Amount": 4000.0,
                 "DetailType": "JournalEntryLineDetail",
                 "JournalEntryLineDetail": {
                   "PostingType": "Credit",
                   "AccountRef": {
-                    "value": "1",
-                    "name": "Services"
+                    "value": "43",
+                    "name": "Loan Payable"
                   }
-                }
+                },
+                "CustomExtensions": []
+              },
+              {
+                "Id": "1",
+                "Description": "Opening Balance",
+                "Amount": 4000.0,
+                "DetailType": "JournalEntryLineDetail",
+                "JournalEntryLineDetail": {
+                  "PostingType": "Debit",
+                  "AccountRef": {
+                    "value": "34",
+                    "name": "Opening Balance Equity"
+                  }
+                },
+                "CustomExtensions": []
               }
-            ]
+            ],
+            "TxnTaxDetail": {}
+          },
+          {
+            "Adjustment": false,
+            "TotalAmt": 0,
+            "domain": "QBO",
+            "sparse": false,
+            "Id": "6",
+            "SyncToken": "0",
+            "MetaData": {
+              "CreateTime": "2026-08-31T12:11:06-07:00",
+              "LastUpdatedTime": "2026-08-31T12:11:06-07:00"
+            },
+            "TxnDate": "2026-08-19",
+            "CurrencyRef": {
+              "value": "USD",
+              "name": "United States Dollar"
+            },
+            "PrivateNote": "Opening Balance",
+            "Line": [
+              {
+                "Id": "0",
+                "Description": "Opening Balance",
+                "Amount": 13495.0,
+                "DetailType": "JournalEntryLineDetail",
+                "JournalEntryLineDetail": {
+                  "PostingType": "Debit",
+                  "AccountRef": {
+                    "value": "38",
+                    "name": "Truck:Original Cost"
+                  }
+                },
+                "CustomExtensions": []
+              },
+              {
+                "Id": "1",
+                "Description": "Opening Balance",
+                "Amount": 13495.0,
+                "DetailType": "JournalEntryLineDetail",
+                "JournalEntryLineDetail": {
+                  "PostingType": "Credit",
+                  "AccountRef": {
+                    "value": "34",
+                    "name": "Opening Balance Equity"
+                  }
+                },
+                "CustomExtensions": []
+              }
+            ],
+            "TxnTaxDetail": {}
           }
         ],
         "startPosition": 1,
-        "maxResults": 2
+        "maxResults": 3,
+        "totalCount": 3
       },
-      "time": "2026-09-30T08:00:01.000-07:00"
+      "time": "2026-09-30T10:22:14.069-07:00"
     }
   }
 }
