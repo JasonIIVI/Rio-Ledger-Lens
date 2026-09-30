@@ -724,9 +724,22 @@ def test_a_create_date_whose_offset_has_no_colon_is_read_on_every_python():
     ("2026-09-02T15:14:27-07", (datetime(2026, 9, 2, 12), True)),
     ("2026-09-02 15:14", (datetime(2026, 9, 2, 15, 14), False)),
     ("2026-09-02T15:14:27.5", (datetime(2026, 9, 2, 15, 14, 27, 500000), False)),
-    # what strptime reads, the gate in front of it lets through
+    # what strptime reads is read: unpadded fields, either case of T, a run of spaces
     ("2026-9-1T10:00:00-07:00", (datetime(2026, 9, 1, 10), False)),
     ("2026-09-01t10:00:00-07:00", (datetime(2026, 9, 1, 10), False)),
+    ("2026-09-02T9:05:00-07:00", (datetime(2026, 9, 2, 9, 5), False)),
+    ("2026-09-01  10:00:00-07:00", (datetime(2026, 9, 1, 10), False)),
+    # every format in _TIMESTAMP_FORMATS is needed by one of these
+    ("2026-09-02T15:14:27", (datetime(2026, 9, 2, 15, 14, 27), False)),
+    ("2026-09-02T15:14-07:00", (datetime(2026, 9, 2, 15, 14), False)),
+    ("2026-09-02T15:14", (datetime(2026, 9, 2, 15, 14), False)),
+    ("2026-09-02 15:14:27.5-07:00", (datetime(2026, 9, 2, 15, 14, 27, 500000), False)),
+    ("2026-09-02 15:14:27.5", (datetime(2026, 9, 2, 15, 14, 27, 500000), False)),
+    ("2026-09-02 15:14-07:00", (datetime(2026, 9, 2, 15, 14), False)),
+    # something that only starts like a date is not one
+    ("2026-1-12345", (datetime(2026, 7, 16, 12), True)),
+    ("2026-01-12345", (datetime(2026, 7, 16, 12), True)),
+    ("1/2/20261", (datetime(2026, 7, 16, 12), True)),
 ])
 def test_report_timestamps_are_read_by_explicit_formats(value, expected):
     assert qbo.parse_report_datetime(value, datetime(2026, 7, 16)) == expected
@@ -796,8 +809,12 @@ def test_a_stamp_ranks_by_what_it_tells_and_only_the_stamp_used_counts_as_unread
     # the keying date is the audit signal: an earlier date wins over a later time of day ...
     ("2026-09-05T10:00:00-0700", "2026-09-01", (datetime(2026, 9, 1, 12), True), (1, 0)),
     ("2026-09-05T10:00:00-0700", "2026-09-01 @ 3:14 PM", (datetime(2026, 9, 1, 12), True), (1, 1)),
-    # ... and within a day a time of day wins over a date alone
+    # ... and within a day a time of day wins over a date alone, morning or afternoon
     ("2026-09-01T10:00:00-0700", "2026-09-01", (datetime(2026, 9, 1, 10), False), (0, 0)),
+    ("2026-09-01T15:00:00-0700", "2026-09-01", (datetime(2026, 9, 1, 15), False), (0, 0)),
+    ("2026-09-01", "2026-09-01T15:00:00-0700", (datetime(2026, 9, 1, 15), False), (0, 0)),
+    # an id that only starts like a date does not become the keying date
+    ("2026-09-05T10:00:00-0700", "2026-1-12345", (datetime(2026, 9, 5, 10), False), (0, 0)),
     # a date that was read beats the same date taken from an unreadable value
     ("2026-09-02", "2026-09-02 @ 3:14 PM", (datetime(2026, 9, 2, 12), True), (1, 0)),
     ("2026-09-02 @ 3:14 PM", "2026-09-02", (datetime(2026, 9, 2, 12), True), (1, 0)),
@@ -861,7 +878,8 @@ def test_a_journal_entry_with_no_posting_line_is_set_aside_like_a_report_transac
             "Line": [{"Amount": 0, "DetailType": "JournalEntryLineDetail",
                       "JournalEntryLineDetail": {"PostingType": "Debit", "AccountRef": {"value": "35"}}},
                      {"DetailType": "DescriptionOnly", "Description": "memo only"}]}
-    note = {"Id": "10", "TxnDate": "2026-09-01", "Line": [{"DetailType": "DescriptionOnly", "Description": "note"}]}
+    note = {"Id": "10", "TxnDate": "2026-09-01", "MetaData": {"CreateTime": "garbled"},
+            "Line": [{"DetailType": "DescriptionOnly", "Description": "note"}]}
     stats = qbo.PullStats()
     assert qbo.journal_entries_to_lines([zero, note], {}, None, None, stats) == []
     assert (stats.journal_entries, stats.zero_transactions) == (0, 2)
@@ -872,6 +890,40 @@ def test_a_journal_entry_with_no_posting_line_is_set_aside_like_a_report_transac
     assert "2 transaction(s) with no posting line" in "\n".join(stats.describe())
 
 
+def relabelled(report: dict, txn_type: str, txn_id: str) -> dict:
+    """``report``'s rows as another transaction (a type and an id on the txn_type cell)."""
+    report = json.loads(json.dumps(report))
+    for col_data, _ in qbo._report_rows(report):
+        col_data[1] = {"value": txn_type, "id": txn_id}
+    return report
+
+
+def joined(*reports: dict) -> dict:
+    return {"Columns": reports[0]["Columns"], "Rows": {"Row": [row for r in reports for row in r["Rows"]["Row"]]}}
+
+
+def test_unmapped_types_are_counted_per_entry_and_named_in_order():
+    report = joined(relabelled(gl_report("2026-09-01"), "Statement Charge", "3"),
+                    relabelled(gl_report("2026-09-01"), "Sales Tax Adjustment", "1"),
+                    relabelled(gl_report("2026-09-01"), "Sales Tax Adjustment", "2"),
+                    relabelled(gl_report("2026-09-01", amount=".00"), "Sales Tax Adjustment", "4"),
+                    relabelled(gl_report("2026-09-01"), "Payroll Check", "5"))
+    stats = qbo.PullStats()
+    lines = qbo.general_ledger_to_lines(report, {}, None, stats)
+    assert {line["entry_id"]: line["source"] for line in lines}["QBO-PayrollCheck-5"] == "Payroll"
+    assert stats.unmapped_types == {"StatementCharge": 1, "SalesTaxAdjustment": 2}
+    assert stats.zero_transactions == 1
+    assert ("Warning: 3 entrie(s) of a type this tool does not map were given the System source: "
+            "SalesTaxAdjustment (2), StatementCharge (1)") in stats.describe()
+
+
+def test_a_row_with_no_type_is_filed_under_a_named_placeholder():
+    stats = qbo.PullStats()
+    lines = qbo.general_ledger_to_lines(relabelled(gl_report("2026-09-01"), "", "57"), {}, None, stats)
+    assert {line["entry_id"] for line in lines} == {"QBO-UnknownType-57"}
+    assert stats.unmapped_types == {"UnknownType": 1}
+
+
 def test_a_transaction_with_only_zero_rows_is_set_aside_not_counted_as_an_entry():
     # QuickBooks' own "Created by QB Online to link credits to charges." payment is all .00
     stats = qbo.PullStats()
@@ -879,6 +931,15 @@ def test_a_transaction_with_only_zero_rows_is_set_aside_not_counted_as_an_entry(
                                        {}, None, stats) == []
     assert (stats.other_transactions, stats.zero_transactions, stats.zero_amount_lines) == (0, 1, 2)
     assert "1 transaction(s) with no posting line" in "\n".join(stats.describe())
+    # nothing about it is counted as if it had reached the ledger, whatever its stamps say
+    for stamp, first in (("2026-08-18T17:00:00Z", "2026-08-18T17:00:00Z"), ("garbled", "garbled")):
+        report = gl_report(stamp, first_row_stamp=first, amount=".00", first_row_user="")
+        for col_data, _ in qbo._report_rows(report):
+            col_data[3]["value"] = ""  # no user on either row
+        quiet = qbo.PullStats()
+        assert qbo.general_ledger_to_lines(report, {}, None, quiet) == []
+        assert (quiet.estimated_entered_at, quiet.unreadable_entered_at, quiet.utc_times_without_zone,
+                quiet.unknown_users, quiet.unmapped_types) == (0, 0, 0, 0, {}), stamp
 
 
 def test_a_create_date_this_tool_cannot_read_is_counted_and_said_not_called_date_only():

@@ -103,8 +103,11 @@ and the MCP SDK, so the two together cover every code path CI will see.
   overstated wording; a strict parser would have made an odd `CreateTime` a traceback, so
   it is now estimated and counted. A verification of those fixes found a further round,
   also fixed: a later time of day beat an earlier date (so the keying date was lost again),
-  two tie-breaks, a gate stricter than its parser, unpadded leading dates, set-aside counts,
-  and types outside the map filed as `System` in silence (Credit Card Payment now Bank). Facts about Intuit's API were checked against its
+  two tie-breaks, a gate stricter than its parser (now gone: the parser decides), unpadded
+  leading dates, set-aside counts, and types outside the map filed as `System` in silence
+  (Credit Card Payment now Bank). A last check of that round found an id that only starts
+  like a date (`2026-1-12345`) winning as the keying date, a row with no type filed as
+  `QBO--57` (now `UnknownType`), and test gaps; fixed, with every timestamp format pinned. Facts about Intuit's API were checked against its
   current documentation on 2026-09-30 (minor version 75; no documented `Retry-After`; the
   transaction id on the `txn_type` cell; reads are metered). A security review and a
   correctness review before the push found 16 problems (two medium: a rotated refresh token
@@ -115,7 +118,7 @@ and the MCP SDK, so the two together cover every code path CI will see.
   recording is re-scrubbed and checked on every exit, and pulled books stay in `data/`.
 - **Next** — the weekly scheduled Action, the README final pass and v1.0.0 (due
   2026-10-18). Week 5 breaks the circularity in the detection numbers.
-- 446 tests on 3.9 / 456 on 3.12, ruff clean.
+- 461 tests on 3.9 / 472 on 3.12, ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth

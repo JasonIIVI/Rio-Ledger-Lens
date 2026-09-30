@@ -1118,11 +1118,10 @@ def parse_qbo_datetime(value: str, zone: str | None = None) -> datetime:
 
 
 _UTC_SUFFIX = re.compile(r"(Z|[+-]00:?00)$")
-# a date, then a time of day; as lenient as strptime (unpadded fields, either case of T)
-_ISO_TIMESTAMP = re.compile(r"\d{4}-\d{1,2}-\d{1,2}[Tt ]\d{1,2}:\d{1,2}")
 _REPORT_TIME_FORMATS = ("%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y %H:%M:%S")
 _REPORT_DATE_FORMATS = ("%Y-%m-%d", "%m/%d/%Y")
-_LEADING_DATE = re.compile(r"(\d{4}-\d{1,2}-\d{1,2})|(\d{1,2}/\d{1,2}/\d{4})")
+# a date the value starts with, and not the start of a longer number ("2026-1-12345")
+_LEADING_DATE = re.compile(r"(\d{4}-\d{1,2}-\d{1,2})(?!\d)|(\d{1,2}/\d{1,2}/\d{4})(?!\d)")
 
 
 @dataclass(frozen=True)
@@ -1169,11 +1168,10 @@ def read_report_stamp(value: str, posting_date: datetime, zone: str | None = Non
     fallback = posting_date.replace(hour=ESTIMATED_HOUR, minute=0, second=0, microsecond=0)
     if not text:
         return ReportStamp(fallback, "blank")
-    if _ISO_TIMESTAMP.match(text):
-        try:
-            return ReportStamp(parse_qbo_datetime(text, zone), "time", bool(_UTC_SUFFIX.search(text)))
-        except ValueError:
-            pass
+    try:  # every format it tries has a time of day, so a date alone or a date+offset falls through
+        return ReportStamp(parse_qbo_datetime(text, zone), "time", bool(_UTC_SUFFIX.search(text)))
+    except ValueError:
+        pass
     for fmt in _REPORT_TIME_FORMATS:
         try:
             return ReportStamp(datetime.strptime(text, fmt), "time")
@@ -1341,7 +1339,7 @@ def general_ledger_to_lines(report: Mapping[str, Any], accounts: Mapping[str, Ac
         if not txn_id:
             stats.rows_without_txn_id += 1
             continue
-        token = type_token(values.get("txn_type", ""))
+        token = type_token(values.get("txn_type", "")) or "UnknownType"  # never "QBO--57"
         if token == "JournalEntry":
             continue
         groups.setdefault((token, txn_id), []).append((values, account_cell))
