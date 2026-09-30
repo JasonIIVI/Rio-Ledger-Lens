@@ -28,10 +28,13 @@ production outright.
 from __future__ import annotations
 
 import base64
+import errno
 import json
 import re
 import secrets
+import selectors
 import socket
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -39,7 +42,7 @@ import urllib.request
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -531,33 +534,75 @@ class Callback:
     realm_id: str
 
 
-class CallbackServer:
-    """Catches Intuit's redirect on this machine: one listener on 127.0.0.1, one sign-in.
+class _LoopbackServer(ThreadingHTTPServer):
+    """One thread per connection, so an idle connection (a browser's speculative preconnect)
+    cannot hold up the real callback; threads never outlive the process or block close()."""
 
-    Only a request to the configured path carrying the expected ``state``
-    counts; anything else is answered (404 or 400) and ignored, so a stray
-    request cannot end the sign-in or smuggle in a code.
+    daemon_threads = True
+    block_on_close = False
+
+
+class _LoopbackServer6(_LoopbackServer):
+    address_family = socket.AF_INET6
+
+
+#: How long one connection may take to send its request line before it is dropped.
+CALLBACK_READ_TIMEOUT = 30
+#: IPv6 unavailable on this machine: then "localhost" cannot resolve to [::1] either.
+_NO_IPV6 = {errno.EADDRNOTAVAIL, errno.EAFNOSUPPORT}
+
+
+class CallbackServer:
+    """Catches Intuit's redirect on this machine: loopback only, one sign-in.
+
+    ``localhost`` resolves to both 127.0.0.1 and ::1, so the server listens on
+    both (the same port), or another program listening on [::1] could receive
+    the browser's redirect. Only a request to the configured path carrying the
+    expected ``state`` counts; anything else is answered (404 or 400) and
+    ignored, so a stray request cannot end the sign-in or smuggle in a code.
     """
 
     def __init__(self, port: int, path: str = "/callback", host: str = "127.0.0.1"):
         self.path = path
         self._state: str | None = None
         self._outcome: Callback | QboAuthError | None = None
+        self._lock = threading.Lock()
+        self._done = threading.Event()
         server = self
 
         class Handler(BaseHTTPRequestHandler):
+            timeout = CALLBACK_READ_TIMEOUT
+
             def do_GET(self) -> None:  # noqa: N802 (the stdlib's name)
                 server._handle(self)
 
             def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
                 pass  # the URL carries the code: never print it
 
-        try:
-            self.httpd = HTTPServer((host, port), Handler)
-        except OSError as exc:
-            raise QboAuthError(0, None, f"cannot listen on {host}:{port} for the sign-in "
-                                        f"callback ({exc.strerror or exc})") from None
-        self.port = self.httpd.server_address[1]
+        attempts = 5 if port == 0 else 1  # an ephemeral port may be taken on ::1 already
+        for attempt in range(attempts):
+            try:
+                self.servers = self._bind(host, port, Handler)
+                break
+            except OSError as exc:
+                if attempt == attempts - 1:
+                    raise QboAuthError(0, None, f"cannot listen on port {port} for the sign-in "
+                                                f"callback ({exc.strerror or exc})") from None
+        self.port = self.servers[0].server_address[1]
+
+    @staticmethod
+    def _bind(host: str, port: int, handler: type) -> list[_LoopbackServer]:
+        first = _LoopbackServer((host, port), handler)
+        servers = [first]
+        if host == "127.0.0.1":
+            try:
+                servers.append(_LoopbackServer6(("::1", first.server_address[1]), handler))
+            except OSError as exc:
+                if exc.errno not in _NO_IPV6:
+                    first.server_close()
+                    raise OSError(exc.errno, f"[::1]:{first.server_address[1]} is in use by "
+                                             "another program") from None
+        return servers
 
     def _handle(self, request: BaseHTTPRequestHandler) -> None:
         parts = urllib.parse.urlsplit(request.path)
@@ -568,32 +613,44 @@ class CallbackServer:
         if not self._state or not secrets.compare_digest(state.encode(), self._state.encode()):
             return _reply(request, 400, "This sign-in link is not the one ledgerlens is waiting for.")
         if params.get("error"):
-            self._outcome = QboAuthError(0, params, "sign-in refused: " + params["error"]
-                                         + (f" ({params['error_description']})"
-                                            if params.get("error_description") else ""))
-            return _reply(request, 400, "Sign-in was refused. You can close this tab.")
-        if not params.get("code") or not params.get("realmId"):
-            self._outcome = QboAuthError(0, None, "the callback carried no code or no realmId")
-            return _reply(request, 400, "The sign-in response was incomplete.")
-        self._outcome = Callback(params["code"], params["realmId"])
-        _reply(request, 200, "Authorised. You can close this tab.")
+            outcome: Callback | QboAuthError = QboAuthError(
+                0, params, "sign-in refused: " + params["error"]
+                + (f" ({params['error_description']})" if params.get("error_description") else ""))
+            status, text = 400, "Sign-in was refused. You can close this tab."
+        elif not params.get("code") or not params.get("realmId"):
+            outcome = QboAuthError(0, None, "the callback carried no code or no realmId")
+            status, text = 400, "The sign-in response was incomplete."
+        else:
+            outcome = Callback(params["code"], params["realmId"])
+            status, text = 200, "Authorised. You can close this tab."
+        with self._lock:  # the first callback with the right state decides
+            if self._outcome is None:
+                self._outcome = outcome
+                self._done.set()
+        _reply(request, status, text)
 
     def wait(self, state: str, timeout: float) -> Callback:
         """Serve requests until the one carrying ``state`` arrives, or ``timeout`` seconds pass."""
         self._state = state
         deadline = time.monotonic() + timeout
-        while self._outcome is None:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise QboAuthError(0, None, f"no sign-in arrived within {timeout:g}s")
-            self.httpd.timeout = remaining
-            self.httpd.handle_request()
+        with selectors.DefaultSelector() as selector:
+            for listener in self.servers:
+                listener.timeout = 0
+                selector.register(listener, selectors.EVENT_READ)
+            while not self._done.is_set():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise QboAuthError(0, None, f"no sign-in arrived within {timeout:g}s")
+                # Short slices: the callback may arrive on a connection accepted earlier.
+                for key, _ in selector.select(min(remaining, 0.2)):
+                    key.fileobj.handle_request()
         if isinstance(self._outcome, QboAuthError):
             raise self._outcome
         return self._outcome
 
     def close(self) -> None:
-        self.httpd.server_close()
+        for listener in self.servers:
+            listener.server_close()
 
     def __enter__(self) -> CallbackServer:
         return self

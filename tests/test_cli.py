@@ -682,12 +682,17 @@ def test_qbo_auth_signs_in_and_stores_the_tokens_privately(qbo_env, capsys, monk
         state = dict(urllib.parse.parse_qsl(url.split("?", 1)[1]))["state"]
         back = f"http://127.0.0.1:{port}/callback?" + urllib.parse.urlencode(
             {"code": "ONE-TIME-CODE", "state": state, "realmId": "4620816365"})
-        thread = threading.Thread(target=lambda: visited.append(urllib.request.urlopen(back).status))
+        direct = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        thread = threading.Thread(target=lambda: visited.append(direct.open(back, timeout=5).status))
         thread.start()
+        threads.append(thread)
         return True
 
+    threads = []
     monkeypatch.setattr(webbrowser, "open", browser)
     code = main(["qbo-auth", "--timeout", "10"])
+    for thread in threads:
+        thread.join(5)
     printed = capsys.readouterr().out
     assert code == 0, printed
     token_file = qbo_env.tokens / "qbo-sandbox-4620816365.json"

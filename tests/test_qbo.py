@@ -285,9 +285,13 @@ def test_a_token_reply_without_its_fields_is_an_error_not_a_crash():
         QboAuth(CONFIG, transport).exchange("CODE", "1", now=NOW)
 
 
+#: Loopback requests go direct: a developer's proxy variables must not route them.
+DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
 def _get(url: str) -> tuple[int, str]:
     try:
-        with urllib.request.urlopen(url, timeout=5) as resp:  # noqa: S310 (loopback)
+        with DIRECT.open(url, timeout=5) as resp:
             return resp.status, resp.read().decode()
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read().decode()
@@ -708,3 +712,48 @@ def test_the_real_transport_calls_https_only():
     with pytest.raises(QboError, match="only https"):
         qbo.UrllibTransport().request("GET", "http://quickbooks.api.intuit.com/v3/x",
                                       {"Authorization": "Bearer T"})
+
+
+def test_an_idle_connection_does_not_hold_up_the_real_callback():
+    """A browser may open a connection to localhost and send nothing on it (a preconnect)."""
+    import socket
+    import time
+
+    with CallbackServer(0) as server:
+        idle = socket.create_connection(("127.0.0.1", server.port))
+        try:
+            good = urllib.parse.urlencode({"code": "C", "state": "S", "realmId": "1"})
+            thread, results = _visit(server, good)
+            started = time.monotonic()
+            callback = server.wait("S", timeout=10)
+            elapsed = time.monotonic() - started
+            thread.join(5)
+        finally:
+            idle.close()
+    assert callback.realm_id == "1" and results[0][0] == 200
+    assert elapsed < 3
+
+
+def _ipv6_loopback() -> bool:
+    import socket
+
+    try:
+        with socket.socket(socket.AF_INET6) as probe:
+            probe.bind(("::1", 0))
+        return True
+    except OSError:
+        return False
+
+
+@pytest.mark.skipif(not _ipv6_loopback(), reason="no IPv6 loopback on this machine")
+def test_the_server_holds_both_loopback_addresses_localhost_can_mean():
+    import socket
+
+    with CallbackServer(0) as server:
+        with socket.socket(socket.AF_INET6) as other, pytest.raises(OSError):
+            other.bind(("::1", server.port))  # nobody else can take [::1] on our port
+    with socket.socket(socket.AF_INET6) as squatter:
+        squatter.bind(("::1", 0))
+        squatter.listen()
+        with pytest.raises(QboAuthError, match=r"\[::1\].*in use"):
+            CallbackServer(squatter.getsockname()[1])
