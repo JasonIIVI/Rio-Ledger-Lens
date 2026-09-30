@@ -605,6 +605,15 @@ def test_pull_qbo_from_fixtures_writes_a_ledger_every_command_reads(qbo_env, cap
     assert main(["report", str(out), "--no-model", "--out", str(qbo_env.root / "wp.xlsx")]) == 0
 
 
+def test_a_pull_below_the_small_population_line_says_the_tiers_need_more(qbo_env, capsys, monkeypatch):
+    from ledgerlens.connectors import qbo
+
+    monkeypatch.setattr(qbo, "SMALL_LEDGER", 117)  # the recorded quarter holds 116 entries
+    assert main(["pull-qbo", *QBO_PERIOD, "--fixtures", str(QBO_FIXTURES / "pull"),
+                 "--out", str(qbo_env.root / "data" / "q.csv")]) == 0
+    assert "Warning: 116 entries is a small population" in capsys.readouterr().out
+
+
 @pytest.mark.parametrize("argv, env, expected", [
     (["--start", "2025-12-31", "--end", "2025-10-01"], {}, "is after --end"),
     ([], None, "missing QBO_CLIENT_ID, QBO_CLIENT_SECRET"),

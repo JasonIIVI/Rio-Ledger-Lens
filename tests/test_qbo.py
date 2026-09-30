@@ -570,6 +570,20 @@ def test_journal_entries_come_from_the_entity_with_the_user_from_the_report(pull
     assert list(notes["credit"]) == [25000.0, 0.0] and list(notes["debit"]) == [0.0, 25000.0]
 
 
+def test_each_journal_entry_takes_its_own_user_from_the_report(tmp_path):
+    # the sandbox has one user, so a second is written onto journal entry 8's report rows
+    def edit(body):
+        for col_data, _ in qbo._report_rows(body):
+            if col_data[1] == {"value": "Journal Entry", "id": "8"}:
+                col_data[4]["value"] = "qbo-user-2"  # the create_by column, by its ColKey
+
+    assert qbo.report_columns(fixture_body(GL_FILE)).index("create_by") == 4
+    frame, stats = qbo.pull(fixture_client(edited_recording(tmp_path, GL_FILE, edit)), START, END)
+    assert set(lines_of(frame, "QBO-JournalEntry-8")["created_by"]) == {"qbo-user-2"}
+    assert set(lines_of(frame, "QBO-JournalEntry-6")["created_by"]) == {"qbo-user-1"}
+    assert stats.unknown_users == 0
+
+
 def test_journal_entry_shapes_the_recorded_quarter_does_not_contain(tmp_path):
     # The sandbox's three journal entries are two-line opening balances keyed on weekdays;
     # a description-only line, the adjusting flag and a Sunday late-evening entry are made
@@ -578,11 +592,14 @@ def test_journal_entry_shapes_the_recorded_quarter_does_not_contain(tmp_path):
         entry = next(e for e in body["QueryResponse"]["JournalEntry"] if e["Id"] == "8")
         entry.update(TxnDate="2026-09-27", Adjustment=True,
                      MetaData={"CreateTime": "2026-09-27T22:47:10-07:00"})
+        entry["Line"][0]["Description"] = "Note to the bank, per the loan schedule"
+        del entry["Line"][1]["Description"]  # this line falls back to the entry's PrivateNote
         entry["Line"].insert(1, {"Id": "9", "DetailType": "DescriptionOnly", "Description": "loan schedule"})
 
     frame, stats = qbo.pull(fixture_client(edited_recording(tmp_path, JE_FILE, edit)), START, END)
     entry = lines_of(frame, "QBO-JournalEntry-8")
     assert list(entry["line_no"]) == [1, 2]  # the description-only line is not a line
+    assert list(entry["description"]) == ["Note to the bank, per the loan schedule", "Opening Balance"]
     assert (stats.description_only_lines, stats.adjusting_entries) == (1, 1)
     assert "Set aside: 1 description-only line(s)" in "\n".join(stats.describe())
     assert entry["entered_at"].iloc[0] == pd.Timestamp("2026-09-27 22:47:10")
@@ -607,6 +624,12 @@ def test_other_transactions_are_rebuilt_from_the_report_whole_and_balanced(pulle
         ("Sales of Product Income", 0.0, 20.0), ("Sales of Product Income", 0.0, 24.0),
         ("Services", 0.0, 400.0)]
     assert set(invoice["source"]) == {"AR"} and not invoice["entered_at_estimated"].any()
+    # a row's memo describes it, else the customer's name (the A/R and tax rows have no memo)
+    assert sorted(zip(invoice["account_name"], invoice["credit"], invoice["description"])) == [
+        ("Accounts Receivable (A/R)", 0.0, "Cool Cars"), ("Board of Equalization Payable", 175.52, "Cool Cars"),
+        ("Landscaping Services:Job Materials:Plants and Soil", 1750.0, "Sod"),
+        ("Sales of Product Income", 20.0, "Sprinkler Heads"), ("Sales of Product Income", 24.0, "Sprinkler Pipes"),
+        ("Services", 400.0, "Installation Hours")]
     # its sales-tax row is stamped 2026-09-04 12:59:17; the invoice was keyed at the earliest
     assert set(invoice["entered_at"]) == {pd.Timestamp("2026-09-01 15:04:04")}
     fuel = lines_of(frame, "QBO-Check-57")
@@ -683,13 +706,14 @@ def test_report_timestamps_are_read_by_explicit_formats(value, expected):
     assert qbo.parse_report_datetime(value, datetime(2026, 7, 16)) == expected
 
 
-def gl_report(create_date: str, first_row_stamp: str | None = None, amount: str = "54.55") -> dict:
+def gl_report(create_date: str, first_row_stamp: str | None = None, amount: str = "54.55",
+              first_row_user: str = "qbo-user-1") -> dict:
     """A two-line Check in the report's shape, with the column keys in ColKey metadata; the
-    first row in report order can carry a create date of its own."""
+    first row in report order can carry a create date and a user of its own."""
     keys = ["tx_date", "txn_type", "create_date", "create_by", "debt_amt", "credit_amt"]
 
-    def section(account_id, name, stamp, debit, credit):
-        cells = ["2026-07-16", "Check", stamp, "qbo-user-1", debit, credit]
+    def section(account_id, name, stamp, user, debit, credit):
+        cells = ["2026-07-16", "Check", stamp, user, debit, credit]
         data = [{"value": v, "id": "57"} if k == "txn_type" else {"value": v} for k, v in zip(keys, cells)]
         return {"type": "Section", "Header": {"ColData": [{"value": name, "id": account_id}]},
                 "Rows": {"Row": [{"type": "Data", "ColData": data}]}}
@@ -697,16 +721,23 @@ def gl_report(create_date: str, first_row_stamp: str | None = None, amount: str 
     first = create_date if first_row_stamp is None else first_row_stamp
     return {"Columns": {"Column": [{"ColTitle": k, "MetaData": [{"Name": "ColKey", "Value": k}]}
                                    for k in keys]},
-            "Rows": {"Row": [section("35", "Checking", first, "", amount),
-                             section("56", "Fuel", create_date, amount, "")]}}
+            "Rows": {"Row": [section("35", "Checking", first, first_row_user, "", amount),
+                             section("56", "Fuel", create_date, "qbo-user-1", amount, "")]}}
 
 
 def test_a_transaction_is_keyed_when_its_earliest_row_was_created_whatever_the_row_order():
     # In the sandbox, nine invoices' sales-tax rows carry a later create_date than their other
     # rows; which row comes first depends only on the order of the report's account sections.
-    later_first = gl_report("2026-09-01T15:04:04-0700", first_row_stamp="2026-09-04T12:59:17-0700")
+    later_first = gl_report("2026-09-01T15:04:04-0700", first_row_stamp="2026-09-04T12:59:17-0700",
+                            first_row_user="qbo-user-2")
     lines = qbo.general_ledger_to_lines(later_first, {})
     assert {line["entered_at"] for line in lines} == {datetime(2026, 9, 1, 15, 4, 4)}
+    assert {line["created_by"] for line in lines} == {"qbo-user-1"}  # the user who keyed it
+    earlier_first = gl_report("2026-09-04T12:59:17-0700", first_row_stamp="2026-09-01T15:04:04-0700",
+                              first_row_user="qbo-user-2")
+    lines = qbo.general_ledger_to_lines(earlier_first, {})
+    assert {(line["entered_at"], line["created_by"]) for line in lines} == {
+        (datetime(2026, 9, 1, 15, 4, 4), "qbo-user-2")}
     blank_first = qbo.PullStats()
     lines = qbo.general_ledger_to_lines(gl_report("2026-09-01T15:04:04-0700", first_row_stamp=""),
                                         {}, None, blank_first)
