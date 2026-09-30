@@ -400,7 +400,13 @@ def test_throttling_waits_for_retry_after_then_gives_up_after_three_tries():
     client, transport, slept = client_for([reply(429, b"")] * 3)
     with pytest.raises(QboError, match="throttled 3 times"):
         client.request("GET", "/companyinfo/1")
-    assert slept == [5.0, 10.0] and len(transport.calls) == 3
+    assert slept == [60.0, 60.0] and len(transport.calls) == 3
+
+
+def test_an_error_names_the_intuit_transaction_id_support_asks_for():
+    error = QboError.from_response(reply(500, {"Fault": {"Error": [{"Message": "boom"}]}},
+                                         {"intuit_tid": "1-66f9-abc"}), "GET /x")
+    assert str(error) == "GET /x: HTTP 500: boom [intuit_tid 1-66f9-abc]"
 
 
 def test_a_200_carrying_a_fault_is_an_error():

@@ -82,10 +82,18 @@ class QboError(RuntimeError):
     def from_response(cls, response: Response, context: str = "") -> QboError:
         """Read either fault shape Intuit sends (``Fault/Error/Message`` from the API,
         lower-case ``fault/error/message`` on some 401s) or an OAuth ``error`` body."""
-        prefix = f"{context}: " if context else ""
+        error = cls._read(response, f"{context}: " if context else "")
+        tid = response.headers.get("intuit_tid")
+        if tid:  # Intuit support asks for it; it identifies the request, not the company
+            error.message += f" [intuit_tid {tid}]"
+            error.args = (error.message,)
+        return error
+
+    @classmethod
+    def _read(cls, response: Response, prefix: str) -> QboError:
         try:
             payload = response.json()
-        except ValueError:
+        except ValueError:  # some 401s arrive as text/xml; show the start of the body
             text = response.body.decode("utf-8", "replace").strip()[:200]
             return cls(response.status, None,
                        f"{prefix}HTTP {response.status}" + (f": {text}" if text else ""))
@@ -622,10 +630,12 @@ class QboAuth:
 
 # --- the Accounting API client ------------------------------------------------------
 
-#: How often a throttled request is tried before giving up, and the waits between.
+#: How often a throttled request is tried before giving up, and the wait between tries.
+#: Intuit documents no Retry-After on a 429 and says to wait 60 seconds; a Retry-After
+#: that does arrive is honoured, up to two minutes.
 THROTTLE_ATTEMPTS = 3
-THROTTLE_DEFAULT_WAIT = 5
-THROTTLE_MAX_WAIT = 60
+THROTTLE_DEFAULT_WAIT = 60
+THROTTLE_MAX_WAIT = 120
 
 
 class QboClient:
@@ -634,8 +644,9 @@ class QboClient:
     Every request carries the bearer token, ``Accept: application/json`` and
     ``minorversion``. An access token within a minute of expiry is refreshed
     first; a 401 is answered by one refresh and one retry (a second 401 means
-    the authorisation itself is gone); a 429 waits for ``Retry-After`` (or 5 s,
-    doubling, at most 60 s) and gives up after three throttled attempts. A
+    the authorisation itself is gone); a 429 waits for ``Retry-After`` when
+    one is sent (at most 120 s), else the 60 s Intuit asks for, and gives up
+    after three throttled attempts. A
     rotated refresh token is saved through ``token_store`` the moment it
     arrives, because the old one stops working.
     """
@@ -693,7 +704,7 @@ class QboClient:
                 if throttled >= THROTTLE_ATTEMPTS:
                     raise QboError(429, None, f"{method} {path}: throttled {throttled} times in a "
                                               "row; wait a minute and run the pull again")
-                self.sleep(_retry_after(response, throttled))
+                self.sleep(_retry_after(response))
                 continue
             if not 200 <= response.status < 300:
                 raise QboError.from_response(response, f"{method} {path}")
@@ -728,10 +739,9 @@ class QboClient:
         return self.request("GET", f"/reports/{name}", query=params)
 
 
-def _retry_after(response: Response, attempt: int) -> float:
-    value = response.headers.get("retry-after", "")
+def _retry_after(response: Response) -> float:
     try:
-        wait = float(value)
+        wait = float(response.headers.get("retry-after", ""))
     except ValueError:
-        wait = THROTTLE_DEFAULT_WAIT * 2 ** (attempt - 1)
+        wait = THROTTLE_DEFAULT_WAIT
     return max(0.0, min(wait, THROTTLE_MAX_WAIT))
