@@ -1,0 +1,176 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/query",
+    "query": [
+      [
+        "minorversion",
+        "75"
+      ]
+    ],
+    "body": "select * from JournalEntry where TxnDate >= '2026-07-01' and TxnDate <= '2026-09-30' STARTPOSITION 1 MAXRESULTS 1000"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": {
+      "QueryResponse": {
+        "JournalEntry": [
+          {
+            "Adjustment": false,
+            "TotalAmt": 0,
+            "domain": "QBO",
+            "sparse": false,
+            "Id": "8",
+            "SyncToken": "0",
+            "MetaData": {
+              "CreateTime": "2026-09-01T10:04:24-07:00",
+              "LastUpdatedTime": "2026-09-01T10:04:24-07:00"
+            },
+            "TxnDate": "2026-09-01",
+            "CurrencyRef": {
+              "value": "USD",
+              "name": "United States Dollar"
+            },
+            "PrivateNote": "Opening Balance",
+            "Line": [
+              {
+                "Id": "0",
+                "Description": "Opening Balance",
+                "Amount": 25000.0,
+                "DetailType": "JournalEntryLineDetail",
+                "JournalEntryLineDetail": {
+                  "PostingType": "Credit",
+                  "AccountRef": {
+                    "value": "44",
+                    "name": "Notes Payable"
+                  }
+                },
+                "CustomExtensions": []
+              },
+              {
+                "Id": "1",
+                "Description": "Opening Balance",
+                "Amount": 25000.0,
+                "DetailType": "JournalEntryLineDetail",
+                "JournalEntryLineDetail": {
+                  "PostingType": "Debit",
+                  "AccountRef": {
+                    "value": "34",
+                    "name": "Opening Balance Equity"
+                  }
+                },
+                "CustomExtensions": []
+              }
+            ],
+            "TxnTaxDetail": {}
+          },
+          {
+            "Adjustment": false,
+            "TotalAmt": 0,
+            "domain": "QBO",
+            "sparse": false,
+            "Id": "7",
+            "SyncToken": "0",
+            "MetaData": {
+              "CreateTime": "2026-09-01T10:03:25-07:00",
+              "LastUpdatedTime": "2026-09-01T10:03:25-07:00"
+            },
+            "TxnDate": "2026-09-01",
+            "CurrencyRef": {
+              "value": "USD",
+              "name": "United States Dollar"
+            },
+            "PrivateNote": "Opening Balance",
+            "Line": [
+              {
+                "Id": "0",
+                "Description": "Opening Balance",
+                "Amount": 4000.0,
+                "DetailType": "JournalEntryLineDetail",
+                "JournalEntryLineDetail": {
+                  "PostingType": "Credit",
+                  "AccountRef": {
+                    "value": "43",
+                    "name": "Loan Payable"
+                  }
+                },
+                "CustomExtensions": []
+              },
+              {
+                "Id": "1",
+                "Description": "Opening Balance",
+                "Amount": 4000.0,
+                "DetailType": "JournalEntryLineDetail",
+                "JournalEntryLineDetail": {
+                  "PostingType": "Debit",
+                  "AccountRef": {
+                    "value": "34",
+                    "name": "Opening Balance Equity"
+                  }
+                },
+                "CustomExtensions": []
+              }
+            ],
+            "TxnTaxDetail": {}
+          },
+          {
+            "Adjustment": false,
+            "TotalAmt": 0,
+            "domain": "QBO",
+            "sparse": false,
+            "Id": "6",
+            "SyncToken": "0",
+            "MetaData": {
+              "CreateTime": "2026-08-31T12:11:06-07:00",
+              "LastUpdatedTime": "2026-08-31T12:11:06-07:00"
+            },
+            "TxnDate": "2026-08-19",
+            "CurrencyRef": {
+              "value": "USD",
+              "name": "United States Dollar"
+            },
+            "PrivateNote": "Opening Balance",
+            "Line": [
+              {
+                "Id": "0",
+                "Description": "Opening Balance",
+                "Amount": 13495.0,
+                "DetailType": "JournalEntryLineDetail",
+                "JournalEntryLineDetail": {
+                  "PostingType": "Debit",
+                  "AccountRef": {
+                    "value": "38",
+                    "name": "Truck:Original Cost"
+                  }
+                },
+                "CustomExtensions": []
+              },
+              {
+                "Id": "1",
+                "Description": "Opening Balance",
+                "Amount": 13495.0,
+                "DetailType": "JournalEntryLineDetail",
+                "JournalEntryLineDetail": {
+                  "PostingType": "Credit",
+                  "AccountRef": {
+                    "value": "34",
+                    "name": "Opening Balance Equity"
+                  }
+                },
+                "CustomExtensions": []
+              }
+            ],
+            "TxnTaxDetail": {}
+          }
+        ],
+        "startPosition": 1,
+        "maxResults": 3,
+        "totalCount": 3
+      },
+      "time": "2026-09-30T10:22:14.069-07:00"
+    }
+  }
+}

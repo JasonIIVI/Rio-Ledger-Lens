@@ -1,5 +1,8 @@
 import hashlib
 import json
+import re
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -556,3 +559,342 @@ def test_a_malformed_identity_sidecar_stops_every_command_with_a_message(
         assert main(argv) == 2, argv[0]
         out = capsys.readouterr().out
         assert "error:" in out and "ledger.identity.json" in out, argv[0]
+
+
+# --- QuickBooks Online: pull-qbo and qbo-auth (offline) ---------------------------
+
+QBO_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "qbo"
+QBO_ENV = {"QBO_CLIENT_ID": "CLIENT-ID", "QBO_CLIENT_SECRET": "CLIENT-SECRET",
+           "QBO_ENVIRONMENT": "sandbox"}
+QBO_PERIOD = ["--start", "2026-07-01", "--end", "2026-09-30"]  # the recorded sandbox quarter
+
+
+@pytest.fixture
+def qbo_env(tmp_path, monkeypatch):
+    """A clean QuickBooks environment: no .env in the working directory, no QBO_* leaking in
+    from the shell, and a token directory outside any git checkout."""
+    from ledgerlens.connectors.tokens import repository_root
+
+    if repository_root(tmp_path) is not None:
+        pytest.skip(f"{tmp_path} is inside a git repository")
+    monkeypatch.chdir(tmp_path)
+    for name in ("QBO_CLIENT_ID", "QBO_CLIENT_SECRET", "QBO_ENVIRONMENT", "QBO_REALM_ID",
+                 "QBO_REDIRECT_URI", "QBO_TIMEZONE", "LEDGERLENS_TOKEN_DIR"):
+        monkeypatch.delenv(name, raising=False)
+    tokens = tmp_path / "tokens"
+    monkeypatch.setenv("LEDGERLENS_TOKEN_DIR", str(tokens))
+    return SimpleNamespace(root=tmp_path, tokens=tokens, set=lambda **kv: [
+        monkeypatch.setenv(k, v) for k, v in {**QBO_ENV, **kv}.items()])
+
+
+def test_pull_qbo_from_fixtures_writes_a_ledger_every_command_reads(qbo_env, capsys):
+    out = qbo_env.root / "data" / "qbo-ledger.csv"
+    code = main(["pull-qbo", *QBO_PERIOD, "--fixtures", str(QBO_FIXTURES / "pull"), "--out", str(out)])
+    printed = capsys.readouterr().out
+    assert code == 0, printed
+    assert "Wrote 297 lines / 116 entries" in printed
+    assert "Identity qbo:sandbox-fixtures written to" in printed
+    assert "small population" not in printed and "not used" not in printed  # 116 entries
+    sidecar = out.with_suffix(".identity.json")
+    assert json.loads(sidecar.read_text())["ledger_id"] == "qbo:sandbox-fixtures"
+    assert main(["test", str(out)]) == 0
+    # the sandbox's round $25,000 opening-balance journal entry: a round amount (JET-01) keyed
+    # by hand by a user not on the generator's approver list (JET-12)
+    top = capsys.readouterr().out.split("Top 10 by risk score:")[1]
+    assert re.search(r"QBO-JournalEntry-8 .*JET-01.*JET-12.*\$25,000\.00", top)
+    assert main(["report", str(out), "--no-model", "--out", str(qbo_env.root / "wp.xlsx")]) == 0
+
+
+def test_a_pull_below_the_small_population_line_says_the_tiers_need_more(qbo_env, capsys, monkeypatch):
+    from ledgerlens.connectors import qbo
+
+    monkeypatch.setattr(qbo, "SMALL_LEDGER", 117)  # the recorded quarter holds 116 entries
+    assert main(["pull-qbo", *QBO_PERIOD, "--fixtures", str(QBO_FIXTURES / "pull"),
+                 "--out", str(qbo_env.root / "data" / "q.csv")]) == 0
+    assert "Warning: 116 entries is a small population" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("argv, env, expected", [
+    (["--start", "2025-12-31", "--end", "2025-10-01"], {}, "is after --end"),
+    ([], None, "missing QBO_CLIENT_ID, QBO_CLIENT_SECRET"),
+    ([], {"QBO_ENVIRONMENT": "production", "QBO_REALM_ID": "1"}, "--allow-production"),
+    (["--record", "rec"], {"QBO_ENVIRONMENT": "production", "QBO_REALM_ID": "1"}, "only sandbox data"),
+    ([], {}, "no realm id"),
+    ([], {"QBO_REALM_ID": "4620816365"}, "no tokens for sandbox company 4620816365.*qbo-auth"),
+    (["--out", "data/ledger.txt"], {}, "must be a .csv file"),
+    (["--realm-id", "_x"], {}, "not letters, digits"),
+    ([], {"QBO_REALM_ID": "12 34"}, "not letters, digits"),
+])
+def test_pull_qbo_refuses_what_it_cannot_do_with_a_message(qbo_env, capsys, argv, env, expected):
+    if env is not None:
+        qbo_env.set(**env)
+    args = ["pull-qbo", "--start", "2025-10-01", "--end", "2025-12-31", *argv]
+    if "--start" in argv:
+        args = ["pull-qbo", *argv]
+    assert main(args) == 2
+    assert re.search(expected, capsys.readouterr().out)
+    assert not (qbo_env.root / "data" / "qbo-ledger.csv").exists()
+
+
+def _stored_tokens(qbo_env, realm="4620816365"):
+    from ledgerlens.connectors.tokens import Tokens, TokenStore
+
+    store = TokenStore.for_realm("sandbox", realm, qbo_env.tokens)
+    store.save(Tokens.issued("STORED-ACCESS", "STORED-REFRESH", 3600, 86400, realm, "sandbox"))
+    return store
+
+
+def test_a_live_pull_uses_the_stored_tokens_and_records_sanitized_fixtures(qbo_env, capsys, monkeypatch):
+    """The live path end to end, with the network replaced by the pull fixtures: the realm
+    comes from the only token file, and --record writes fixtures that replay the same pull."""
+    from ledgerlens.connectors import qbo
+
+    qbo_env.set()
+    _stored_tokens(qbo_env)
+    live = qbo.RecordedTransport(QBO_FIXTURES / "pull")
+    monkeypatch.setattr(qbo, "default_transport", lambda: live)
+    recorded = qbo_env.root / "recorded"
+    code = main(["pull-qbo", *QBO_PERIOD, "--record", str(recorded)])
+    printed = capsys.readouterr().out
+    assert code == 0, printed
+    assert "Identity qbo:4620816365" in printed and "Recorded 3 sanitized fixture(s)" in printed
+    assert "STORED-ACCESS" not in "".join(p.read_text() for p in recorded.glob("*.json"))
+    first = (qbo_env.root / "data" / "qbo-ledger.csv").read_text()
+    (qbo_env.root / "data" / "qbo-ledger.csv").unlink()
+    assert main(["pull-qbo", *QBO_PERIOD, "--realm-id", "4620816365", "--fixtures", str(recorded)]) == 0
+    assert (qbo_env.root / "data" / "qbo-ledger.csv").read_text() == first
+    assert "not used" not in capsys.readouterr().out
+    assert main(["pull-qbo", *QBO_PERIOD, "--record", str(recorded)]) == 2
+    assert "already holds fixtures" in capsys.readouterr().out
+
+
+def _free_port() -> int:
+    import socket
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+def test_qbo_auth_signs_in_and_stores_the_tokens_privately(qbo_env, capsys, monkeypatch):
+    import stat
+    import threading
+    import urllib.parse
+    import urllib.request
+    import webbrowser
+
+    from ledgerlens.connectors import qbo
+
+    port = _free_port()
+    qbo_env.set(QBO_REDIRECT_URI=f"http://localhost:{port}/callback")
+    monkeypatch.setattr(qbo, "default_transport",
+                        lambda: qbo.RecordedTransport(QBO_FIXTURES / "auth"))
+    visited = []
+
+    def browser(url):  # the user signs in; Intuit redirects back with a code
+        state = dict(urllib.parse.parse_qsl(url.split("?", 1)[1]))["state"]
+        back = f"http://127.0.0.1:{port}/callback?" + urllib.parse.urlencode(
+            {"code": "ONE-TIME-CODE", "state": state, "realmId": "4620816365"})
+        direct = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        thread = threading.Thread(target=lambda: visited.append(direct.open(back, timeout=5).status))
+        thread.start()
+        threads.append(thread)
+        return True
+
+    threads = []
+    monkeypatch.setattr(webbrowser, "open", browser)
+    code = main(["qbo-auth", "--timeout", "10"])
+    for thread in threads:
+        thread.join(5)
+    printed = capsys.readouterr().out
+    assert code == 0, printed
+    token_file = qbo_env.tokens / "qbo-sandbox-4620816365.json"
+    assert stat.S_IMODE(token_file.stat().st_mode) == 0o600
+    assert json.loads(token_file.read_text())["access_token"] == "TEST-ACCESS"
+    assert "Add to .env: QBO_REALM_ID=4620816365" in printed
+    for secret in ("TEST-ACCESS", "TEST-REFRESH", "ONE-TIME-CODE", "CLIENT-SECRET"):
+        assert secret not in printed
+    assert visited == [200]
+
+
+def test_qbo_auth_times_out_without_writing_anything(qbo_env, capsys):
+    qbo_env.set(QBO_REDIRECT_URI=f"http://localhost:{_free_port()}/callback")
+    assert main(["qbo-auth", "--timeout", "0.3", "--no-browser"]) == 1
+    assert "no sign-in arrived" in capsys.readouterr().out
+    assert list(qbo_env.tokens.iterdir()) == []  # the private directory is made first; no tokens
+
+
+def test_a_qbo_sidecar_keys_adopt_legacy_narrate_and_the_report(tmp_path, capsys, monkeypatch, llm):
+    """A QuickBooks pull's ledger is filed under qbo:<realm> on every surface that writes or
+    reads review rows, whatever the CSV's digest (a re-pull changes the digest, not the key)."""
+    import sqlite3
+
+    import openpyxl
+
+    from ledgerlens import cli
+    from ledgerlens.narrate import Narrator
+    from ledgerlens.review import ReviewStore
+
+    monkeypatch.chdir(tmp_path)
+    main(["generate", "--start", "2024-01-01", "--end", "2024-03-31", "--out-dir", str(tmp_path)])
+    ledger, db = str(tmp_path / "ledger.csv"), tmp_path / "review.sqlite"
+    (tmp_path / "ledger.identity.json").write_text('{"ledger_id": "qbo:4620816365"}')
+    ReviewStore(db, "qbo:4620816365")
+    with sqlite3.connect(str(db)) as raw:
+        raw.execute("INSERT INTO narratives (entry_id, summary, generated_at, ledger_id) VALUES "
+                    "('JE-2024-000001', 'old', '2026-09-23T00:00:00+00:00', 'legacy')")
+    capsys.readouterr()
+
+    assert main(["adopt-legacy", ledger, "--db", str(db)]) == 0
+    assert "into qbo:4620816365" in capsys.readouterr().out
+
+    client = llm.client()
+    monkeypatch.setattr(cli, "Narrator", lambda **kw: Narrator(client=client, **kw))
+    assert main(["narrate", ledger, "--db", str(db), "--top", "2", "--no-model"]) == 0
+    assert "rows keyed by qbo:4620816365" in capsys.readouterr().out
+    store = ReviewStore(db, "qbo:4620816365")
+    assert len(store.narrative_ids()) >= 2 and "JE-2024-000001" in store.narrative_ids()
+    assert set(store.ledgers()["ledger_id"]) == {"legacy", "qbo:4620816365"}
+
+    out = tmp_path / "wp.xlsx"
+    assert main(["report", ledger, "--no-model", "--db", str(db), "--out", str(out)]) == 0
+    cells = {str(c.value) for ws in openpyxl.load_workbook(out) for row in ws.iter_rows()
+             for c in row if c.value is not None}
+    assert "qbo:4620816365" in cells
+
+
+def test_nothing_is_spent_when_the_tokens_could_not_be_saved(qbo_env, capsys, monkeypatch):
+    """A code is single-use and a refresh rotates the token: a token directory the store
+    would refuse is refused before the browser opens or any request is sent."""
+    import webbrowser
+
+    from ledgerlens.connectors import qbo
+
+    qbo_env.set(QBO_REDIRECT_URI=f"http://localhost:{_free_port()}/callback")
+    store = _stored_tokens(qbo_env)
+    qbo_env.tokens.chmod(0o755)
+    sent = []
+    monkeypatch.setattr(qbo, "default_transport",
+                        lambda: SimpleNamespace(request=lambda *a, **k: sent.append(a)))
+    monkeypatch.setattr(webbrowser, "open", lambda url: sent.append(url))
+    assert main(["qbo-auth", "--timeout", "0.3"]) == 2
+    assert "mode is 755" in capsys.readouterr().out
+    assert main(["pull-qbo", "--start", "2025-10-01", "--end", "2025-12-31"]) == 2
+    assert "mode is 755" in capsys.readouterr().out
+    assert sent == [] and store.load().refresh_token == "STORED-REFRESH"
+    qbo_env.tokens.chmod(0o700)
+    (qbo_env.root / "rec").write_text("a file")
+    assert main(["pull-qbo", "--start", "2025-10-01", "--end", "2025-12-31",
+                 "--record", str(qbo_env.root / "rec")]) == 2
+    assert "is a file" in capsys.readouterr().out and sent == []
+
+
+def _replay_to(out, *extra):
+    return main(["pull-qbo", *QBO_PERIOD, "--fixtures", str(QBO_FIXTURES / "pull"), "--out", str(out), *extra])
+
+
+def test_the_synthetic_ledger_and_its_identity_are_refused_however_spelled(qbo_env, capsys, monkeypatch):
+    (qbo_env.root / ".git").mkdir()  # the working directory is a checkout, as in real use
+    data = qbo_env.root / "data"
+    data.mkdir()
+    synthetic = data / "ledger.csv"
+    synthetic.write_text("the synthetic ledger\\n")
+    spellings = ["data/ledger.csv", "./data/../data/ledger.csv"]
+    if (qbo_env.root / "DATA" / "LEDGER.CSV").exists():  # a case-insensitive disk, as on macOS
+        spellings.append("data/LEDGER.csv")
+    for spelled in spellings:
+        assert _replay_to(spelled) == 2, spelled
+        assert "synthetic ledger" in capsys.readouterr().out
+    (qbo_env.root / "src").mkdir()
+    monkeypatch.chdir(qbo_env.root / "src")
+    assert _replay_to("../data/ledger.csv") == 2  # from another directory of the checkout
+    monkeypatch.chdir(qbo_env.root)
+    assert _replay_to("data/ledger.txt") == 2  # would take over data/ledger.identity.json
+    assert synthetic.read_text() == "the synthetic ledger\\n"
+    assert not (data / "ledger.identity.json").exists()
+
+
+def test_pulled_books_stay_in_the_checkouts_ignored_data_directory(qbo_env, capsys):
+    repo = qbo_env.root / "repo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "tests").mkdir()
+    assert _replay_to(repo / "tests" / "q.csv") == 2
+    assert "not in its data/ directory" in capsys.readouterr().out
+    assert _replay_to(repo / "q.csv") == 2
+    assert _replay_to(repo / "data" / "q.csv") == 0
+    assert (repo / "data" / "q.identity.json").exists()
+    assert _replay_to(qbo_env.root / "elsewhere" / "q.csv") == 0  # outside any checkout
+
+
+def test_a_replay_converts_times_with_qbo_timezone_like_the_recorded_pull(qbo_env, monkeypatch):
+    import pandas as pd
+
+    monkeypatch.setenv("QBO_TIMEZONE", "America/New_York")
+    assert _replay_to(qbo_env.root / "data" / "q.csv") == 0
+    ledger = pd.read_csv(qbo_env.root / "data" / "q.csv")
+    # the recording's -07:00 (entity) and -0700 (report), three hours later in New York
+    times = set(ledger.loc[ledger["entry_id"] == "QBO-JournalEntry-6", "entered_at"])
+    assert times == {"2026-08-31 15:11:06"}
+    times = set(ledger.loc[ledger["entry_id"] == "QBO-Check-57", "entered_at"])
+    assert times == {"2026-09-02 18:14:27"}
+    monkeypatch.setenv("QBO_TIMEZONE", "Mars/Olympus")
+    assert _replay_to(qbo_env.root / "data" / "q.csv") == 2
+
+
+def test_a_recording_that_ends_in_an_error_is_still_scrubbed_and_checked(qbo_env, capsys, monkeypatch):
+    """A name the report reveals last must leave the earlier fixtures even when the pull then
+    fails (here: a report without a credit column, as a multicurrency company's would be)."""
+    import shutil
+
+    from ledgerlens.connectors import qbo
+
+    live_dir = qbo_env.root / "live"
+    shutil.copytree(QBO_FIXTURES / "pull", live_dir)
+    je = live_dir / "020-post-query-journalentry-p1.json"
+    je.write_text(je.read_text().replace('"PrivateNote": "Opening Balance"',
+                                         '"PrivateNote": "Opening balance approved by Jane Dev"'))
+    gl = live_dir / "030-get-reports-generalledger.json"
+    gl.write_text(gl.read_text().replace('"qbo-user-1"', '"Jane Dev"')
+                  .replace('"Value": "credit_amt"', '"Value": "credit_x"')
+                  .replace('"ColTitle": "Credit"', '"ColTitle": "Credit X"'))
+    qbo_env.set()
+    _stored_tokens(qbo_env)
+    monkeypatch.setattr(qbo, "default_transport", lambda: qbo.RecordedTransport(live_dir))
+    recorded = qbo_env.root / "recorded"
+    assert main(["pull-qbo", *QBO_PERIOD, "--record", str(recorded)]) == 1
+    printed = capsys.readouterr().out
+    assert "multicurrency" in printed and "not a complete pull" in printed
+    text = "".join(p.read_text() for p in recorded.glob("*.json"))
+    assert "Jane Dev" not in text and "approved by qbo-user-" in text
+
+
+def test_pulled_books_never_land_in_a_new_directory_of_the_checkout(qbo_env, capsys):
+    repo = qbo_env.root / "repo"
+    (repo / ".git").mkdir(parents=True)
+    for place in (repo / "tests" / "new" / "q.csv", repo / "q2" / "q.csv"):
+        assert _replay_to(place) == 2, place
+        assert "not in its data/ directory" in capsys.readouterr().out
+        assert not place.parent.exists()
+    assert _replay_to(qbo_env.root / "data" / "ledger.CSV") == 2  # a suffix in another case
+    assert "must be a .csv file" in capsys.readouterr().out
+
+
+def test_qbo_auth_refuses_a_token_directory_inside_a_checkout_before_the_browser(qbo_env, capsys, monkeypatch):
+    import webbrowser
+
+    repo = qbo_env.root / "repo"
+    (repo / ".git").mkdir(parents=True)
+    qbo_env.set(QBO_REDIRECT_URI=f"http://localhost:{_free_port()}/callback")
+    monkeypatch.setenv("LEDGERLENS_TOKEN_DIR", str(repo / "tok"))
+    opened = []
+    monkeypatch.setattr(webbrowser, "open", opened.append)
+    assert main(["qbo-auth", "--timeout", "0.3"]) == 2
+    assert "inside the git repository" in capsys.readouterr().out
+    assert opened == [] and not (repo / "tok").exists()
+
+
+def test_a_pull_without_tokens_creates_no_token_directory(qbo_env, capsys):
+    qbo_env.set(QBO_REALM_ID="4620816365")
+    assert main(["pull-qbo", "--start", "2025-10-01", "--end", "2025-12-31"]) == 2
+    assert "run `ledgerlens qbo-auth` first" in capsys.readouterr().out
+    assert not qbo_env.tokens.exists()

@@ -8,12 +8,16 @@
     ledgerlens narrate   - write Claude narratives for the riskiest entries
     ledgerlens eval-narratives - grade the narrative layer against the case set
     ledgerlens adopt-legacy - file review rows from before ledgers were keyed under a ledger
+    ledgerlens qbo-auth  - sign in to QuickBooks Online; tokens are kept outside the repo
+    ledgerlens pull-qbo  - pull a period from QuickBooks Online into a ledger CSV
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+import webbrowser
 from datetime import date, datetime
 from pathlib import Path
 
@@ -21,6 +25,14 @@ import pandas as pd
 
 from . import evaluate, jets, narrative_eval
 from .benford import benford_test, segmented_benford
+from .connectors import qbo
+from .connectors.tokens import (
+    Tokens,
+    TokenStore,
+    TokenStoreError,
+    default_token_dir,
+    repository_root,
+)
 from .env import load_dotenv
 from .generate import generate_ledger
 from .ingest import IdentityError, ledger_identity, load_csv, load_labels
@@ -277,6 +289,239 @@ def cmd_adopt_legacy(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_qbo_auth(args: argparse.Namespace) -> int:
+    """Sign in to QuickBooks Online in the browser and store the tokens outside the repository."""
+    try:
+        config = qbo.QboConfig.from_env()
+    except qbo.QboConfigError as exc:
+        print(f"error: {exc}")
+        return 2
+    try:  # before the browser: a directory the tokens cannot go into wastes the sign-in
+        directory = Path(args.token_dir) if args.token_dir else default_token_dir()
+        TokenStore(directory / "qbo-preflight.json").check_writable()  # the store's own refusals
+    except TokenStoreError as exc:
+        print(f"error: {exc}")
+        return 2
+    auth = qbo.QboAuth(config, qbo.default_transport())
+    state = qbo.new_state()
+    try:
+        server = qbo.CallbackServer(config.callback_port, config.callback_path)
+    except qbo.QboAuthError as exc:
+        print(f"error: {exc}")
+        return 1
+    url = auth.authorization_url(state)
+    with server:
+        print(f"Sign in to QuickBooks ({config.environment}) and choose the company to connect:")
+        print(f"  {url}")
+        if not args.no_browser:
+            webbrowser.open(url)
+        print(f"Waiting up to {args.timeout:g}s for the sign-in to return to {config.redirect_uri}")
+        try:
+            callback = server.wait(state, args.timeout)
+        except qbo.QboAuthError as exc:
+            print(f"error: {exc}")
+            return 1
+    if not qbo.REALM_ID.fullmatch(callback.realm_id):
+        print(f"error: the sign-in returned a realm id this tool cannot use: {callback.realm_id!r}")
+        return 1
+    try:
+        # Every check the save makes, before the single-use code is spent.
+        store = TokenStore.for_realm(config.environment, callback.realm_id, args.token_dir)
+        store.check_writable()
+        path = store.save(auth.exchange(callback.code, callback.realm_id))
+    except (qbo.QboError, TokenStoreError, OSError, ValueError) as exc:
+        print(f"error: {exc}")
+        return 1
+    print(f"Signed in to {config.environment} company {callback.realm_id}. "
+          f"Tokens saved to {path} (mode 600).")
+    if config.realm_id != callback.realm_id:
+        if config.realm_id:
+            print(f"Note: QBO_REALM_ID in the environment is {config.realm_id}, but you signed in "
+                  f"to {callback.realm_id}.")
+        print(f"Add to .env: QBO_REALM_ID={callback.realm_id}")
+    print("Next: ledgerlens pull-qbo --start YYYY-MM-DD --end YYYY-MM-DD")
+    return 0
+
+
+def _stored_realm(environment: str, token_dir: str | None) -> str | None:
+    """The realm of the only token file for ``environment``, or None when there are none or several."""
+    directory = Path(token_dir).expanduser() if token_dir else default_token_dir()
+    found = sorted(directory.glob(f"qbo-{environment}-*.json")) if directory.is_dir() else []
+    return found[0].stem[len(f"qbo-{environment}-"):] if len(found) == 1 else None
+
+
+#: The synthetic ledger the committed eval and the README's numbers are built from.
+SYNTHETIC_LEDGER = Path("data/ledger.csv")
+FIXTURE_REALM = "sandbox-fixtures"
+
+
+def _refuse_output(out: Path) -> str | None:
+    """Why a pull may not write ``out`` (and its sidecar), or None.
+
+    The sidecar is ``<stem>.identity.json``, so only a ``.csv`` name keeps it one-to-one
+    with its ledger (``data/ledger.txt`` would take over ``data/ledger.csv``'s). The
+    synthetic ledger is refused however it is spelled (case, ``..``, from another
+    directory), by file identity. And pulled books stay in the repository's ignored
+    ``data/`` directory, never anywhere git would pick them up.
+    """
+    if out.suffix != ".csv":  # exactly: on a case-sensitive disk ledger.CSV shares a sidecar
+        return (f"--out must be a .csv file: its identity file is {out.stem}.identity.json, "
+                "which a ledger with another suffix would share")
+    root = repository_root(out.absolute().parent)  # walks ancestors, existing or not
+    synthetic = [Path.cwd() / SYNTHETIC_LEDGER] + ([root / SYNTHETIC_LEDGER] if root else [])
+    if out.exists() and any(s.exists() and out.samefile(s) for s in synthetic):
+        return (f"{out} is the synthetic ledger the eval and the README's numbers come from; "
+                "choose another --out (the default is data/qbo-ledger.csv)")
+    if root is not None:
+        data = root / "data"
+        inside = (out.parent.exists() and data.exists() and out.parent.samefile(data)) or \
+            out.resolve().parent == data.resolve()
+        if not inside:
+            return (f"{out} is inside the git checkout at {root} but not in its data/ directory, "
+                    "where git ignores ledgers; pulled books are never written where they could "
+                    "be committed")
+    return None
+
+
+def cmd_pull_qbo(args: argparse.Namespace) -> int:
+    """Pull a period from QuickBooks Online (or replay fixtures) into a ledger CSV and sidecar."""
+    if args.start > args.end:
+        print(f"error: --start {args.start} is after --end {args.end}")
+        return 2
+    out = Path(args.out)
+    refusal = _refuse_output(out)
+    if refusal:
+        print(f"refused: {refusal}")
+        return 2
+    if args.realm_id and not qbo.REALM_ID.fullmatch(args.realm_id):
+        print(f"error: --realm-id {args.realm_id!r} is not letters, digits, '_' and '-' starting "
+              "with a letter or digit")
+        return 2
+    store = None
+    if args.fixtures:
+        realm = args.realm_id or FIXTURE_REALM
+        try:  # a replay converts times the way the recorded pull did
+            config = qbo.QboConfig.for_fixtures(realm, os.environ.get("QBO_TIMEZONE") or None)
+        except qbo.QboConfigError as exc:
+            print(f"error: {exc}")
+            return 2
+        tokens = Tokens.issued("TEST-ACCESS", "TEST-REFRESH", 3600, 86400, realm, "sandbox")
+        try:
+            transport = qbo.RecordedTransport(args.fixtures)
+        except FileNotFoundError as exc:
+            print(f"error: {exc}")
+            return 2
+    else:
+        try:
+            config = qbo.QboConfig.from_env()
+        except qbo.QboConfigError as exc:
+            print(f"error: {exc}")
+            return 2
+        if config.environment == "production" and args.record:
+            print("refused: --record writes fixtures into the repository, and only sandbox data "
+                  "may go there")
+            return 2
+        if config.environment == "production" and not args.allow_production:
+            print("refused: QBO_ENVIRONMENT is production. This repository works on sandbox "
+                  "companies; pass --allow-production to pull real books anyway (the output stays "
+                  "under data/, which git ignores)")
+            return 2
+        realm = args.realm_id or config.realm_id or _stored_realm(config.environment, args.token_dir)
+        if not realm:
+            print("error: no realm id: set QBO_REALM_ID in .env, pass --realm-id, or run "
+                  "`ledgerlens qbo-auth` first")
+            return 2
+        if not qbo.REALM_ID.fullmatch(realm):
+            print(f"error: realm id {realm!r} is not letters, digits, '_' and '-' starting with a "
+                  "letter or digit")
+            return 2
+        config = config.with_realm(realm)
+        try:
+            store = TokenStore.for_realm(config.environment, realm, args.token_dir)
+            tokens = store.load()
+            if tokens is not None:
+                store.check_writable()  # a refresh rotates the token: it must be savable first
+        except (TokenStoreError, ValueError) as exc:
+            print(f"error: {exc}")
+            return 2
+        if tokens is None:
+            print(f"error: no tokens for {config.environment} company {realm} at {store.path}; "
+                  "run `ledgerlens qbo-auth` first")
+            return 2
+        transport = None
+        if args.record:
+            record_dir = Path(args.record)
+            if record_dir.exists() and not record_dir.is_dir():
+                print(f"refused: --record {record_dir} is a file, not a directory")
+                return 2
+            if record_dir.is_dir() and any(record_dir.glob("*.json")):
+                print(f"refused: {record_dir} already holds fixtures; a recording replaces them "
+                      "whole, so remove them first (git rm) and record again")
+                return 2
+            try:  # before any request, so a recording can never fail after one was answered
+                record_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                print(f"error: cannot create {record_dir}: {exc}")
+                return 2
+            transport = qbo.Recorder(qbo.default_transport(), record_dir, realm)
+        transport = transport or qbo.default_transport()
+
+    client = qbo.QboClient(config, tokens, transport, token_store=store)
+    code = 1  # what an exception out of the pull leaves behind
+    try:
+        code = _pull_and_write(client, args, out, realm, config.environment, transport)
+    finally:
+        if isinstance(transport, qbo.Recorder):  # every exit: nothing unchecked stays on disk
+            code = _finish_recording(transport, code)
+    return code
+
+
+def _pull_and_write(client: qbo.QboClient, args: argparse.Namespace, out: Path, realm: str,
+                    environment: str, transport: object) -> int:
+    try:
+        frame, stats = qbo.pull(client, args.start, args.end)
+    except qbo.QboError as exc:
+        print(f"error: {exc}")
+        return 1
+    except qbo.UnexpectedRequest as exc:
+        print(f"error: the fixtures do not answer this pull: {exc}")
+        return 1
+    except ValueError as exc:  # no transactions in range, or a report the mapping refuses
+        print(f"error: {exc}")
+        return 1
+
+    path = qbo.write_ledger_csv(frame, out)
+    sidecar = qbo.write_identity(path, realm, environment, args.start, args.end)
+    for line in stats.describe():
+        print(line)
+    entries = frame["entry_id"].nunique()
+    print(f"Wrote {len(frame):,} lines / {entries:,} entries to {path}")
+    print(f"Identity qbo:{realm} written to {sidecar}")
+    if entries < qbo.SMALL_LEDGER:
+        print(f"Warning: {entries} entries is a small population; the model tier and Benford "
+              "analysis need far more to say anything.")
+    if isinstance(transport, qbo.RecordedTransport) and transport.unused:
+        print(f"Warning: fixtures not used by this pull: {', '.join(transport.unused)}")
+    print(f"Next: ledgerlens test {path}   ledgerlens report {path} --db data/review.sqlite")
+    return 0
+
+
+def _finish_recording(recorder: qbo.Recorder, code: int) -> int:
+    """Re-scrub and check every fixture written, whatever ended the pull, and say what is there."""
+    recorder.finish()
+    print(f"Recorded {len(recorder.written)} sanitized fixture(s) in {recorder.out_dir}; "
+          "read them before committing")
+    if recorder.failures:
+        print("error: some exchanges could not be recorded, so the set is incomplete:")
+        for failure in recorder.failures:
+            print(f"  {failure}")
+    if code or recorder.failures:
+        print(f"The recording is not a complete pull: remove {recorder.out_dir} before "
+              "recording again")
+        return 1
+    return code
+
+
 DEFAULT_CASES = str(narrative_eval.CASES_FILE)
 
 
@@ -494,6 +739,31 @@ def build_parser() -> argparse.ArgumentParser:
     ev.add_argument("--labels", help="ground-truth csv, only used with --select")
     ev.add_argument("--overwrite", action="store_true", help="let --select replace an existing file")
     ev.set_defaults(func=cmd_eval_narratives)
+
+    qa = sub.add_parser("qbo-auth", help="sign in to QuickBooks Online; tokens are kept outside "
+                                         "the repository")
+    qa.add_argument("--token-dir", help="where tokens are kept (default: $LEDGERLENS_TOKEN_DIR, "
+                                        "else ~/.config/ledgerlens)")
+    qa.add_argument("--timeout", type=float, default=300, help="seconds to wait for the sign-in")
+    qa.add_argument("--no-browser", action="store_true", help="print the sign-in URL only")
+    qa.set_defaults(func=cmd_qbo_auth)
+
+    pq = sub.add_parser("pull-qbo", help="pull a period from QuickBooks Online into a ledger CSV")
+    pq.add_argument("--start", type=_parse_date, required=True)
+    pq.add_argument("--end", type=_parse_date, required=True)
+    pq.add_argument("--out", type=_path_arg, default="data/qbo-ledger.csv",
+                    help="ledger CSV to write; its .identity.json sidecar is written beside it")
+    pq.add_argument("--realm-id", help="company to pull (default: QBO_REALM_ID, else the only "
+                                       "stored token file)")
+    pq.add_argument("--token-dir", help="where tokens are kept")
+    source = pq.add_mutually_exclusive_group()
+    source.add_argument("--record", metavar="DIR",
+                        help="also write each exchange, sanitized, as a fixture in DIR (sandbox only)")
+    source.add_argument("--fixtures", metavar="DIR",
+                        help="replay recorded fixtures from DIR instead of calling QuickBooks")
+    pq.add_argument("--allow-production", action="store_true",
+                    help="permit QBO_ENVIRONMENT=production")
+    pq.set_defaults(func=cmd_pull_qbo)
 
     return parser
 

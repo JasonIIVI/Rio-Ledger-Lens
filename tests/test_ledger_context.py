@@ -9,6 +9,7 @@ import pytest
 from ledgerlens.ingest import ledger_identity
 from ledgerlens.ledger_context import ENV_LEDGER, ENV_REVIEW_DB, LedgerContext, records
 from ledgerlens.review import Decision, ReviewStore
+from ledgerlens.schema import REQUIRED_COLUMNS
 
 
 @pytest.fixture(scope="module")
@@ -221,3 +222,15 @@ def test_the_context_binds_the_store_to_the_ledger_it_serves(ledger, small_ledge
     assert status["decided"] == 0 and status["ledger_id"] == little.ledger_id
     assert status["other_ledgers"] == {big.ledger_id: {"narratives": 0, "decisions": 1}}
     assert LedgerContext(small, review_db=db, ledger_id="qbo:1").load().ledger_id == "qbo:1"
+
+
+def test_a_qbo_sidecar_beside_the_csv_names_the_ledger_the_server_reads(small_ledger, tmp_path):
+    small, _ = small_ledger
+    csv = tmp_path / "qbo-ledger.csv"
+    small[list(REQUIRED_COLUMNS)].to_csv(csv, index=False)
+    (tmp_path / "qbo-ledger.identity.json").write_text('{"ledger_id": "qbo:4620816365"}')
+    db = tmp_path / "review.sqlite"
+    ReviewStore(db, "qbo:4620816365").record(Decision("JE-2024-000001", "dismiss", "ana"))
+    context = LedgerContext(str(csv), review_db=db).load()
+    assert context.ledger_id == "qbo:4620816365"
+    assert context.review_status()["decided"] == 1

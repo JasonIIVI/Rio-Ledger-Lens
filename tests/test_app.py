@@ -315,3 +315,26 @@ def test_a_malformed_identity_sidecar_is_an_error_not_a_traceback(data_dir, tmp_
     at = _run(bad, tmp_path / "review.sqlite", reviewer="ana")  # _run asserts nothing was raised
     assert any("ledger.identity.json" in e.value for e in at.error)
     assert not (tmp_path / "review.sqlite").exists()  # stopped before any store was opened
+
+
+def test_the_sidebar_names_a_qbo_ledger_by_its_realm(data_dir, tmp_path):
+    """Beside a QuickBooks pull's sidecar, the dashboard binds to qbo:<realm> and says so."""
+    import shutil
+
+    pulled = tmp_path / "pulled"
+    pulled.mkdir()
+    for name in ("ledger.csv", "labels.csv"):
+        shutil.copy(data_dir / name, pulled / name)
+    (pulled / "ledger.identity.json").write_text('{"ledger_id": "qbo:4620816365"}')
+    db = tmp_path / "review.sqlite"
+    at = _run(pulled, db, reviewer="ana")
+    assert any("qbo:4620816365" in c.value for c in at.caption)
+    picked = at.selectbox(key="picked").value
+    assert not any("note #" in c.value for c in at.caption)
+    # A note filed under the realm is this ledger's note on screen; one under the CSV's
+    # digest (what the file would be keyed by without its sidecar) would not be.
+    note = {"summary": "s", "why_flagged": "w", "evidence_to_request": ["e"],
+            "suggested_control": "c", "confidence": "Low"}
+    note_id = ReviewStore(db, "qbo:4620816365").save_narrative(picked, note, model="m")
+    at = _run(pulled, db, reviewer="ana")
+    assert any(f"note #{note_id}" in c.value for c in at.caption)

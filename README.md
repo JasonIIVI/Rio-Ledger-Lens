@@ -282,6 +282,59 @@ score 88% on that check, and the notes beat that by one case. And the run rows -
 narrative and per-check result - are committed under `evals/narratives/runs/`, so anyone can
 re-grade them.
 
+## Pull a QuickBooks Online sandbox company
+
+`ledgerlens pull-qbo` brings a period of a QuickBooks Online company in as a ledger the rest
+of the tool reads like any CSV. It is written for Intuit's free sandbox companies; a
+production pull needs `--allow-production`, and nothing it writes is tracked by git.
+
+One-time setup, all on Intuit's side: create a developer account (a US sandbox company comes
+with it), create an app with the **Accounting** scope, add `http://localhost:8765/callback` as
+a redirect URI, and copy the app's client id and secret into `.env` as `QBO_CLIENT_ID` and
+`QBO_CLIENT_SECRET` (see `.env.example`). Then:
+
+```bash
+ledgerlens qbo-auth                          # sign in in the browser; tokens go to ~/.config/ledgerlens, mode 600
+ledgerlens pull-qbo --start 2026-07-01 --end 2026-09-30     # writes data/qbo-ledger.csv + its .identity.json
+ledgerlens test data/qbo-ledger.csv
+ledgerlens report data/qbo-ledger.csv --db data/review.sqlite
+```
+
+What the pull does, and what it cannot know:
+
+- **Three requests.** Every account (inactive ones included, so an old line still has a
+  name), the period's `JournalEntry` entities, and the `GeneralLedger` report on an accrual
+  basis. Journal
+  entries come from the entity, whose lines are complete. Every other transaction (invoices,
+  bills, payments, deposits) is rebuilt from the report, which lists each posting under the
+  account it hits: grouping its rows by transaction gives each one back whole and balanced.
+- **Sources and ids.** The transaction type becomes the ledger's `source` (a journal entry is
+  Manual, an invoice AR, a bill payment AP, a deposit Bank) and part of the entry id
+  (`QBO-Invoice-130`), because QuickBooks numbers each type separately. A type the tool
+  does not map gets `System`, and the pull names it.
+- **Who and when.** The user comes from the report's "created by" column, since the entity
+  has none. The entry time is the entity's `CreateTime`; for other transactions it is the
+  report's create date (a full timestamp in the sandbox; when a transaction's rows differ,
+  the earliest date any row gives, a time of day preferred within that day), and where only a
+  date is given the time is estimated at noon and the line is marked `entered_at_estimated`.
+  QuickBooks writes both with the company's offset, so they are used as given. `QBO_TIMEZONE`
+  converts both, so set it only to the company's own zone (a report time with no offset is
+  taken to be in it already); the pull warns if a time arrives in UTC without it, and about
+  entries whose time it had to estimate because the create date it used cannot be read.
+- **Nothing dropped silently.** Description-only lines, beginning-balance rows, transactions
+  with no posting line, lines on accounts the query did not return, unbalanced entries, journal entries the report does not
+  list and journal entries the report lists but the query did not return are all counted and
+  printed.
+- **One review history per company.** The sidecar names the ledger `qbo:<realm id>`, so a
+  re-pull (whose CSV digest differs) keeps the same notes and decisions.
+
+A sandbox company is small (116 entries in the recorded quarter): enough to see the tests
+fire, far too few for the model tier or Benford analysis to mean anything, and the
+pull warns below 50 entries. Intuit meters read calls under its partner program; a pull makes
+a handful. The tests never touch the network: they replay `tests/fixtures/qbo/pull/`, a
+sanitized recording of a real sandbox pull (`pull-qbo --record`, Intuit's sample company,
+July–September 2026). Its README says what the recording settled about Intuit's responses.
+
 ## Ask the ledger from Claude Desktop
 
 The scored ledger is exposed as an MCP server with six read-only tools: summary, top exceptions
@@ -356,8 +409,8 @@ and reopen Claude Desktop:
       (schema migrations, `adopt-legacy`), a hand-written prompt-injection eval case with
       its expectations committed before its one narration, tokens kept outside the
       repository, and a CI job that enforces rule 1 (no data or secret file tracked)
-- [ ] **Week 4** — QuickBooks Online connector (sandbox), scheduled re-run via
-      GitHub Actions
+- [ ] **Week 4** — QuickBooks Online connector (sandbox: `qbo-auth`, `pull-qbo`; built,
+      the recorded fixtures pending), scheduled re-run via GitHub Actions
 
 ## Limitations
 
@@ -371,6 +424,10 @@ and reopen Claude Desktop:
   starting point, not a configuration.
 - The narrative eval grades properties (grounded, specific, non-assertive), not insight. A
   note can pass every check and still be unhelpful.
+- The QuickBooks pull handles single-currency companies only (a report without debit and
+  credit columns is refused), estimates the time of day where QuickBooks gives only a date,
+  and inherits the GeneralLedger report's own caveats (Intuit notes its account hierarchy can
+  break with some sub-account setups).
 - Nothing here constitutes an audit procedure or professional advice. It is a
   demonstration of technique.
 
@@ -385,7 +442,9 @@ ruff check src tests app.py  # lint
 
 CI runs the suite on Python 3.9, 3.11 and 3.12 plus a detection-quality gate. Nothing in
 `narrate.py` or the eval needs a key to be tested: the API is replaced by a fake that returns
-responses shaped like the real ones.
+responses shaped like the real ones. No test touches the network: QuickBooks responses are
+replayed from `tests/fixtures/qbo/`, and the sign-in test follows a real redirect to a
+loopback server.
 
 `.env` holds configuration only: the API key and the `QBO_*` client settings. QuickBooks
 tokens are kept by `connectors/tokens.py` under `~/.config/ledgerlens/` (under

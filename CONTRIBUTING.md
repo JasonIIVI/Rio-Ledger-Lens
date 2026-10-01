@@ -73,3 +73,8 @@ regenerates the ledger and fails if precision drops below 0.80 or recall below 0
 - Nothing under the repository ever holds a credential. `.env` (ignored) carries the API key
   and `QBO_*` settings; QuickBooks tokens go through `connectors/tokens.py` to
   `~/.config/ledgerlens/` (`$XDG_CONFIG_HOME/ledgerlens/` when that is set; `$LEDGERLENS_TOKEN_DIR` overrides both), which refuses any path inside a git checkout.
+- No test touches the network. QuickBooks responses are replayed from `tests/fixtures/qbo/`
+  by `RecordedTransport`; new fixtures come from `ledgerlens pull-qbo --record DIR` against a
+  sandbox company only (it refuses production), which replaces the realm id, tokens, user
+  names and e-mail addresses before anything reaches disk. Read a recording before committing
+  it.

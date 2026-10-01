@@ -72,6 +72,27 @@ def token_path(environment: str, realm_id: str, directory: str | Path | None = N
     return base / f"qbo-{environment}-{realm_id}.json"
 
 
+def ensure_private_dir(directory: str | Path) -> Path:
+    """Create ``directory`` with mode 0700 if needed, and refuse one others can read or one
+    this user cannot write: the checks :meth:`TokenStore.save` makes, available before
+    anything is spent that a failed save would lose (a single-use code, or a refresh that
+    rotates the token)."""
+    directory = Path(directory).expanduser()
+    try:
+        directory.mkdir(mode=DIR_MODE, parents=True, exist_ok=True)
+    except OSError as exc:
+        raise TokenStoreError(f"cannot create {directory}: {exc}") from exc
+    mode = stat.S_IMODE(directory.stat().st_mode)
+    if mode & 0o077:
+        raise TokenStoreError(
+            f"refusing to write into {directory}: its mode is {mode:03o}; a token directory "
+            "is private, so chmod 700 it (or point "
+            f"{ENV_TOKEN_DIR} at one that is).")
+    if not os.access(directory, os.W_OK | os.X_OK):
+        raise TokenStoreError(f"cannot write into {directory}: permission denied")
+    return directory
+
+
 def repository_root(path: str | Path) -> Path | None:
     """The nearest ancestor-or-self of ``path`` that is a git working tree (a ``.git``
     directory, or the ``.git`` file a worktree carries), or None.
@@ -233,6 +254,10 @@ class TokenStore:
         self._refuse_other_realm(tokens, "read")
         return tokens
 
+    def check_writable(self) -> Path:
+        """Refuse now, not after a token was issued, if :meth:`save` could not write here."""
+        return ensure_private_dir(self.path.parent)
+
     def save(self, tokens: Tokens) -> Path:
         """Write the record atomically (temp file, fsync, rename) with mode 0600.
 
@@ -244,17 +269,7 @@ class TokenStore:
         except TokenStoreError as exc:
             raise TokenStoreError(f"refusing to write {self.path}: {exc}") from None
         self._refuse_other_realm(tokens, "write")
-        directory = self.path.parent
-        try:
-            directory.mkdir(mode=DIR_MODE, parents=True, exist_ok=True)
-        except OSError as exc:
-            raise TokenStoreError(f"cannot create {directory}: {exc}") from exc
-        mode = stat.S_IMODE(directory.stat().st_mode)
-        if mode & 0o077:
-            raise TokenStoreError(
-                f"refusing to write into {directory}: its mode is {mode:03o}; a token directory "
-                "is private, so chmod 700 it (or point "
-                f"{ENV_TOKEN_DIR} at one that is).")
+        directory = ensure_private_dir(self.path.parent)
         payload = json.dumps(tokens.to_dict(), indent=2) + "\n"
         handle, temp = tempfile.mkstemp(prefix=f".{self.path.name}.", suffix=".tmp", dir=directory)
         try:

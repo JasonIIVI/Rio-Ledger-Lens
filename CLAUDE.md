@@ -25,8 +25,8 @@ and the MCP SDK, so the two together cover every code path CI will see.
 
 ## Current state
 
-- **v0.4.0** on `main` once `week4/hardening` is squash-merged and tagged (v0.3.1 was PR #5 on
-  2026-09-25; v0.3.0 was PR #2 on 2026-09-23). Weeks 1–3 complete:
+- **v0.4.0** on `main` (PR #7, 2026-09-29; v0.3.1 was PR #5 on 2026-09-25; v0.3.0 was PR #2
+  on 2026-09-23). Weeks 1–3 complete:
   narratives, review loop, dashboard integration, MCP server, narrative eval, `@claude` workflow.
 - **Review follow-up on `main`** (PR #4, 2026-09-24) — the first `@claude` review's findings:
   narratives are versioned and each decision records the note it saw (`narrative_id`);
@@ -50,7 +50,7 @@ and the MCP SDK, so the two together cover every code path CI will see.
   ledger but the generator's default for the committed eval paths (evals/ and docs/, however a
   path is spelled); a test rebuilds every stored prompt in every file under the runs root; and
   CI has a `rule-1` job that reads paths the way git prints them.
-- **Week-4 hardening (`week4/hardening`, tagged v0.4.0 at its squash merge)** — the three
+- **Week-4 hardening (PR #7, tagged v0.4.0)** — the three
   items the second review asked for before QuickBooks. The review store is keyed by ledger
   (schema version 4: `ledger_id` on both tables; the identity is `csv:<ledger sha256>` or
   `qbo:<realm id>` from a `<ledger>.identity.json` sidecar; a store is bound to one identity
@@ -71,12 +71,54 @@ and the MCP SDK, so the two together cover every code path CI will see.
   verification pass over those fixes found four more, also fixed: the start-from-scratch
   choice was keyed by ledger but not by file, a `null` override and a Unicode-digit line key
   got past the case loader, and the draft half of the per-entry keying was untested.
-- **Next** — the QuickBooks Online sandbox connector (`week4/qbo-connector`: OAuth2 through
-  the token store, JournalEntry entity + General Ledger report → `ingest.prepare`,
-  `ledgerlens qbo-auth` / `pull-qbo`, recorded-JSON fixtures, no network in tests), then the
-  weekly scheduled Action, the README final pass and v1.0.0 (due 2026-10-18). Week 5 breaks
-  the circularity in the detection numbers.
-- 309 tests on 3.9 / 319 on 3.12, ruff clean.
+- **QuickBooks Online connector (`week4/qbo-connector`, no tag)** — `connectors/qbo.py`,
+  standard library only: OAuth 2.0 through the token store (`ledgerlens qbo-auth`, a
+  localhost callback that accepts only the expected state), a client that refreshes once on
+  a 401, waits out a 429 (60 s unless `Retry-After` says otherwise) and pages queries, and a
+  pure mapping (`ledgerlens pull-qbo`): journal entries from the entity with the user from
+  the GL report, every other transaction rebuilt whole from the GL report, the type as
+  `source` and in the entry id (a type it does not map gets `System` and is named in a
+  warning), the entry time from the earliest date any of a transaction's rows gives (a time
+  of day preferred within that day; the posting date only when no row gives a date),
+  timestamps read by explicit formats so Python 3.9 and 3.12 agree, a date alone estimated at
+  noon and flagged, an unreadable one (report or `CreateTime`) estimated, counted and warned
+  about, a UTC time without `QBO_TIMEZONE` warned about on either clock, every skipped line
+  and every transaction with no posting line counted in `PullStats`. It writes `data/qbo-ledger.csv` and the `qbo:<realm>` sidecar. Tests replay
+  `tests/fixtures/qbo/`: `pull/` is a sanitized `pull-qbo --record` of a real sandbox
+  company (Intuit's sample company, 2026-07-01..2026-09-30, recorded 2026-09-30; 116
+  entries / 297 lines), and its README answers the ten questions the recording had to
+  settle. Shapes the quarter lacks are reached by editing a copy of the recording in the
+  test, or by a minimal report built in the test for row-level cases; no hand-shaped file
+  remains in `pull/` (`auth/` stays hand-shaped: a code exchange cannot be replayed). The
+  recording found three defects: the report writes `create_date` offsets as `-0700`,
+  which Python 3.9 could not read (on 3.9 only, every report-built entry lost its time of
+  day and 65 of 113 their keying date); Cash Expense and Sales Tax Payment fell back to
+  `System` (now AP); and one transaction's rows can carry different create dates. A review
+  of those commits (security, correctness and claims lenses; eleven findings confirmed by a
+  skeptic, nine lower-ranked ones not verified, the real ones among them fixed too) found no
+  security problem, and smaller ones all fixed: a date plus an offset read as a time of day
+  (the report's colon-less form on 3.12 only; now explicit formats), a ranking that could
+  prefer the posting date over a real date, warnings that miscounted, report times in UTC
+  not warned about, description and user rules the one-user sandbox could not test, and
+  overstated wording; a strict parser would have made an odd `CreateTime` a traceback, so
+  it is now estimated and counted. A verification of those fixes found a further round,
+  also fixed: a later time of day beat an earlier date (so the keying date was lost again),
+  two tie-breaks, a gate stricter than its parser (now gone: the parser decides), unpadded
+  leading dates, set-aside counts, and types outside the map filed as `System` in silence
+  (Credit Card Payment now Bank). A last check of that round found an id that only starts
+  like a date (`2026-1-12345`) winning as the keying date, a row with no type filed as
+  `QBO--57` (now `UnknownType`), and test gaps; fixed, with every timestamp format pinned. Facts about Intuit's API were checked against its
+  current documentation on 2026-09-30 (minor version 75; no documented `Retry-After`; the
+  transaction id on the `txn_type` cell; reads are metered). A security review and a
+  correctness review before the push found 16 problems (two medium: a rotated refresh token
+  could be lost before it was saved, and `--out` could take over the synthetic ledger or its
+  identity file however spelled); all fixed, and a check of those fixes found six more, also
+  fixed: the token directory is checked before any code or refresh is spent, redirects are
+  never followed, the callback server is threaded and holds both loopback addresses, a
+  recording is re-scrubbed and checked on every exit, and pulled books stay in `data/`.
+- **Next** — the weekly scheduled Action, the README final pass and v1.0.0 (due
+  2026-10-18). Week 5 breaks the circularity in the detection numbers.
+- 462 tests on 3.9 / 472 on 3.12, ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
@@ -85,8 +127,8 @@ disclosed under "Grader notes" in the report; the first correction moved one row
 the later ones none. `ANTHROPIC_API_KEY` is in `.env`
 (never read it, never commit it) and in the repository secrets; the Claude GitHub App is
 installed; the `ledgerlens` MCP entry in Claude Desktop's config needs re-adding (found
-missing on 2026-09-25; migrate the local review database to schema 4 and adopt its rows first,
-see rule 8). An organisation-level
+missing on 2026-09-25; the local review database was migrated to schema 4 and its rows
+adopted on 2026-09-29, so it is ready, see rule 8). An organisation-level
 key needs `ANTHROPIC_WORKSPACE_ID` as well; a workspace-scoped key does not.
 
 ## Architecture
@@ -116,8 +158,9 @@ ledger CSV ──▶ ingest ──┼──▶ Benford analysis ─────�
 | `ledger_context.py` | read-only query layer (summary, top exceptions, explain, search, Benford, review status); opens the review DB `mode=ro`, bound to the ledger's identity; 3.9-safe |
 | `mcp_server.py` | MCP registration over `ledger_context` (v2 SDK, stdio); needs 3.10+ |
 | `env.py` | dependency-free `.env` loader |
+| `connectors/qbo.py` | QuickBooks Online: `QboConfig` (`QBO_*`), transports (urllib, `RecordedTransport` replay, sanitizing `Recorder`), OAuth (`QboAuth`, `CallbackServer`), `QboClient` (refresh, throttling, paging), and the mapping into the ledger contract (`pull`, `PullStats`, `write_identity`); stdlib |
 | `connectors/tokens.py` | QuickBooks token store: `~/.config/ledgerlens/qbo-<environment>-<realm>.json` (`$XDG_CONFIG_HOME/ledgerlens/` when set; `$LEDGERLENS_TOKEN_DIR` overrides both), mode 600, a record only for the realm its file names, refuses any path inside a git checkout; stdlib |
-| `cli.py` | `generate` / `test` / `score` / `benford` / `report` / `narrate` / `adopt-legacy` / `eval-narratives` |
+| `cli.py` | `generate` / `test` / `score` / `benford` / `report` / `narrate` / `adopt-legacy` / `eval-narratives` / `qbo-auth` / `pull-qbo` |
 | `app.py` | Streamlit dashboard: queue, note, decision form, history |
 
 ## Rules that must not be broken
@@ -198,6 +241,9 @@ unhelpful. Say so wherever the number is quoted.
 - Run `ruff check src tests app.py` and both venvs' test suites before every commit.
 - The Claude API is never called from a test: `tests/conftest.py` has the fake client
   (`llm` fixture) shaped like the real responses, thinking block included.
+- No test touches the network: QuickBooks responses are replayed from `tests/fixtures/qbo/`
+  (`RecordedTransport`), and a recording is made only with `pull-qbo --record` against a
+  sandbox company, sanitized on the way to disk.
 - `evals/narratives/cases.json` is tied to the generator by tests; regenerate it only if the
   generator changes, in this order: take the new `DEFAULT_LEDGER_SHA256` from the failing pin
   test (`test_ledger_digest_is_canonical_and_pins_the_default_ledger`) and set it in
