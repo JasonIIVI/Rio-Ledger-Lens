@@ -112,6 +112,7 @@ jobs:
           flags = jets.run_all(df)
           m = evaluate.evaluate(flags, labels, df["entry_id"].unique())
 
+          print(evaluate.DETECTION_CAVEAT)  # a public log: the figures are partly circular
           print(evaluate.format_report(m))
 
           floors = {"precision": 0.80, "recall": 0.90}

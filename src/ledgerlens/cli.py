@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import textwrap
 import webbrowser
 from datetime import date, datetime
 from pathlib import Path
@@ -133,6 +134,8 @@ def cmd_test(args: argparse.Namespace) -> int:
     if labels is not None:
         metrics = evaluate.evaluate(flags, labels, df["entry_id"].unique())
         print("\n--- evaluation against ground truth ---")
+        # ahead of the numbers it qualifies; a hyphenated word is not split across lines
+        print(textwrap.fill(evaluate.DETECTION_CAVEAT, 96, break_on_hyphens=False))
         print(evaluate.format_report(metrics))
         print("\nRecall by archetype:")
         print(evaluate.recall_by_archetype(flags, labels).to_string(index=False))
@@ -200,6 +203,7 @@ def cmd_score(args: argparse.Namespace) -> int:
 
     if labels is not None:
         print("\n--- tier comparison ---")
+        print(textwrap.fill(evaluate.MODEL_TIER_CAVEAT, 96, break_on_hyphens=False))
         print(evaluate.compare_tiers(combined, labels).to_string(index=False))
         print("\n--- model lift over random selection ---")
         print(evaluate.model_lift(model_scores, labels).to_string(index=False))

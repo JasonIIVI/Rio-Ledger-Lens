@@ -161,3 +161,20 @@ def test_summary_names_the_ledger_and_counts_other_ledgers(ledger, labels, tmp_p
 def _summary_cells(path):
     wb = openpyxl.load_workbook(path)
     return {row[0].value: row[1].value for row in wb["Summary"].iter_rows() if row[0].value}
+
+
+def test_the_summary_sheet_puts_the_circularity_caveat_beside_precision_and_recall(
+        ledger, labels, tmp_path):
+    path, flags = _workpaper(ledger, labels, tmp_path)
+    cells = [[c.value for c in row] for row in openpyxl.load_workbook(path)["Summary"].iter_rows()]
+    labels_in_column_a = [row[0] for row in cells]
+    assert ["Precision", "Recall"] == [v for v in labels_in_column_a if v in ("Precision", "Recall")]
+    caveat_row = labels_in_column_a.index("Read these as")
+    assert cells[caveat_row][1] == evaluate.DETECTION_CAVEAT
+    assert 0 < caveat_row - labels_in_column_a.index("Recall") <= 3  # the same block, not a footnote
+
+    scored = jets.score_entries(ledger, flags)
+    bare = build_workpaper(scored, flags, tmp_path / "bare.xlsx")  # no labels: no number, no caveat
+    text = " ".join(str(c.value) for row in openpyxl.load_workbook(bare)["Summary"].iter_rows()
+                    for c in row if c.value)
+    assert "Precision" not in text and "nine of eleven" not in text

@@ -253,3 +253,25 @@ def test_summary_lists_every_test_and_every_tier_relation_zeros_included(small_l
     assert summary["tier_agreement"] == {"both": 0, "rules only": 0, "model only": 0,
                                          "neither": summary["entries"]}
     json.dumps(summary)
+
+
+def test_the_breakdowns_add_up_even_for_a_key_neither_list_names(small_ledger):
+    """The fixed lists give the order; nothing counted in a total is left out of its breakdown."""
+    import pandas as pd
+
+    from ledgerlens import jets
+    from ledgerlens.ledger_context import AGREEMENTS
+
+    ledger, _ = small_ledger
+    context = LedgerContext(ledger).load()
+    extra = context.flags.head(2).assign(test_id="JET-99")
+    context.flags = pd.concat([context.flags, extra], ignore_index=True)
+    context.combined = context.combined.assign(
+        agreement=context.combined["agreement"].replace({"neither": "neither tier"}))
+    summary = context.summary()
+    assert list(summary["flags_by_test"]) == [*jets.REGISTRY, "JET-99"]
+    assert summary["flags_by_test"]["JET-99"] == 2
+    assert sum(summary["flags_by_test"].values()) == summary["flags_raised"]
+    assert list(summary["tier_agreement"]) == [*AGREEMENTS, "neither tier"]
+    assert summary["tier_agreement"]["neither"] == 0
+    assert sum(summary["tier_agreement"].values()) == summary["entries"]

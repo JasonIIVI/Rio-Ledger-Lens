@@ -7,8 +7,10 @@ as a GitHub Issue. Three things follow from that last use:
 - Nothing here scores anything. The numbers are the ones ``LedgerContext`` and
   ``evaluate`` already compute; labels are joined only inside ``evaluate``
   (rule 2), and the two tiers are reported under separate headings (rule 3).
-- A caveat travels in the payload beside what it qualifies, so no format can
-  show a number without it.
+- Each caveat is a field of the payload, beside what it qualifies. The text and
+  the markdown print it next to the numbers; the JSON carries the same sentences,
+  the detection caveat ahead of the figures, and says which ratios are undefined
+  where ``evaluate`` reports a ratio over nothing as 0.0.
 - The markdown is posted where anyone can read it and where a workflow answers
   mentions. Every string that came from the ledger is rendered as inert code
   (see :func:`md_code`), and no format carries note text or a reviewer's name.
@@ -45,6 +47,11 @@ TUNING_NOTE = (
     "one (docs/tuning.md); here they are a starting point, not a configuration."
 )
 NO_LABELS_NOTE = "No labels were given, so detection quality was not measured for this ledger."
+MODEL_TIER_NOTE = (
+    "Scored separately and never blended with the rule tier. The count is the model's budget, "
+    "a share of the entries by rank with ties at the cutoff included, not anything found."
+)
+AGREEMENT_NOTE = "Counts of how the two tiers relate, not a measure of quality."
 SMALL_NOTE = (
     "{entries} entries is a small population; the model tier and Benford analysis need far "
     "more to say anything."
@@ -122,10 +129,12 @@ def collect(
         "flags_raised": base["flags_raised"],
         "flags_by_test": base["flags_by_test"],
         "tier_agreement": base["tier_agreement"],
+        "tier_agreement_caveat": AGREEMENT_NOTE,
         "model_tier": {
             **asdict(report),
             "top_pct": context.model_top_pct,
             "flagged": int(context.combined["model_flag"].sum()),
+            "caveat": MODEL_TIER_NOTE,
         },
         "top_exceptions": [_entry(r) for r in context.top_exceptions(limit=top)["entries"]],
     }
@@ -159,12 +168,16 @@ def collect(
             row["definitional"] = _definitional(row["anomaly_type"])
         # Measured archetypes first, then by name: recall ties have no order of their own.
         by_archetype.sort(key=lambda r: (r["definitional"] is not False, r["anomaly_type"]))
+        metrics = evaluate.evaluate(context.flags, labels, context.lines["entry_id"].unique())
+        flagged, truth = metrics["flagged"] > 0, metrics["true_anomalies"] > 0
+        payload["detection_caveat"] = evaluate.DETECTION_CAVEAT  # first: read before the figures
         payload["detection"] = {
             "tier": "rule",
-            "metrics": evaluate.evaluate(context.flags, labels, context.lines["entry_id"].unique()),
+            "metrics": metrics,
+            # evaluate gives a ratio over nothing as 0.0; this says which of the three are that
+            "defined": {"precision": flagged, "recall": truth, "f1": flagged and truth},
             "by_archetype": by_archetype,
         }
-        payload["detection_caveat"] = evaluate.DETECTION_CAVEAT
 
     notes = [SEEDED_NOTE if payload["default_ledger"] else TUNING_NOTE]
     if labels is None:
@@ -249,8 +262,9 @@ def _ratio(value: float, defined: bool, why: str) -> str:
     return f"{value:.3f}" if defined else f"undefined ({why})"
 
 
-def _metric_rows(metrics: dict) -> list[tuple[str, str]]:
+def _metric_rows(detection: dict) -> list[tuple[str, str]]:
     """The rule tier's measured quality, with a ratio over nothing said to be undefined."""
+    metrics, defined = detection["metrics"], detection["defined"]
     flagged, truth = metrics["flagged"], metrics["true_anomalies"]
     return [
         ("Population", "{:,} entries".format(metrics["population"])),
@@ -259,9 +273,9 @@ def _metric_rows(metrics: dict) -> list[tuple[str, str]]:
         ("True positives", "{:,}".format(metrics["true_positives"])),
         ("False positives", "{:,}".format(metrics["false_positives"])),
         ("False negatives", "{:,}".format(metrics["false_negatives"])),
-        ("Precision", _ratio(metrics["precision"], flagged > 0, "nothing was flagged")),
-        ("Recall", _ratio(metrics["recall"], truth > 0, "the labels mark no anomaly")),
-        ("F1", _ratio(metrics["f1"], flagged > 0 and truth > 0, "needs both of the above")),
+        ("Precision", _ratio(metrics["precision"], defined["precision"], "nothing was flagged")),
+        ("Recall", _ratio(metrics["recall"], defined["recall"], "the labels mark no anomaly")),
+        ("F1", _ratio(metrics["f1"], defined["f1"], "needs both of the above")),
     ]
 
 
@@ -276,11 +290,8 @@ def _years(payload: dict) -> str:
 
 
 def _model_sentence(model: dict) -> str:
-    return (
-        "The Isolation Forest flags the top {:.1%} of entries by rank: {:,} of {:,}. That count "
-        "is set by the budget, not by anything found.".format(
-            model["top_pct"], model["flagged"], model["n_entries"])
-    )
+    return "The Isolation Forest flags the top {:.1%} of entries by rank: {:,} of {:,}.".format(
+        model["top_pct"], model["flagged"], model["n_entries"])
 
 
 def _features_sentence(model: dict) -> str:
@@ -331,15 +342,17 @@ def render_text(payload: dict) -> str:
     for test_id, count in payload["flags_by_test"].items():
         name = jets.REGISTRY[test_id][0] if test_id in jets.REGISTRY else ""
         out.append(f"  {one_line(test_id)}  {name:<38}{count:>7,}")
-    out += ["", "Model tier (scored separately; never blended with the rule tier)"]
+    out += ["", "Model tier"]
+    out += wrap.wrap(model["caveat"])
     out += wrap.wrap(_model_sentence(model)) + wrap.wrap(_features_sentence(model))
-    out += ["", "Tier agreement (counts, not quality)"]
-    out += [f"  {name:<12}{count:>8,}" for name, count in payload["tier_agreement"].items()]
+    out += ["", "Tier agreement"]
+    out += wrap.wrap(payload["tier_agreement_caveat"])
+    out += [f"  {one_line(name):<12}{count:>8,}" for name, count in payload["tier_agreement"].items()]
 
     if "detection" in payload:
         out += ["", "Detection against the labels (rule tier only)"]
         out += wrap.wrap(payload["detection_caveat"])
-        out += [f"  {label:<20}{value}" for label, value in _metric_rows(payload["detection"]["metrics"])]
+        out += [f"  {label:<20}{value}" for label, value in _metric_rows(payload["detection"])]
         out.append("  Recall by archetype" + (
             "" if payload["detection"]["by_archetype"] else ": the labels mark no anomaly"))
         for row in payload["detection"]["by_archetype"]:
@@ -404,15 +417,16 @@ def render_markdown(payload: dict) -> str:
         "",
         "### Model tier",
         "",
-        "Scored separately and never blended with the rule tier. " + _model_sentence(model),
+        model["caveat"],
+        _model_sentence(model),
         _features_sentence(model),
         "",
         "### Tier agreement",
         "",
-        "Counts of how the two tiers relate, not a measure of quality.",
+        payload["tier_agreement_caveat"],
         "",
         *_table(("Tiers", "Entries"), [
-            (name, f"{count:,}") for name, count in payload["tier_agreement"].items()
+            (md_code(name), f"{count:,}") for name, count in payload["tier_agreement"].items()
         ], right=(1,)),
     ]
 
@@ -423,7 +437,7 @@ def render_markdown(payload: dict) -> str:
             "",
             "> " + payload["detection_caveat"],
             "",
-            *_table(("Metric", "Value"), _metric_rows(payload["detection"]["metrics"])),
+            *_table(("Metric", "Value"), _metric_rows(payload["detection"])),
             "",
         ]
         if payload["detection"]["by_archetype"]:

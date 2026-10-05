@@ -232,3 +232,10 @@ def test_ci_still_has_its_rule_1_job_and_claude_yml_its_mention_gate():
     assert len(re.findall(r"contains\(github\.event\.[\w.]+, '@claude'\)", claude)) == 5
     assert "contains(github.event.issue.body, '@claude')" in claude
     assert "contains(github.event.issue.title, '@claude')" in claude
+
+
+def test_ci_prints_the_caveat_with_the_figures_its_gate_logs():
+    """The detection gate's log is public, and so is the weekly run's: `test` and `score` print
+    the caveat themselves (tests/test_cli.py); the gate's own script has to as well."""
+    ci = read("ci.yml")
+    assert ci.index("print(evaluate.DETECTION_CAVEAT)") < ci.index("print(evaluate.format_report(m))")

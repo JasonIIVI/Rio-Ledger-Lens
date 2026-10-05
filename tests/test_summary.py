@@ -73,11 +73,15 @@ def test_the_payload_is_plain_json_and_repeats_the_query_layers_numbers(context,
 
 
 def test_the_path_is_kept_as_typed_and_a_run_without_a_date_is_dated_today(context):
+    from datetime import datetime, timezone
+
     typed = "~/books/../books/ledger.csv"
+    before = datetime.now(timezone.utc).date()
     built = summary.collect(context, ledger=typed)
+    after = datetime.now(timezone.utc).date()
     assert built["ledger"] == typed  # never resolved: a public summary names no home directory
     assert str(Path.home()) not in summary.render(built, "markdown")
-    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", built["run_date"])
+    assert built["run_date"] in (before.isoformat(), after.isoformat())  # the UTC day it ran
     assert summary.collect(context)["ledger"] is None
 
 
@@ -166,6 +170,7 @@ def test_review_is_counted_but_no_note_text_or_reviewer_name_is_carried(small_le
     missing = summary.collect(context, today=TODAY)
     assert missing["review"]["exists"] is False and summary.NO_REVIEW_DB_NOTE in missing["notes"]
     assert "Review (" not in summary.render(missing, "text") and not db.exists()
+    assert "### Review" not in summary.render(missing, "markdown")  # only the note speaks of it
 
     entry_id = context.top_exceptions(limit=1)["entries"][0]["entry_id"]
     note = {"summary": "NOTE-TEXT-7731", "why_flagged": "w", "evidence_to_request": ["e"],
@@ -290,6 +295,7 @@ def test_a_ratio_over_nothing_is_called_undefined_not_zero(payload):
     empty = copy.deepcopy(payload)
     empty["detection"]["metrics"].update(flagged=0, true_anomalies=0, true_positives=0,
                                          precision=0.0, recall=0.0, f1=0.0)
+    empty["detection"]["defined"] = {"precision": False, "recall": False, "f1": False}
     for fmt in ("text", "markdown"):
         text = summary.render(empty, fmt)
         assert re.search(r"Precision\W+undefined \(nothing was flagged\)", text), fmt
@@ -298,8 +304,43 @@ def test_a_ratio_over_nothing_is_called_undefined_not_zero(payload):
     # each ratio is undefined for its own reason: nothing flagged leaves recall defined
     quiet = copy.deepcopy(payload)
     quiet["detection"]["metrics"].update(flagged=0, true_positives=0, precision=0.0, recall=0.0, f1=0.0)
+    quiet["detection"]["defined"] = {"precision": False, "recall": True, "f1": False}
     text = summary.render(quiet, "text")
     assert re.search(r"Precision\W+undefined", text) and re.search(r"Recall\W+0\.000", text)
+    assert re.search(r"F1\W+undefined", text)  # one undefined ratio is enough to undefine it
+
+
+def test_the_json_says_which_ratios_are_undefined_and_leads_with_the_caveat(
+        context, payload, small_ledger):
+    """evaluate reports a ratio over nothing as 0.0, and JSON has no page to print a caveat on:
+    the payload says which figures are not figures, and the caveat comes before them."""
+    assert payload["detection"]["defined"] == {"precision": True, "recall": True, "f1": True}
+    none = small_ledger[1].assign(is_anomaly=False)
+    built = summary.collect(context, labels=none, today=TODAY)
+    assert built["detection"]["metrics"]["recall"] == 0.0  # evaluate's own, untouched
+    assert built["detection"]["defined"] == {"precision": True, "recall": False, "f1": False}
+    assert "undefined (the labels mark no anomaly)" in summary.render(built, "markdown")
+    keys = list(payload)
+    assert keys.index("detection_caveat") < keys.index("detection")
+    text = summary.render(payload, "json")
+    assert text.index('"detection_caveat":') < text.index('"detection":') < text.index('"precision":')
+
+
+def test_the_tier_caveats_are_fields_of_the_payload_and_printed_from_it(payload):
+    assert payload["model_tier"]["caveat"] == summary.MODEL_TIER_NOTE
+    assert payload["tier_agreement_caveat"] == summary.AGREEMENT_NOTE
+    assert "never blended" in summary.MODEL_TIER_NOTE and "budget" in summary.MODEL_TIER_NOTE
+    reworded = copy.deepcopy(payload)
+    reworded["model_tier"]["caveat"] = "MODEL-CAVEAT-FROM-THE-PAYLOAD"
+    reworded["tier_agreement_caveat"] = "AGREEMENT-CAVEAT-FROM-THE-PAYLOAD"
+    for fmt in summary.FORMATS:
+        page = summary.render(reworded, fmt)
+        assert "MODEL-CAVEAT-FROM-THE-PAYLOAD" in page, fmt
+        assert "AGREEMENT-CAVEAT-FROM-THE-PAYLOAD" in page, fmt
+    for fmt in ("text", "markdown"):  # each ahead of the numbers it is about
+        page = flat(summary.render(payload, fmt))
+        assert page.index(summary.MODEL_TIER_NOTE) < page.index("The Isolation Forest flags")
+        assert page.index(summary.AGREEMENT_NOTE) < page.index("rules only")
 
 
 # --- ledger text is data -----------------------------------------------------

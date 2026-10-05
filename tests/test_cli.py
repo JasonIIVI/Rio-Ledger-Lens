@@ -986,8 +986,8 @@ def test_summary_prints_one_page_whose_numbers_are_the_test_commands(two_ledgers
         assert re.search(rf"^  {label}\s+{re.escape(value)}$", page, re.M), label
     flagged = re.search(r"on ([\d,]+) entrie\(s\)", tested).group(1)
     assert f"  {flagged} of " in page
-    for heading in ("Rule tier", "Model tier (scored separately; never blended with the rule tier)",
-                    "Tier agreement (counts, not quality)",
+    for heading in ("Rule tier", "Model tier", "never blended with the rule tier",
+                    "Tier agreement", "not a measure of quality",
                     "Detection against the labels (rule tier only)", "Top 10 by rule score", "Notes"):
         assert heading in page
     assert "a question, not a finding" in page and "nine of eleven" in page
@@ -1224,3 +1224,22 @@ def test_summary_that_cannot_be_written_is_a_message_before_or_after_scoring(
             assert capsys.readouterr().out.startswith("error: cannot write the summary to")
         finally:
             locked.chmod(0o755)
+
+
+def test_test_and_score_print_the_caveat_ahead_of_the_numbers_it_qualifies(two_ledgers, capsys):
+    """Their output is a public CI log on every push and every Monday."""
+    from ledgerlens import evaluate
+
+    ledger, labels = _pair(two_ledgers)
+    capsys.readouterr()
+    assert main(["test", ledger, "--labels", labels]) == 0
+    printed = " ".join(capsys.readouterr().out.split())
+    assert evaluate.DETECTION_CAVEAT in printed
+    assert printed.index(evaluate.DETECTION_CAVEAT) < printed.index("Precision")
+    assert main(["score", ledger, "--labels", labels]) == 0
+    printed = " ".join(capsys.readouterr().out.split())
+    assert evaluate.MODEL_TIER_CAVEAT in printed
+    assert printed.index(evaluate.MODEL_TIER_CAVEAT) < printed.index("share_of_all_anomalies")
+    # without labels there is no measured number, and so no caveat to print
+    assert main(["test", ledger]) == 0 and main(["score", ledger]) == 0
+    assert "nine of eleven" not in capsys.readouterr().out

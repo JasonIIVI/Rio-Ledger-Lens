@@ -17,6 +17,7 @@ import pandas as pd
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
+from .evaluate import DETECTION_CAVEAT
 from .review import ReviewStore
 
 HEADER_FILL = PatternFill("solid", fgColor="1F3864")
@@ -147,6 +148,8 @@ def build_workpaper(
                 ("Recall", metrics.get("recall")),
                 ("False positives", metrics.get("false_positives")),
                 ("False negatives", metrics.get("false_negatives")),
+                # a workpaper is read by someone who saw neither the README nor the dashboard
+                ("Read these as", DETECTION_CAVEAT),
             ]
         if store is not None:
             summary = store.summary()

@@ -27,8 +27,10 @@ from .schema import AnomalyType
 #: so their recall is a measurement rather than the definition read back.
 NON_CIRCULAR_ARCHETYPES = (AnomalyType.BENFORD_DRIFT, AnomalyType.RARE_ACCOUNT_PAIR)
 
-#: Shown wherever a rule-tier precision or recall is. It carries no figure: the
-#: numbers beside it move with the ledger, the reason to distrust them does not.
+#: Printed beside every rule-tier precision or recall the tool shows: `test`,
+#: `summary`, the dashboard, the workpaper and CI's detection gate. It carries no
+#: figure: the numbers beside it move with the ledger, the reason to distrust
+#: them does not.
 DETECTION_CAVEAT = (
     "Read these sceptically. For nine of eleven archetypes the generator injects the anomaly "
     "using the same definition the test looks for, so recall on those is close to "
@@ -36,7 +38,8 @@ DETECTION_CAVEAT = (
     "benford_drift and rare_account_pair."
 )
 
-#: The same caveat for the model tier's segment and lift tables.
+#: The same caveat for the model tier's segment and lift tables: `score` and the
+#: dashboard's tier tab.
 MODEL_TIER_CAVEAT = (
     "The same circularity applies to the model tier: these anomalies were defined as rule "
     "violations, so almost everything the model ranks highly the rules had already caught. "
