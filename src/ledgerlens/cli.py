@@ -260,10 +260,12 @@ def _refuse_summary_out(out: Path) -> str | None:
     inside a git checkout a summary goes under ``out/``, which git ignores, and
     nowhere else; outside one, anywhere. Links are followed first, so the answer is
     about where the bytes would land: an ``out`` that links to ``docs/`` is ``docs/``.
+    ``out`` is the path that will be written, ``~`` already expanded by the caller:
+    judging one spelling and writing another is how a guard gets walked around.
     What this cannot see: a shell redirect of the printed summary, and a checkout
     whose own ``.gitignore`` does not ignore ``out/``.
     """
-    target = out.expanduser().absolute().resolve()
+    target = out.absolute().resolve()
     root = repository_root(target.parent)  # walks ancestors, existing or not
     if root is None or (root / "out") in target.parents:
         return None
@@ -273,10 +275,21 @@ def _refuse_summary_out(out: Path) -> str | None:
 
 def cmd_summary(args: argparse.Namespace) -> int:
     """One page on the ledger, for a terminal, a script, or the weekly workflow's Issue."""
+    out = None
     if args.out:
-        refusal = _refuse_summary_out(Path(args.out))
+        try:
+            # Expanded once, here: a shell leaves `--out=~/x.md` as typed, and the path
+            # the guard judges has to be the path the summary is written to.
+            out = Path(args.out).expanduser()
+        except RuntimeError as exc:  # ~name, and no such user
+            print(f"error: cannot write the summary to {args.out}: {exc}")
+            return 2
+        refusal = _refuse_summary_out(out)
         if refusal:
             print(f"refused: {refusal}")
+            return 2
+        if out.is_dir():  # said now, not after both tiers have run
+            print(f"error: cannot write the summary to {out}: it is a directory")
             return 2
     try:
         context = LedgerContext(args.ledger, review_db=args.db).load()
@@ -297,12 +310,15 @@ def cmd_summary(args: argparse.Namespace) -> int:
     # Nothing but the rendering is printed: `--format json` has to stay one JSON
     # document, so anything worth saying about the run is a note inside it.
     text = render_summary(payload, args.format)
-    if not args.out:
+    if out is None:
         print(text)
         return 0
-    out = Path(args.out)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(text + "\n", encoding="utf-8")
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(text + "\n", encoding="utf-8")
+    except OSError as exc:  # a parent that is a file, a directory nobody may write to
+        print(f"error: cannot write the summary to {out}: {exc}")
+        return 2
     print(f"Summary ({args.format}) written to {out}")
     return 0
 
@@ -789,7 +805,8 @@ def build_parser() -> argparse.ArgumentParser:
     sm = sub.add_parser("summary", help="one page on a ledger, as text, markdown or JSON")
     sm.add_argument("ledger", help="path to a GL csv")
     sm.add_argument("--labels", help="ground-truth csv, adds measured quality with its caveat")
-    sm.add_argument("--db", help="review database; adds review progress (counts only)")
+    sm.add_argument("--db", help="review database; adds review progress (counts, and each "
+                                 "listed entry's latest decision; never a note or a name)")
     sm.add_argument("--top", type=_positive_int, default=10, help="exceptions to list")
     sm.add_argument("--format", choices=SUMMARY_FORMATS, default="text")
     sm.add_argument("--out", type=_path_arg,

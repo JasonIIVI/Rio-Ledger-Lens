@@ -31,6 +31,7 @@ from . import __version__, evaluate, jets
 from .connectors.qbo import SMALL_LEDGER
 from .ledger_context import CAVEAT, ENTRY_COLUMNS, LedgerContext, records
 from .narrative_eval import DEFAULT_LEDGER_SHA256
+from .review import DECISIONS
 from .schema import AnomalyType
 
 FORMATS = ("text", "markdown", "json")
@@ -56,8 +57,20 @@ def _entry(row: dict) -> dict:
     entry = {column: row.get(column) for column in ENTRY_COLUMNS}
     entry["posting_date"] = str(entry["posting_date"] or "")[:10]  # a date; never re-parsed
     if "decision" in row:  # only when a review database was read
-        entry["decision"] = row["decision"]
+        entry["decision"] = _decision_kind(row["decision"])
     return entry
+
+
+def _decision_kind(value: object) -> str | None:
+    """A decision as one of the kinds this version records, or "unrecognised".
+
+    The store's own constraint lives in the file's DDL, and a review database is
+    a file somebody else may have made: whatever text it holds in that column
+    has no place on a page written to be posted.
+    """
+    if value is None:
+        return None
+    return value if value in DECISIONS else "unrecognised"
 
 
 def _definitional(anomaly_type: str) -> bool | None:
@@ -119,13 +132,22 @@ def collect(
 
     if context.review_db is not None:
         status = base["review"]
+        by_decision: dict[str, int] = {}
+        for name in (*DECISIONS, "unrecognised"):
+            count = sum(n for kind, n in status["by_decision"].items() if _decision_kind(kind) == name)
+            if count:
+                by_decision[name] = count
         payload["review"] = {
             "review_db": status["review_db"],
             "exists": status["exists"],
             "flagged": status["flagged"],
+            # Every entry with a decision under this ledger, flagged now or not: a
+            # QuickBooks ledger keeps its identity across pulls, so some may belong to
+            # another period, and a change to a test can unflag a decided entry.
             "decided": status["decided"],
+            "decided_flagged": status["flagged"] - status["outstanding"],
             "outstanding": status["outstanding"],
-            "by_decision": status["by_decision"],
+            "by_decision": by_decision,
             "narratives": status["narratives"],
             # A count: which other companies a file holds is not this ledger's to print.
             "other_ledgers": len(status["other_ledgers"]),
@@ -243,12 +265,19 @@ def _features_sentence(model: dict) -> str:
 
 
 def _review_sentences(review: dict) -> list[str]:
-    decisions = ", ".join(f"{name} {count:,}" for name, count in review["by_decision"].items())
     lines = [
-        "Entries with a note: {:,}. Decided: {:,} of {:,} flagged entries{}. Outstanding: {:,}."
-        .format(review["narratives"], review["decided"], review["flagged"],
-                f" ({decisions})" if decisions else "", review["outstanding"])
+        "Entries with a note: {:,}. Decided: {:,} of {:,} flagged entries. Outstanding: {:,}."
+        .format(review["narratives"], review["decided_flagged"], review["flagged"],
+                review["outstanding"])
     ]
+    if review["by_decision"]:
+        kinds = ", ".join(f"{name} {count:,}" for name, count in review["by_decision"].items())
+        line = f"Latest decision on each decided entry: {kinds}."
+        elsewhere = review["decided"] - review["decided_flagged"]
+        if elsewhere > 0:
+            line += " {:,} of those entries {} not flagged in this run.".format(
+                elsewhere, "is" if elsewhere == 1 else "are")
+        lines.append(line)
     if review["other_ledgers"]:
         lines.append("The file also holds rows for {:,} other ledger(s), not counted here."
                      .format(review["other_ledgers"]))

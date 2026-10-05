@@ -1129,3 +1129,63 @@ def test_what_the_readme_says_the_tests_make_of_the_recorded_quarter(qbo_env, ca
     assert (jets.APPROVAL_THRESHOLD, jets.MANUAL_JE_APPROVERS) == (10_000.0, ("controller", "mchen"))
     assert inspect.signature(jets.jet_rare_account_pair).parameters["max_occurrences"].default == 3
     assert inspect.signature(jets.jet_dormant_account).parameters["dormant_days"].default == 120
+
+
+def test_summary_out_is_judged_and_written_as_one_path_tilde_included(
+        two_ledgers, tmp_path, monkeypatch, capsys):
+    """A shell passes `--out=~/s.md` on as typed. The guard used to judge the home directory
+    while the file went to a directory named "~" inside the checkout."""
+    from ledgerlens.connectors.tokens import repository_root
+
+    if repository_root(tmp_path) is not None:
+        pytest.skip(f"{tmp_path} is inside a git repository")
+    ledger, _ = _pair(two_ledgers)
+    repo, home = tmp_path / "repo", tmp_path / "home"
+    (repo / ".git").mkdir(parents=True)
+    home.mkdir()
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("HOME", str(home))
+    capsys.readouterr()
+    for spelled in ("--out=~/s.md", "--out=./~/s2.md"):
+        assert main(["summary", ledger, spelled]) == 0, spelled
+    printed = capsys.readouterr().out
+    assert str(home / "s.md") in printed and "~" not in printed  # it says where the file is
+    assert (home / "s.md").exists() and (home / "s2.md").exists()
+    assert sorted(p.name for p in repo.iterdir()) == [".git"]  # no directory named "~"
+
+    monkeypatch.setenv("HOME", str(repo))  # a home that is itself the checkout
+    assert main(["summary", ledger, "--out=~/s.md"]) == 2
+    assert capsys.readouterr().out.startswith("refused: ")
+    assert sorted(p.name for p in repo.iterdir()) == [".git"]
+    assert main(["summary", ledger, "--out=~/out/s.md"]) == 0
+    assert (repo / "out" / "s.md").exists()
+    assert main(["summary", ledger, "--out=~no-such-user-7731/s.md"]) == 2
+    assert capsys.readouterr().out.splitlines()[-1].startswith("error: cannot write the summary to")
+
+
+def test_summary_that_cannot_be_written_is_a_message_before_or_after_scoring(
+        two_ledgers, tmp_path, monkeypatch, capsys):
+    import os
+
+    from ledgerlens import cli
+
+    ledger, _ = _pair(two_ledgers)
+    (tmp_path / "a-directory").mkdir()
+    (tmp_path / "a-file").write_text("x")
+    scored = []
+    real = cli.LedgerContext.load
+    monkeypatch.setattr(cli.LedgerContext, "load", lambda self: scored.append(1) or real(self))
+    capsys.readouterr()
+    assert main(["summary", ledger, "--out", str(tmp_path / "a-directory")]) == 2
+    assert "it is a directory" in capsys.readouterr().out and scored == []  # said before any scoring
+    assert main(["summary", ledger, "--out", str(tmp_path / "a-file" / "s.md")]) == 2
+    assert capsys.readouterr().out.startswith("error: cannot write the summary to")
+    if os.geteuid() != 0:  # root writes anywhere
+        locked = tmp_path / "locked"
+        locked.mkdir()
+        locked.chmod(0o555)
+        try:
+            assert main(["summary", ledger, "--out", str(locked / "s.md")]) == 2
+            assert capsys.readouterr().out.startswith("error: cannot write the summary to")
+        finally:
+            locked.chmod(0o755)
