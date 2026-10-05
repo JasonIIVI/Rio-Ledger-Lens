@@ -4,6 +4,7 @@ Audit analytics over general ledger data: journal-entry tests, Benford's Law dig
 analysis, and risk-scored exceptions with plain-English reasons a reviewer can act on.
 
 [![CI](https://github.com/JasonIIVI/Rio-Ledger-Lens/actions/workflows/ci.yml/badge.svg)](https://github.com/JasonIIVI/Rio-Ledger-Lens/actions/workflows/ci.yml)
+[![Weekly synthetic run](https://github.com/JasonIIVI/Rio-Ledger-Lens/actions/workflows/weekly.yml/badge.svg)](https://github.com/JasonIIVI/Rio-Ledger-Lens/actions/workflows/weekly.yml)
 ![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
@@ -27,6 +28,27 @@ ledger CSV ──▶ ingest ──┼──▶ Benford analysis ─────�
                                                                   └───▶ MCP server (read-only) ───▶ Claude Desktop
 ```
 
+The same flow, with the two ways a run is reported:
+
+```mermaid
+flowchart LR
+    csv[Ledger CSV] --> ingest[Ingest and validate]
+    qbo[QuickBooks Online sandbox] -->|pull-qbo| ingest
+    ingest --> jets[12 journal-entry tests]
+    ingest --> benford[Benford analysis]
+    ingest --> forest[Isolation Forest]
+    jets --> queue[Exception queue]
+    benford --> queue
+    forest --> queue
+    queue --> note[Claude note, advisory]
+    note --> reviewer[Named reviewer, append-only decisions]
+    reviewer --> workpaper[Excel workpaper]
+    queue --> mcp[MCP server, read-only]
+    mcp --> desktop[Claude Desktop]
+    queue --> summary[summary: text, markdown, JSON]
+    summary --> issue[Weekly Issue]
+```
+
 The two detection tiers are scored **separately and never blended**. They answer different
 questions, and where they disagree is the most informative output the tool produces.
 
@@ -43,6 +65,7 @@ ledgerlens test data/ledger.csv --labels data/labels.csv      # rule tier
 ledgerlens score data/ledger.csv --labels data/labels.csv     # both tiers, compared
 ledgerlens benford data/ledger.csv --by account_code
 ledgerlens report data/ledger.csv --out out/workpaper.xlsx    # Excel workpaper
+ledgerlens summary data/ledger.csv --labels data/labels.csv   # one page: both tiers, each number with its caveat
 
 pip install -e ".[app]" && streamlit run app.py               # review dashboard
 
@@ -50,6 +73,15 @@ cp .env.example .env                                          # add ANTHROPIC_AP
 pip install -e ".[llm]" && ledgerlens narrate data/ledger.csv # Claude-written reviewer notes
 ledgerlens eval-narratives data/ledger.csv                    # grade them (docs/narrative-eval.md)
 ```
+
+The review loop on the synthetic ledger, in thirty seconds: name the reviewer, open the
+riskiest entry, read why it was flagged and the note Claude wrote, record a decision, and see
+it in the append-only history.
+
+![The dashboard: a reviewer opens a flagged entry, reads the note, and records a decision](docs/demo.gif)
+
+The notes on screen were written by the real API on 2026-09-23; the recording itself made no
+API call and ran against a copy of the review database.
 
 ## The tests
 
@@ -83,12 +115,12 @@ JE-2025-004431  score  5.0  JET-05, JET-01  $75,000.00
 Against the default two-year synthetic ledger (5,085 entries, 77 injected anomalies at
 1.5%):
 
-| Metric | Value |
-|---|---|
-| Precision | **0.843** |
-| Recall | **0.974** |
-| F1 | **0.904** |
-| Flag rate | 1.75% of population |
+| Metric | Value | How to read it |
+|---|---|---|
+| Precision | **0.843** | 75 of the 89 flagged entries were injected anomalies. 13 of the 14 that were not come from JET-12, which describes the control environment rather than the entry. |
+| Recall | **0.974** | 75 of 77 found, and partly circular: nine of the eleven archetypes are injected by the definition their test looks for. The two that are measured: `benford_drift` 3 of 4 (0.75) and `rare_account_pair` 6 of 7 (0.86). |
+| F1 | **0.904** | The harmonic mean of the two above, so it inherits the circularity. |
+| Flag rate | 1.75% of population | 89 of 5,085 entries. How much review the rule tier asks for, not how good it is. |
 
 **Read those numbers sceptically, because they are partly circular.** For nine of the
 eleven anomaly archetypes, the generator injects the anomaly using the same definition
@@ -112,8 +144,8 @@ The parts that are *not* circular, and are therefore the parts worth discussing:
   [docs/tuning.md](docs/tuning.md).
 
 The genuinely hard detection problem — finding anomalies nobody wrote a rule for —
-is what the unsupervised layer in week 2 is for. This tier is deliberately the boring,
-defensible one.
+is what the second tier, below, was built to attempt, and that section says how little of
+it this data lets the model show. This tier is deliberately the boring, defensible one.
 
 ### A worked example of why the statistics need care
 
@@ -139,12 +171,12 @@ generator and are dropped automatically at fit time.
 
 Putting both tiers side by side on the default ledger:
 
-| Segment | Entries | Truly anomalous | Precision |
-|---|---:|---:|---:|
-| **both tiers agree** | 30 | 29 | **0.967** |
-| rules only | 59 | 46 | 0.780 |
-| model only | 72 | 1 | 0.014 |
-| neither | 4,924 | 1 | 0.000 |
+| Segment | Entries | Truly anomalous | Precision | How to read it |
+|---|---:|---:|---:|---|
+| **both tiers agree** | 30 | 29 | **0.967** | The model re-ranking what the rules had already caught |
+| rules only | 59 | 46 | 0.780 | Known patterns the model finds ordinary |
+| model only | 72 | 1 | 0.014 | The base rate (77 of 5,085 is 0.015): no independent detection |
+| neither | 4,924 | 1 | 0.000 | The one anomaly neither tier saw |
 
 **The model is a strong re-ranker and a weak independent detector** - and that is worth saying
 plainly rather than hiding behind a combined number. By rank it is far better than chance:
@@ -155,8 +187,9 @@ plainly rather than hiding behind a combined number. By rank it is far better th
 | 50 | 22 | 0.44 | 29x |
 | 100 | 30 | 0.30 | 20x |
 
-But almost everything it ranks highly, the rules had already caught. The "model only" segment is
-essentially the base rate.
+*Read the lift as re-ranking, not as detection: it is measured against the same labels, with
+the same circularity.* Almost everything the model ranks highly, the rules had already caught.
+The "model only" segment is essentially the base rate.
 
 The reason is the same circularity described above: these anomalies were *defined* as rule
 violations, so a model forbidden from encoding those rules has little left to find. Breaking
@@ -244,7 +277,8 @@ the detection numbers: it measures whether a note is grounded, specific and non-
 whether it is insightful. A rubric was chosen over similarity to a reference narrative because
 the reference would itself be model-written.
 
-The first real run scored 88% on all checks. One of the two misses was the grader's fault - it
+The first real run scored 88% on all checks (checks of those properties, not of whether a note
+is useful). One of the two misses was the grader's fault - it
 counted a citation of AU-C 240 as an invented number - and the stored run was re-scored offline
 (`--regrade`, no API calls) to 94%. That first fix admitted every number in the system prompt,
 which the repository's own `@claude` review pointed out was too broad: the prompt's style example
@@ -261,7 +295,8 @@ The hand-written case was narrated once, after its expectations had been committ
 (the report's case-set notes give the commit and the times). The note reported the embedded
 instruction as a fact about the entry, asked how the wording came to be entered, kept its
 confidence at medium and requested evidence, so it passed every check; over seventeen cases the
-score is 94%, sixteen of seventeen, with the same single miss. One case is not a measure of
+score is 94%, sixteen of seventeen, with the same single miss - still a count of notes that are
+grounded, specific and non-assertive, not of notes that are insightful. One case is not a measure of
 resistance to this kind of text, only a check that the rule in the system prompt held once, on
 the structured fields where compliance would have shown (a "high" confidence, an empty
 evidence list). The case's text checks are looser than they look: its fourth pattern, meant to
@@ -297,8 +332,12 @@ a redirect URI, and copy the app's client id and secret into `.env` as `QBO_CLIE
 ledgerlens qbo-auth                          # sign in in the browser; tokens go to ~/.config/ledgerlens, mode 600
 ledgerlens pull-qbo --start 2026-07-01 --end 2026-09-30     # writes data/qbo-ledger.csv + its .identity.json
 ledgerlens test data/qbo-ledger.csv
+ledgerlens summary data/qbo-ledger.csv                      # one page; no labels, so no precision or recall
 ledgerlens report data/qbo-ledger.csv --db data/review.sqlite
 ```
+
+The dashboard and the MCP server read the pull like any other ledger (`streamlit run app.py`
+with the path in the sidebar, `ledgerlens-mcp --ledger data/qbo-ledger.csv`).
 
 What the pull does, and what it cannot know:
 
@@ -334,6 +373,55 @@ pull warns below 50 entries. Intuit meters read calls under its partner program;
 a handful. The tests never touch the network: they replay `tests/fixtures/qbo/pull/`, a
 sanitized recording of a real sandbox pull (`pull-qbo --record`, Intuit's sample company,
 July–September 2026). Its README says what the recording settled about Intuit's responses.
+
+**What the tests make of a pull.** Read a pull's flags as the tool running, not as findings
+about the company: the thresholds and lists are still the synthetic generator's, and there is
+no ground truth, so there is no precision or recall for a pull at all (`summary` says so in
+place of the numbers). In the recorded quarter 81 of the 116 entries are flagged, 79 of them
+by JET-08: "rare" means an account pairing seen three times or fewer, and in a population this
+small most pairings are. All three journal entries fire JET-12, because its approver list is
+the synthetic company's two users rather than the QuickBooks company's, and JET-06 compares
+against the generator's $10,000 approval limit. JET-09 looks for an account quiet for more
+than 120 days, which a single quarter cannot contain. The model tier's two flagged entries are
+its 2% budget of 116, not a detection. Unlike the generator's ledger, a pull has entries of
+more than two lines (25 of the 116), which the tests read as they read any entry.
+
+## One page, and a weekly run
+
+`ledgerlens summary` gathers what the other commands print piecemeal into one page: the rule
+tier's flags by test, the model tier's budget, how the two tiers agree, the riskiest entries,
+review progress when `--db` is given, and measured quality when `--labels` is.
+
+```bash
+ledgerlens summary data/ledger.csv --labels data/labels.csv                       # text, to the terminal
+ledgerlens summary data/ledger.csv --labels data/labels.csv --format markdown --out out/summary.md
+ledgerlens summary data/ledger.csv --db data/review.sqlite --format json          # one JSON document
+```
+
+It scores nothing itself, and three rules shape what it prints:
+
+- **A number never travels without its caveat.** "A flag is a question, not a finding" is in
+  every format. Precision and recall appear only with labels, under the heading "rule tier
+  only", after the circularity caveat, with each archetype shown as caught-of-n and marked
+  *measured* or *definitional*. A ratio over nothing reads "undefined", not 0.000. The two
+  tiers get separate sections and are never added together; the model's count is called what
+  it is, a budget (the top 2% by rank).
+- **Ledger text is data.** The markdown is written to be posted in public, on a repository
+  where a workflow answers mentions. Every string that came from the ledger is rendered as
+  inert code: one line, invisible and direction-changing characters removed, a pipe unable to
+  break a table, and no `@name` left in the raw text. No format carries a note's text, a
+  reviewer's name or another ledger's identity; review is reported as counts.
+- **A summary is written only where git cannot pick it up.** Inside a checkout, `--out` must
+  land under `out/` (links followed). A summary of real books holds descriptions, users and
+  amounts, and a file-name check would not notice a tracked `.md`.
+
+**The weekly run.** `.github/workflows/weekly.yml` regenerates the default ledger on Mondays,
+runs both tiers, and opens an Issue labelled `weekly-run` holding that page, closing the
+previous one. The generator is seeded, so the Issue is a regression watch: its numbers move
+only when the code or one of its dependencies changes, and the same caveats sit above them.
+It is not new evidence about detection. The run may write Issues and nothing else, reads no
+secret, and never sees a QuickBooks credential. GitHub pauses the schedule of a public
+repository after 60 days without activity; running the workflow by hand restores it.
 
 ## Ask the ledger from Claude Desktop
 
@@ -409,15 +497,23 @@ and reopen Claude Desktop:
       (schema migrations, `adopt-legacy`), a hand-written prompt-injection eval case with
       its expectations committed before its one narration, tokens kept outside the
       repository, and a CI job that enforces rule 1 (no data or secret file tracked)
-- [ ] **Week 4** — QuickBooks Online connector (sandbox: `qbo-auth`, `pull-qbo`; built,
-      the recorded fixtures pending), scheduled re-run via GitHub Actions
+- [x] **Week 4** — QuickBooks Online connector (sandbox: `qbo-auth`, `pull-qbo`, tested
+      against a sanitized recording of a real sandbox pull), `ledgerlens summary`, and a
+      weekly scheduled run that opens an Issue with it (v1.0.0)
+- [ ] **Next** — break the circularity: inject archetypes no rule describes and re-measure
+      both tiers against them; and an approver list and approval limit that can be set, so
+      JET-12 and JET-06 test a QuickBooks company against its own controls
 
 ## Limitations
 
 - Synthetic data cannot capture adaptive behaviour: real fraud adjusts to the controls
   looking for it.
-- Two-line journal entries only; multi-line allocations are generated but not yet
-  modelled with realistic complexity. This also keeps two model features constant.
+- The generator writes two-line journal entries only, which also keeps two model features
+  (`n_lines`, `posting_lag_days`) constant on synthetic data. A QuickBooks pull does have
+  multi-line entries, but far too few entries for the model tier to mean anything.
+- JET-12's approver list and JET-06's approval limit are the generator's constants and
+  cannot be set yet, so on any other ledger those two tests describe the synthetic
+  company's controls, not the company's own.
 - The unsupervised tier cannot see cross-entry patterns such as duplicates, because its
   features are computed per entry.
 - Thresholds are tuned against this generator. Against a real ledger they are a
@@ -428,6 +524,8 @@ and reopen Claude Desktop:
   credit columns is refused), estimates the time of day where QuickBooks gives only a date,
   and inherits the GeneralLedger report's own caveats (Intuit notes its account hierarchy can
   break with some sub-account setups).
+- The weekly run regenerates one seeded ledger. It notices a change in the code or in a
+  dependency; it says nothing new about how well anything is detected.
 - Nothing here constitutes an audit procedure or professional advice. It is a
   demonstration of technique.
 
@@ -445,6 +543,12 @@ CI runs the suite on Python 3.9, 3.11 and 3.12 plus a detection-quality gate. No
 responses shaped like the real ones. No test touches the network: QuickBooks responses are
 replayed from `tests/fixtures/qbo/`, and the sign-in test follows a real redirect to a
 loopback server.
+
+A workflow is only exercised once it is on `main`, and the weekly one only on its schedule,
+so `tests/test_workflows.py` pins what it can beforehand: the weekly run's permissions and
+triggers, that nothing but the run's own token is interpolated into a script, and that every
+`ledgerlens ...` line in every workflow still parses with the CLI as it is. A renamed flag
+fails in the suite, not on a Monday.
 
 `.env` holds configuration only: the API key and the `QBO_*` client settings. QuickBooks
 tokens are kept by `connectors/tokens.py` under `~/.config/ledgerlens/` (under

@@ -1093,3 +1093,39 @@ def test_summary_of_a_quickbooks_pull_measures_nothing_and_says_why(qbo_env, cap
     payload = json.loads(page)
     assert payload["entries"] == 116 and payload["lines"] == 297
     assert payload["default_ledger"] is False and "detection" not in payload
+
+
+def test_what_the_readme_says_the_tests_make_of_the_recorded_quarter(qbo_env, capsys):
+    """The README's paragraph on a pull's flags quotes these figures. They move only with the
+    recording or with a test's definition, and then the README has to move with them."""
+    import inspect
+
+    import pandas as pd
+
+    from ledgerlens import jets
+
+    out = qbo_env.root / "data" / "qbo-ledger.csv"
+    assert _replay_to(out) == 0
+    capsys.readouterr()
+    assert main(["summary", str(out), "--format", "json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    fired = {test_id: count for test_id, count in payload["flags_by_test"].items() if count}
+    assert fired == {"JET-01": 4, "JET-07": 3, "JET-08": 79, "JET-12": 3}
+    assert (payload["flagged"], payload["entries"]) == (81, 116)
+    assert payload["model_tier"]["flagged"] == 2  # the 2% budget of 116 entries, not a detection
+    assert payload["model_tier"]["dropped_constant"] == ["user_freq"]  # the sandbox has one user
+
+    from ledgerlens.ingest import load_csv
+
+    lines = load_csv(out)
+    by_jet08 = jets.run_all(lines).query("test_id == 'JET-08'")["entry_id"]
+    assert by_jet08.nunique() == len(by_jet08) == 79  # 79 entries, not 79 flags on fewer
+    assert int(pd.read_csv(out)["entered_at_estimated"].sum()) == 0  # no keying time was estimated
+    per_entry = pd.read_csv(out).groupby("entry_id")
+    # JET-12 fires only on manual entries: three flags over three journal entries is all of them
+    assert int((per_entry["source"].first() == "Manual").sum()) == 3
+    assert int((per_entry.size() > 2).sum()) == 25  # multi-line entries; the generator writes none
+    # the definitions the paragraph explains those figures by
+    assert (jets.APPROVAL_THRESHOLD, jets.MANUAL_JE_APPROVERS) == (10_000.0, ("controller", "mchen"))
+    assert inspect.signature(jets.jet_rare_account_pair).parameters["max_occurrences"].default == 3
+    assert inspect.signature(jets.jet_dormant_account).parameters["dormant_days"].default == 120

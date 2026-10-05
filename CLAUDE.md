@@ -13,7 +13,7 @@ Audit analytics over general ledger data. Read this before changing anything.
 | Working folder | `~/Library/Mobile Documents/com~apple~CloudDocs/LedgerGen project` (iCloud) |
 | Virtualenvs | `~/.venvs/ledgerlens` (3.9) and `~/.venvs/ledgerlens312` (3.12) — **deliberately outside iCloud**, one set per machine |
 | Python here | system 3.9.6 plus python.org **3.12.0** at `/usr/local/bin/python3.12`. Code must stay 3.9-compatible; only `mcp_server.py` needs 3.10+ |
-| CI | GitHub Actions: pytest on 3.9 / 3.11 / 3.12 + a detection-quality gate + a `rule-1` job (no data or secret file tracked); `claude.yml` answers `@claude` |
+| CI | GitHub Actions: pytest on 3.9 / 3.11 / 3.12 + a detection-quality gate + a `rule-1` job (no data or secret file tracked); `claude.yml` answers `@claude`; `weekly.yml` regenerates the default ledger on Mondays and opens an Issue with `ledgerlens summary` |
 
 ```bash
 source ~/.venvs/ledgerlens/bin/activate && pytest -q && ruff check src tests app.py
@@ -25,8 +25,9 @@ and the MCP SDK, so the two together cover every code path CI will see.
 
 ## Current state
 
-- **v0.4.0** on `main` (PR #7, 2026-09-29; v0.3.1 was PR #5 on 2026-09-25; v0.3.0 was PR #2
-  on 2026-09-23). Weeks 1–3 complete:
+- **v1.0.0** is PR #9 (`week4/automation-and-readme`), tagged after its merge once the weekly
+  run has opened its first Issue. **v0.4.0** was PR #7 (2026-09-29; v0.3.1 was PR #5 on
+  2026-09-25; v0.3.0 was PR #2 on 2026-09-23). Weeks 1–3 complete:
   narratives, review loop, dashboard integration, MCP server, narrative eval, `@claude` workflow.
 - **Review follow-up on `main`** (PR #4, 2026-09-24) — the first `@claude` review's findings:
   narratives are versioned and each decision records the note it saw (`narrative_id`);
@@ -116,9 +117,38 @@ and the MCP SDK, so the two together cover every code path CI will see.
   fixed: the token directory is checked before any code or refresh is spent, redirects are
   never followed, the callback server is threaded and holds both loopback addresses, a
   recording is re-scrubbed and checked on every exit, and pulled books stay in `data/`.
-- **Next** — the weekly scheduled Action, the README final pass and v1.0.0 (due
-  2026-10-18). Week 5 breaks the circularity in the detection numbers.
-- 462 tests on 3.9 / 472 on 3.12, ruff clean.
+- **Automation and the README (PR #9 `week4/automation-and-readme`, version 1.0.0)** —
+  `ledgerlens summary` (`summary.py`): one page on a ledger as text, markdown or JSON. It
+  scores nothing itself (the counts are `LedgerContext`'s, the measured quality `evaluate`'s),
+  keeps the tiers in separate sections, and carries each caveat as a field of the payload:
+  the circularity caveat precedes any precision or recall, which appear only with labels,
+  headed "rule tier only", each archetype as caught-of-n with the two measured ones first, and
+  a ratio over nothing printed as "undefined". The markdown is posted in public by the weekly
+  workflow, on a repository whose `claude.yml` answers a mention in an Issue, so every string
+  that came from the ledger goes through `md_code` (one line, invisible and
+  direction-changing characters removed, a code span whose fence outruns any backticks, a
+  pipe written as an entity, a zero-width space after every `@`); no format carries note
+  text, a reviewer's name or another ledger's identity; `--out` inside a checkout lands only
+  under `out/`; `--format json` prints one document and nothing else. `evaluate.check_labels`
+  refuses labels that do not cover exactly the ledger's entry ids (`test`, `score`, `report`
+  and `summary` print `refused:`; the dashboard, whose sidebar offers `data/labels.csv` for
+  every ledger, sets them aside and says so) and can show a mismatch, never that a file
+  belongs. `evaluate.DETECTION_CAVEAT` and `MODEL_TIER_CAVEAT` are the one wording of the two
+  caveats (the dashboard's tier tab had none). `LedgerContext.summary()` lists every test and
+  every tier relation, zeros included. `.github/workflows/weekly.yml` (Mondays 13:23 UTC, or
+  by hand; `contents: read` and `issues: write`; no secret; `github.token` the only
+  expression; credentials not persisted) opens an Issue labelled `weekly-run` from the
+  markdown and then closes the previous one. The generator is seeded, so the Issue is a
+  regression watch for the code and its dependencies, not new data.
+  `tests/test_workflows.py` reads the workflow files without a YAML parser and parses every
+  `ledgerlens` line in them with `build_parser()`. README final pass: a Mermaid diagram,
+  `docs/demo.gif` (recorded against a copy of the review database, no API call), a "how to
+  read it" column on the results and tier tables, and what the tests make of a QuickBooks
+  pull, its figures pinned by a test on the recorded fixtures.
+- **Next** — week 5 breaks the circularity in the detection numbers (archetypes no rule
+  describes, both tiers re-measured), and an approver list and approval limit that can be set
+  for JET-12 and JET-06.
+- 561 tests on 3.9 / 571 on 3.12, ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
@@ -150,17 +180,18 @@ ledger CSV ──▶ ingest ──┼──▶ Benford analysis ─────�
 | `benford.py` | first-digit test, MAD (Nigrini bands) + chi-square |
 | `features.py` | 16 engineered per-entry features for the model tier |
 | `model.py` | Isolation Forest, rank-based flagging, tier comparison |
-| `evaluate.py` | precision/recall, by archetype, by test, tier comparison, model lift |
+| `evaluate.py` | precision/recall, by archetype, by test, tier comparison, model lift; `check_labels` (labels must cover exactly the ledger's entries) and the two caveat constants |
 | `report.py` | 5-tab Excel workpaper |
 | `review.py` | append-only SQLite store keyed by ledger (`ledger_id`; schema version 4 via `PRAGMA user_version`, numbered migrations from frozen DDL): decisions and versioned narratives, enforced by triggers; `read_only()` opener; `ledgers()` / `adopt_legacy()` |
 | `narrate.py` | Claude narratives: structured-output JSON contract, cacheable system prompt, usage accounting |
 | `narrative_eval.py` | case selection (the one label reader), rubric grader (the citation stripped before numbers are counted), `case_prompt` with per-case `overrides`, runner with case-file and ledger provenance, report with grader notes, case-set notes and baseline |
 | `ledger_context.py` | read-only query layer (summary, top exceptions, explain, search, Benford, review status); opens the review DB `mode=ro`, bound to the ledger's identity; 3.9-safe |
 | `mcp_server.py` | MCP registration over `ledger_context` (v2 SDK, stdio); needs 3.10+ |
+| `summary.py` | one page on a scored ledger (`collect`, `render` as text / markdown / JSON); scores nothing itself; `md_code` renders ledger text as inert markdown |
 | `env.py` | dependency-free `.env` loader |
 | `connectors/qbo.py` | QuickBooks Online: `QboConfig` (`QBO_*`), transports (urllib, `RecordedTransport` replay, sanitizing `Recorder`), OAuth (`QboAuth`, `CallbackServer`), `QboClient` (refresh, throttling, paging), and the mapping into the ledger contract (`pull`, `PullStats`, `write_identity`); stdlib |
 | `connectors/tokens.py` | QuickBooks token store: `~/.config/ledgerlens/qbo-<environment>-<realm>.json` (`$XDG_CONFIG_HOME/ledgerlens/` when set; `$LEDGERLENS_TOKEN_DIR` overrides both), mode 600, a record only for the realm its file names, refuses any path inside a git checkout; stdlib |
-| `cli.py` | `generate` / `test` / `score` / `benford` / `report` / `narrate` / `adopt-legacy` / `eval-narratives` / `qbo-auth` / `pull-qbo` |
+| `cli.py` | `generate` / `test` / `score` / `benford` / `report` / `summary` / `narrate` / `adopt-legacy` / `eval-narratives` / `qbo-auth` / `pull-qbo` |
 | `app.py` | Streamlit dashboard: queue, note, decision form, history |
 
 ## Rules that must not be broken
@@ -261,6 +292,14 @@ unhelpful. Say so wherever the number is quoted.
 - A review-schema change is a new numbered migration step in `review.py` built from frozen
   DDL literals, never from the live constants, so the step keeps doing what it did when it
   shipped; old-schema fixtures in the tests are DDL in code, never binary files.
+- A workflow runs only once it is on `main` (the weekly one only on its schedule), so a
+  workflow change is checked by `tests/test_workflows.py` before it is pushed, and its
+  commands are run by hand first. A `ledgerlens` command added to a workflow is added to
+  that file's `COMMANDS` table.
+- Text that came from a ledger is data wherever it is rendered: markdown through
+  `summary.md_code`, a prompt through the data-not-instructions rule. `summary.py` and its
+  tests stay ASCII (pinned by a test), because their patterns name characters that could not
+  be reviewed if written raw.
 - `.env` holds configuration only (the API key, `QBO_*` client settings). QuickBooks tokens go
   through `connectors/tokens.py` to `~/.config/ledgerlens/` (`$XDG_CONFIG_HOME/ledgerlens/` when that is set; `$LEDGERLENS_TOKEN_DIR` overrides both), which refuses any path inside a
   git checkout.

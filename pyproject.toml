@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ledgerlens"
-version = "0.4.0"
+version = "1.0.0"
 description = "Audit analytics for general ledger data: journal-entry tests, Benford's Law, anomaly scoring and reviewer-ready exception reports."
 readme = "README.md"
 requires-python = ">=3.9"
