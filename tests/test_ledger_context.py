@@ -234,3 +234,22 @@ def test_a_qbo_sidecar_beside_the_csv_names_the_ledger_the_server_reads(small_le
     context = LedgerContext(str(csv), review_db=db).load()
     assert context.ledger_id == "qbo:4620816365"
     assert context.review_status()["decided"] == 1
+
+
+def test_summary_lists_every_test_and_every_tier_relation_zeros_included(small_ledger):
+    """Two runs can only be compared if "did not fire" is told apart from "was not run"."""
+    from ledgerlens import jets
+    from ledgerlens.ledger_context import AGREEMENTS
+
+    ledger, _ = small_ledger
+    context = LedgerContext(ledger).load()
+    context.flags = context.flags[context.flags["test_id"] == "JET-01"]
+    context.combined = context.combined.assign(agreement="neither")
+    summary = context.summary()
+    assert list(summary["flags_by_test"]) == list(jets.REGISTRY)  # all twelve, registry order
+    assert summary["flags_by_test"]["JET-01"] == len(context.flags) > 0
+    assert sum(summary["flags_by_test"].values()) == summary["flags_raised"]
+    assert list(summary["tier_agreement"]) == list(AGREEMENTS)
+    assert summary["tier_agreement"] == {"both": 0, "rules only": 0, "model only": 0,
+                                         "neither": summary["entries"]}
+    json.dumps(summary)
