@@ -159,7 +159,8 @@ def load_csv(path: str | Path) -> pd.DataFrame:
 
 def load_labels(path: str | Path) -> pd.DataFrame:
     """Read the ground-truth label file produced by the generator."""
-    df = pd.read_csv(path)
+    # Ids as text, like load_csv: a numeric-looking id must not lose its zeros.
+    df = pd.read_csv(path, dtype={"entry_id": "string"})
     df["is_anomaly"] = df["is_anomaly"].astype(bool)
     df["anomaly_type"] = df["anomaly_type"].fillna("").astype("string")
     return df

@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 
 from ledgerlens import evaluate, jets
 
@@ -158,3 +159,48 @@ def test_duplicates_are_invisible_to_entry_level_features(ledger, labels):
     scores, _ = score_ledger(ledger)
     table = evaluate.score_by_archetype(scores, labels).set_index("anomaly_type")
     assert table.loc["duplicate_entry", "vs_normal"] < table.loc["round_amount", "vs_normal"]
+
+
+# --- the caveats, and labels that belong to another ledger -------------------
+
+
+def test_the_detection_caveat_counts_the_archetypes_it_names():
+    from ledgerlens.schema import AnomalyType
+
+    circular = len(AnomalyType.ALL) - len(evaluate.NON_CIRCULAR_ARCHETYPES)
+    assert (circular, len(AnomalyType.ALL)) == (9, 11)  # the text says "nine of eleven"
+    assert "nine of eleven" in evaluate.DETECTION_CAVEAT
+    assert set(evaluate.NON_CIRCULAR_ARCHETYPES) <= set(AnomalyType.ALL)
+    for name in evaluate.NON_CIRCULAR_ARCHETYPES:
+        assert name in evaluate.DETECTION_CAVEAT
+    # Neither caveat carries a figure: the numbers beside it move with the ledger.
+    for text in (evaluate.DETECTION_CAVEAT, evaluate.MODEL_TIER_CAVEAT):
+        assert not any(ch.isdigit() for ch in text)
+    assert "re-ranking" in evaluate.MODEL_TIER_CAVEAT
+
+
+def test_check_labels_accepts_the_generators_own_pair(ledger, labels):
+    evaluate.check_labels(labels, ledger["entry_id"].unique())
+
+
+def _labels(ids):
+    return pd.DataFrame({"entry_id": ids, "is_anomaly": [False] * len(ids),
+                         "anomaly_type": [""] * len(ids)})
+
+
+@pytest.mark.parametrize("label_ids, message", [
+    (["A", "B"], "1 ledger entry has no label (e.g. C)"),            # a flag on C would be a false positive
+    (["A", "B", "C", "D"], "1 label names no ledger entry (e.g. D)"),  # an anomaly nobody could catch
+    (["A", "B", "B", "C"], "lists 1 entry id more than once (e.g. B)"),  # recall by archetype counts rows
+    (["X", "Y", "Z"], "3 ledger entries have no label (e.g. A); 3 labels name no ledger entry (e.g. X)"),
+])
+def test_check_labels_refuses_labels_that_do_not_cover_exactly_the_ledger(label_ids, message):
+    with pytest.raises(evaluate.LabelsMismatchError) as refused:
+        evaluate.check_labels(_labels(label_ids), ["A", "B", "C"])
+    assert message in str(refused.value)
+
+
+def test_check_labels_compares_ids_as_text_and_needs_the_column():
+    evaluate.check_labels(_labels([1, 2]), ["1", "2"])  # a csv read without a dtype
+    with pytest.raises(evaluate.LabelsMismatchError, match="no entry_id column"):
+        evaluate.check_labels(pd.DataFrame({"is_anomaly": [True]}), ["A"])

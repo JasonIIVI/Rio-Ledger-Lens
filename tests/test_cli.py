@@ -898,3 +898,45 @@ def test_a_pull_without_tokens_creates_no_token_directory(qbo_env, capsys):
     assert main(["pull-qbo", "--start", "2025-10-01", "--end", "2025-12-31"]) == 2
     assert "run `ledgerlens qbo-auth` first" in capsys.readouterr().out
     assert not qbo_env.tokens.exists()
+
+
+# --- labels are checked against the ledger before any number is printed ------
+
+
+@pytest.fixture(scope="module")
+def two_ledgers(tmp_path_factory):
+    """Two generated ledgers of different lengths: neither one's labels describe the other."""
+    root = tmp_path_factory.mktemp("pairs")
+    main(["generate", "--start", "2024-01-01", "--end", "2024-03-31", "--out-dir", str(root / "a")])
+    main(["generate", "--start", "2024-01-01", "--end", "2024-02-29", "--out-dir", str(root / "b")])
+    return root
+
+
+@pytest.mark.parametrize("command", [
+    ["test"], ["score"], ["report", "--no-model"],
+])
+def test_labels_from_another_ledger_are_refused_before_anything_is_scored(
+        two_ledgers, tmp_path, capsys, command):
+    out = tmp_path / ("wp.xlsx" if command[0] == "report" else "scored.csv")
+    capsys.readouterr()
+    code = main([*command, str(two_ledgers / "a" / "ledger.csv"),
+                 "--labels", str(two_ledgers / "b" / "labels.csv"), "--out", str(out)])
+    printed = capsys.readouterr().out
+    assert code == 2, printed
+    assert printed.startswith("refused: ") and "have no label" in printed
+    assert "Precision" not in printed and "precision" not in printed
+    assert not out.exists()
+    # the ledger's own labels still pass
+    assert main([*command, str(two_ledgers / "a" / "ledger.csv"),
+                 "--labels", str(two_ledgers / "a" / "labels.csv"), "--out", str(out)]) == 0
+
+
+def test_an_unreadable_label_file_is_a_message_not_a_traceback(two_ledgers, tmp_path, capsys):
+    ledger = str(two_ledgers / "a" / "ledger.csv")
+    capsys.readouterr()
+    assert main(["test", ledger, "--labels", str(tmp_path / "missing.csv")]) == 2
+    assert capsys.readouterr().out.startswith("error: cannot read labels from")
+    columnless = tmp_path / "columnless.csv"
+    columnless.write_text("entry_id,anomaly_type\nJE-2024-000001,\n")
+    assert main(["test", ledger, "--labels", str(columnless)]) == 2
+    assert "missing column 'is_anomaly'" in capsys.readouterr().out

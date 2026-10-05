@@ -75,3 +75,15 @@ def test_a_malformed_sidecar_is_refused_not_ignored(small_ledger, tmp_path, payl
     identity_path(csv).write_text(payload)
     with pytest.raises(IdentityError, match="identity.json"):
         ledger_identity(lines, csv)
+
+
+def test_load_labels_reads_entry_ids_as_text(tmp_path):
+    """Ids that look like numbers keep their zeros, as load_csv keeps the ledger's."""
+    from ledgerlens.ingest import load_labels
+
+    path = tmp_path / "labels.csv"
+    path.write_text("entry_id,is_anomaly,anomaly_type\n000123,True,round_amount\n000124,False,\n")
+    labels = load_labels(path)
+    assert labels["entry_id"].tolist() == ["000123", "000124"]
+    assert labels["is_anomaly"].tolist() == [True, False]
+    assert labels["anomaly_type"].tolist() == ["round_amount", ""]

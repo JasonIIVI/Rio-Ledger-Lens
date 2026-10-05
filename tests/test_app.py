@@ -338,3 +338,24 @@ def test_the_sidebar_names_a_qbo_ledger_by_its_realm(data_dir, tmp_path):
     note_id = ReviewStore(db, "qbo:4620816365").save_narrative(picked, note, model="m")
     at = _run(pulled, db, reviewer="ana")
     assert any(f"note #{note_id}" in c.value for c in at.caption)
+
+
+def test_every_measured_number_sits_beside_its_caveat(data_dir, tmp_path):
+    """The quality tab and the tier tab both quote numbers measured against the labels."""
+    from ledgerlens import evaluate
+
+    at = _run(data_dir, tmp_path / "review.sqlite")
+    assert "Precision" in [m.label for m in at.metric]
+    assert any(w.value == evaluate.DETECTION_CAVEAT for w in at.warning)
+    assert any(c.value == evaluate.MODEL_TIER_CAVEAT for c in at.caption)
+
+
+def test_labels_written_for_another_ledger_are_set_aside_not_scored(data_dir, tmp_path):
+    other = tmp_path / "other"
+    main(["generate", "--start", "2024-01-01", "--end", "2024-02-29", "--out-dir", str(other)])
+    (other / "labels.csv").write_text((data_dir / "labels.csv").read_text())  # four months' labels
+    at = _run(other, tmp_path / "review.sqlite")
+    assert any("Labels set aside" in w.value and "name no ledger entry" in w.value
+               for w in at.warning)
+    assert "Precision" not in [m.label for m in at.metric]
+    assert any("Provide a labels CSV" in i.value for i in at.info)

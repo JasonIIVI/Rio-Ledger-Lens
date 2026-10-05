@@ -40,8 +40,17 @@ def load(ledger_path: str, labels_path: str):
     scored = jets.score_entries(df, flags)
     scores, report = score_ledger(df)
     combined = combine(scored, scores)
-    labels = load_labels(labels_path) if Path(labels_path).exists() else None
-    return df, flags, combined, scores, report, labels, ledger_id
+    # Labels are scored only when they cover exactly this ledger's entries: the
+    # sidebar's default file sits beside every ledger in data/, a QuickBooks pull
+    # included, and numbers from a pairing that does not exist are worse than none.
+    labels, labels_problem = None, None
+    if Path(labels_path).exists():
+        try:
+            labels = load_labels(labels_path)
+            evaluate.check_labels(labels, df["entry_id"].unique())
+        except (KeyError, ValueError) as exc:  # a missing column, or LabelsMismatchError
+            labels, labels_problem = None, str(exc)
+    return df, flags, combined, scores, report, labels, ledger_id, labels_problem
 
 
 def md(text: str) -> str:
@@ -82,10 +91,13 @@ if not Path(ledger_path).exists():
     st.stop()
 
 try:
-    df, flags, combined, scores, report, labels, ledger_id = load(ledger_path, labels_path)
+    df, flags, combined, scores, report, labels, ledger_id, labels_problem = load(
+        ledger_path, labels_path)
 except IdentityError as exc:  # a sidecar that names no ledger: never guess which one it is
     st.error(str(exc))
     st.stop()
+if labels_problem:
+    st.sidebar.warning(f"Labels set aside, detection quality is not shown: {labels_problem}")
 
 # The store is cheap to open and its reads are deliberately never cached: a
 # decision recorded a second ago has to show on the very next rerun. It is
@@ -314,6 +326,7 @@ with tab_tiers:
         st.markdown("**Model lift over random selection**")
         st.dataframe(evaluate.model_lift(scores, labels),
                      width="stretch", hide_index=True)
+        st.caption(evaluate.MODEL_TIER_CAVEAT)
         st.markdown("**Which anomaly types the model can perceive**")
         st.dataframe(evaluate.score_by_archetype(scores, labels),
                      width="stretch", hide_index=True)
@@ -354,12 +367,7 @@ with tab_quality:
         a.metric("Precision", "{:.3f}".format(metrics["precision"]))
         b.metric("Recall", "{:.3f}".format(metrics["recall"]))
         c.metric("F1", "{:.3f}".format(metrics["f1"]))
-        st.warning(
-            "Read these sceptically. For nine of eleven archetypes the generator injects the "
-            "anomaly using the same definition the test looks for, so recall on those is close "
-            "to tautological. The honest figures are the archetypes where detection is not "
-            "definitional - see the table below."
-        )
+        st.warning(evaluate.DETECTION_CAVEAT)
         st.markdown("**Recall by archetype**")
         st.dataframe(evaluate.recall_by_archetype(flags, labels),
                      width="stretch", hide_index=True)

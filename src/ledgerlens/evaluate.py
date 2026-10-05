@@ -21,6 +21,69 @@ from __future__ import annotations
 
 import pandas as pd
 
+from .schema import AnomalyType
+
+#: The archetypes the generator does not inject by the very rule a test checks,
+#: so their recall is a measurement rather than the definition read back.
+NON_CIRCULAR_ARCHETYPES = (AnomalyType.BENFORD_DRIFT, AnomalyType.RARE_ACCOUNT_PAIR)
+
+#: Shown wherever a rule-tier precision or recall is. It carries no figure: the
+#: numbers beside it move with the ledger, the reason to distrust them does not.
+DETECTION_CAVEAT = (
+    "Read these sceptically. For nine of eleven archetypes the generator injects the anomaly "
+    "using the same definition the test looks for, so recall on those is close to "
+    "tautological. The honest figures are the archetypes where detection is not definitional: "
+    "benford_drift and rare_account_pair."
+)
+
+#: The same caveat for the model tier's segment and lift tables.
+MODEL_TIER_CAVEAT = (
+    "The same circularity applies to the model tier: these anomalies were defined as rule "
+    "violations, so almost everything the model ranks highly the rules had already caught. "
+    "Read the lift as re-ranking of the rule tier's queue, not as independent detection."
+)
+
+
+class LabelsMismatchError(ValueError):
+    """A label file that does not describe the ledger it was given with."""
+
+
+def _count(n: int, one: str, many: str) -> str:
+    return f"{n:,} {one if n == 1 else many}"
+
+
+def check_labels(labels: pd.DataFrame, all_entry_ids) -> None:
+    """Refuse labels that do not cover exactly the ledger's entries.
+
+    A ledger entry with no label becomes a false positive the moment it is
+    flagged, and a label with no entry an anomaly nobody could have caught:
+    either way the precision and recall printed would describe a pairing that
+    does not exist. This can show that a file does not match, never that it
+    belongs: generated ids are sequential, so two runs of the generator can
+    share every id, and a label file carries no digest of its ledger.
+    """
+    if "entry_id" not in labels.columns:
+        raise LabelsMismatchError("the label file has no entry_id column")
+    ids = labels["entry_id"].astype(str)
+    repeated = sorted(set(ids[ids.duplicated()]))
+    if repeated:
+        # recall_by_archetype counts rows, so a repeated id is counted twice
+        raise LabelsMismatchError(
+            "the label file lists {} more than once (e.g. {})".format(
+                _count(len(repeated), "entry id", "entry ids"), repeated[0]))
+    labelled, wanted = set(ids), {str(i) for i in all_entry_ids}
+    unlabelled, unknown = sorted(wanted - labelled), sorted(labelled - wanted)
+    problems = []
+    if unlabelled:
+        problems.append("{} no label (e.g. {})".format(
+            _count(len(unlabelled), "ledger entry has", "ledger entries have"), unlabelled[0]))
+    if unknown:
+        problems.append("{} no ledger entry (e.g. {})".format(
+            _count(len(unknown), "label names", "labels name"), unknown[0]))
+    if problems:
+        raise LabelsMismatchError(
+            "the labels do not cover exactly this ledger's entries: " + "; ".join(problems))
+
 
 def _safe_div(numerator: float, denominator: float) -> float:
     return float(numerator / denominator) if denominator else 0.0

@@ -74,8 +74,32 @@ def cmd_generate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _load_labels(path: str, df: pd.DataFrame) -> tuple[pd.DataFrame | None, str | None]:
+    """``(labels, None)``, or ``(None, the line to print)`` when they cannot be used for ``df``.
+
+    Rule 2 keeps the join inside ``evaluate``. This only turns away a file whose ids
+    are not this ledger's, before any number is computed from the pairing.
+    """
+    try:
+        labels = load_labels(path)
+        evaluate.check_labels(labels, df["entry_id"].unique())
+    except evaluate.LabelsMismatchError as exc:
+        return None, f"refused: {path}: {exc}"
+    except KeyError as exc:
+        return None, f"error: cannot read labels from {path}: missing column {exc}"
+    except (OSError, ValueError) as exc:
+        return None, f"error: cannot read labels from {path}: {exc}"
+    return labels, None
+
+
 def cmd_test(args: argparse.Namespace) -> int:
     df = load_csv(args.ledger)
+    labels = None
+    if args.labels:
+        labels, problem = _load_labels(args.labels, df)
+        if problem:
+            print(problem)
+            return 2
     only: list[str] | None = args.only.split(",") if args.only else None
     flags = jets.run_all(df, only=only)
 
@@ -100,8 +124,7 @@ def cmd_test(args: argparse.Namespace) -> int:
         for r in top.itertuples():
             print(f"  {r.entry_id}  score {r.risk_score:>4.1f}  {r.tests_fired}  ${r.entry_amount:,.2f}")
 
-    if args.labels:
-        labels = load_labels(args.labels)
+    if labels is not None:
         metrics = evaluate.evaluate(flags, labels, df["entry_id"].unique())
         print("\n--- evaluation against ground truth ---")
         print(evaluate.format_report(metrics))
@@ -142,6 +165,12 @@ def cmd_benford(args: argparse.Namespace) -> int:
 def cmd_score(args: argparse.Namespace) -> int:
     """Run both tiers and show how they agree."""
     df = load_csv(args.ledger)
+    labels = None
+    if args.labels:
+        labels, problem = _load_labels(args.labels, df)
+        if problem:
+            print(problem)
+            return 2
     flags = jets.run_all(df)
     scored = jets.score_entries(df, flags)
     model_scores, report = score_ledger(df, contamination=args.contamination)
@@ -163,8 +192,7 @@ def cmd_score(args: argparse.Namespace) -> int:
         for r in interesting.itertuples():
             print(f"  {r.entry_id}  model {r.model_score:.3f}  ${r.entry_amount:,.2f}  {r.description}")
 
-    if args.labels:
-        labels = load_labels(args.labels)
+    if labels is not None:
         print("\n--- tier comparison ---")
         print(evaluate.compare_tiers(combined, labels).to_string(index=False))
         print("\n--- model lift over random selection ---")
@@ -177,6 +205,12 @@ def cmd_score(args: argparse.Namespace) -> int:
 def cmd_report(args: argparse.Namespace) -> int:
     """Write the Excel workpaper."""
     df = load_csv(args.ledger)
+    labels = None
+    if args.labels:
+        labels, problem = _load_labels(args.labels, df)
+        if problem:
+            print(problem)
+            return 2
     flags = jets.run_all(df)
     scored = jets.score_entries(df, flags)
 
@@ -187,8 +221,8 @@ def cmd_report(args: argparse.Namespace) -> int:
         model_report = report.describe()
 
     metrics = None
-    if args.labels:
-        metrics = evaluate.evaluate(flags, load_labels(args.labels), df["entry_id"].unique())
+    if labels is not None:
+        metrics = evaluate.evaluate(flags, labels, df["entry_id"].unique())
 
     # Only an existing store is attached, and read-only: a report must never
     # create an empty review database, or migrate one, as a side effect.
