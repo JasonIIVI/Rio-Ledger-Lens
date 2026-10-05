@@ -5,6 +5,7 @@ Streamlit; it is to catch the class of breakage week 2 hit, where a deprecated
 argument silently collapsed every table, and to prove the review loop is wired.
 """
 
+import re
 import sqlite3
 from pathlib import Path
 
@@ -355,7 +356,56 @@ def test_labels_written_for_another_ledger_are_set_aside_not_scored(data_dir, tm
     main(["generate", "--start", "2024-01-01", "--end", "2024-02-29", "--out-dir", str(other)])
     (other / "labels.csv").write_text((data_dir / "labels.csv").read_text())  # four months' labels
     at = _run(other, tmp_path / "review.sqlite")
-    assert any("Labels set aside" in w.value and "name no ledger entry" in w.value
-               for w in at.warning)
+    assert any("Labels set aside" in w.value for w in at.warning)
+    assert any("name no ledger entry" in t.value for t in at.text)
     assert "Precision" not in [m.label for m in at.metric]
     assert any("Provide a labels CSV" in i.value for i in at.info)
+
+
+def test_the_reason_labels_were_set_aside_is_shown_as_text_never_as_markdown(data_dir, tmp_path):
+    """The reason quotes an id, and whoever wrote the ledger chose the id: as markdown it was an
+    image the browser fetched on load and a link under any words they liked."""
+    client = tmp_path / "client"
+    client.mkdir()
+    ledger = (data_dir / "ledger.csv").read_text()
+    first_id = re.search(r"JE-\d{4}-\d{6}", ledger).group(0)
+    hostile = "![](http://127.0.0.1:9/beacon.png)[Review complete](http://127.0.0.1:9/login)"
+    (client / "ledger.csv").write_text(ledger.replace(first_id, hostile))
+    (client / "labels.csv").write_text((data_dir / "labels.csv").read_text())
+    at = _run(client, tmp_path / "review.sqlite")
+    assert any("Labels set aside" in w.value for w in at.warning)
+    assert not any("![](" in w.value for w in at.warning)
+    assert any("![](http://127.0.0.1:9/beacon.png)" in t.value for t in at.text)
+
+
+@pytest.mark.parametrize("labels_text, said", [
+    ("entry_id,anomaly_type\nJE-2024-000001,\n", "missing column 'is_anomaly'"),
+    ("", "No columns to parse"),
+    ("entry_id,is_anomaly,anomaly_type\nJE-2024-000001,maybe,\n", "is_anomaly must be true/false"),
+])
+def test_a_label_file_that_cannot_be_used_is_set_aside_with_its_reason(
+        data_dir, tmp_path, labels_text, said):
+    import shutil
+
+    folder = tmp_path / "ledger"
+    folder.mkdir()
+    shutil.copy(data_dir / "ledger.csv", folder / "ledger.csv")
+    (folder / "labels.csv").write_text(labels_text)
+    at = _run(folder, tmp_path / "review.sqlite")  # _run asserts nothing was raised
+    assert any("Labels set aside" in w.value for w in at.warning)
+    assert any(said in t.value for t in at.text)
+    assert "Precision" not in [m.label for m in at.metric]
+
+
+@pytest.mark.parametrize("labels_path", ["", "   ", "a-directory"])
+def test_the_labels_field_is_optional_blank_or_a_directory_is_no_labels(data_dir, tmp_path, labels_path):
+    (tmp_path / "a-directory").mkdir()
+    at = AppTest.from_file(str(APP), default_timeout=300)
+    at.session_state["ledger_path"] = str(data_dir / "ledger.csv")
+    at.session_state["labels_path"] = str(tmp_path / labels_path) if labels_path.strip() else labels_path
+    at.session_state["db_path"] = str(tmp_path / "review.sqlite")
+    at.session_state["reviewer"] = ""
+    at.run()
+    assert not at.exception, at.exception
+    assert "Entries" in [m.label for m in at.metric]
+    assert not any("Labels set aside" in w.value for w in at.warning)

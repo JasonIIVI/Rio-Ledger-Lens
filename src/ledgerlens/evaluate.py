@@ -52,34 +52,55 @@ def _count(n: int, one: str, many: str) -> str:
     return f"{n:,} {one if n == 1 else many}"
 
 
+def _example(value: object) -> str:
+    """An id as it is quoted in a refusal: ``repr``, cut to a line's worth.
+
+    Whoever wrote the ledger chose this text, and the refusal is shown in a
+    terminal, a CI log and the dashboard. ``repr`` escapes control and invisible
+    characters, and it shows what the eye would miss: a stray space, or an id
+    read as a number beside the same id read as text.
+    """
+    text = repr(value)
+    return text if len(text) <= 60 else text[:57] + "..."
+
+
 def check_labels(labels: pd.DataFrame, all_entry_ids) -> None:
     """Refuse labels that do not cover exactly the ledger's entries.
 
     A ledger entry with no label becomes a false positive the moment it is
     flagged, and a label with no entry an anomaly nobody could have caught:
     either way the precision and recall printed would describe a pairing that
-    does not exist. This can show that a file does not match, never that it
+    does not exist. Ids are compared as the values ``evaluate`` joins on, not
+    as their text, so an id read as a number does not pass for the same id
+    read as text. This can show that a file does not match, never that it
     belongs: generated ids are sequential, so two runs of the generator can
     share every id, and a label file carries no digest of its ledger.
     """
     if "entry_id" not in labels.columns:
         raise LabelsMismatchError("the label file has no entry_id column")
-    ids = labels["entry_id"].astype(str)
-    repeated = sorted(set(ids[ids.duplicated()]))
+    ids = labels["entry_id"]
+    blank = int(ids.isna().sum())
+    if blank:
+        raise LabelsMismatchError(
+            "the label file has {} with no entry id".format(_count(blank, "row", "rows")))
+    repeated = sorted(set(ids[ids.duplicated()]), key=repr)
     if repeated:
         # recall_by_archetype counts rows, so a repeated id is counted twice
         raise LabelsMismatchError(
             "the label file lists {} more than once (e.g. {})".format(
-                _count(len(repeated), "entry id", "entry ids"), repeated[0]))
-    labelled, wanted = set(ids), {str(i) for i in all_entry_ids}
-    unlabelled, unknown = sorted(wanted - labelled), sorted(labelled - wanted)
+                _count(len(repeated), "entry id", "entry ids"), _example(repeated[0])))
+    labelled, wanted = set(ids), set(all_entry_ids)
+    # key=repr: ids of two types cannot be ordered against each other
+    unlabelled = sorted(wanted - labelled, key=repr)
+    unknown = sorted(labelled - wanted, key=repr)
     problems = []
     if unlabelled:
         problems.append("{} no label (e.g. {})".format(
-            _count(len(unlabelled), "ledger entry has", "ledger entries have"), unlabelled[0]))
+            _count(len(unlabelled), "ledger entry has", "ledger entries have"),
+            _example(unlabelled[0])))
     if unknown:
         problems.append("{} no ledger entry (e.g. {})".format(
-            _count(len(unknown), "label names", "labels name"), unknown[0]))
+            _count(len(unknown), "label names", "labels name"), _example(unknown[0])))
     if problems:
         raise LabelsMismatchError(
             "the labels do not cover exactly this ledger's entries: " + "; ".join(problems))
@@ -272,5 +293,8 @@ def score_by_archetype(model_scores: pd.Series, labels: pd.DataFrame) -> pd.Data
             "mean_model_score": round(mean_score, 4),
             "vs_normal": round(mean_score - float(baseline), 4),
         })
-    out = pd.DataFrame(rows).sort_values("mean_model_score", ascending=False)
+    # The columns are named so that labels marking no anomaly give an empty table, as
+    # recall_by_archetype does, and not a frame with nothing to sort by.
+    columns = ["anomaly_type", "n", "mean_model_score", "vs_normal"]
+    out = pd.DataFrame(rows, columns=columns).sort_values("mean_model_score", ascending=False)
     return out.reset_index(drop=True)

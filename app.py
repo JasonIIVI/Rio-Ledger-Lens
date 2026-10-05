@@ -44,11 +44,13 @@ def load(ledger_path: str, labels_path: str):
     # sidebar's default file sits beside every ledger in data/, a QuickBooks pull
     # included, and numbers from a pairing that does not exist are worse than none.
     labels, labels_problem = None, None
-    if Path(labels_path).exists():
+    if labels_path.strip() and Path(labels_path).is_file():  # the field is optional: blank is none
         try:
             labels = load_labels(labels_path)
             evaluate.check_labels(labels, df["entry_id"].unique())
-        except (KeyError, ValueError) as exc:  # a missing column, or LabelsMismatchError
+        except KeyError as exc:
+            labels, labels_problem = None, f"missing column {exc}"
+        except (OSError, ValueError) as exc:  # unreadable, not a label file, or a mismatch
             labels, labels_problem = None, str(exc)
     return df, flags, combined, scores, report, labels, ledger_id, labels_problem
 
@@ -97,7 +99,9 @@ except IdentityError as exc:  # a sidecar that names no ledger: never guess whic
     st.error(str(exc))
     st.stop()
 if labels_problem:
-    st.sidebar.warning(f"Labels set aside, detection quality is not shown: {labels_problem}")
+    st.sidebar.warning("Labels set aside; detection quality is not shown.")
+    # As text, never markdown: the reason can quote an id from the ledger or the label file.
+    st.sidebar.text(labels_problem)
 
 # The store is cheap to open and its reads are deliberately never cached: a
 # decision recorded a second ago has to show on the very next rerun. It is

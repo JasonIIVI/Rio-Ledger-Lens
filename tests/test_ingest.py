@@ -87,3 +87,30 @@ def test_load_labels_reads_entry_ids_as_text(tmp_path):
     assert labels["entry_id"].tolist() == ["000123", "000124"]
     assert labels["is_anomaly"].tolist() == [True, False]
     assert labels["anomaly_type"].tolist() == ["round_amount", ""]
+
+
+@pytest.mark.parametrize("cells, expected", [
+    (["True", "False"], [True, False]),
+    (["TRUE", " false "], [True, False]),
+    (["1", "0"], [True, False]),
+])
+def test_load_labels_reads_is_anomaly_as_written(tmp_path, cells, expected):
+    from ledgerlens.ingest import load_labels
+
+    path = tmp_path / "labels.csv"
+    path.write_text("entry_id,is_anomaly,anomaly_type\n" + "".join(
+        f"JE-{i},{cell},\n" for i, cell in enumerate(cells)))
+    assert load_labels(path)["is_anomaly"].tolist() == expected
+
+
+@pytest.mark.parametrize("cells, line", [(["True", "", "False"], 3), (["no", "yes"], 2),
+                                         (["False", "False", "1.5"], 4)])
+def test_load_labels_refuses_a_cell_it_would_have_had_to_guess(tmp_path, cells, line):
+    """astype(bool) made a blank cell and "no" both True: every such row an injected anomaly."""
+    from ledgerlens.ingest import load_labels
+
+    path = tmp_path / "labels.csv"
+    path.write_text("entry_id,is_anomaly,anomaly_type\n" + "".join(
+        f"JE-{i},{cell},\n" for i, cell in enumerate(cells)))
+    with pytest.raises(ValueError, match=f"is_anomaly must be true/false or 1/0.*line {line}"):
+        load_labels(path)

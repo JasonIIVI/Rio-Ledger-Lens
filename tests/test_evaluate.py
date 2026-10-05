@@ -189,10 +189,10 @@ def _labels(ids):
 
 
 @pytest.mark.parametrize("label_ids, message", [
-    (["A", "B"], "1 ledger entry has no label (e.g. C)"),            # a flag on C would be a false positive
-    (["A", "B", "C", "D"], "1 label names no ledger entry (e.g. D)"),  # an anomaly nobody could catch
-    (["A", "B", "B", "C"], "lists 1 entry id more than once (e.g. B)"),  # recall by archetype counts rows
-    (["X", "Y", "Z"], "3 ledger entries have no label (e.g. A); 3 labels name no ledger entry (e.g. X)"),
+    (["A", "B"], "1 ledger entry has no label (e.g. 'C')"),            # a flag on C would be a false positive
+    (["A", "B", "C", "D"], "1 label names no ledger entry (e.g. 'D')"),  # an anomaly nobody could catch
+    (["A", "B", "B", "C"], "lists 1 entry id more than once (e.g. 'B')"),  # recall by archetype counts rows
+    (["X", "Y", "Z"], "3 ledger entries have no label (e.g. 'A'); 3 labels name no ledger entry (e.g. 'X')"),
 ])
 def test_check_labels_refuses_labels_that_do_not_cover_exactly_the_ledger(label_ids, message):
     with pytest.raises(evaluate.LabelsMismatchError) as refused:
@@ -200,7 +200,47 @@ def test_check_labels_refuses_labels_that_do_not_cover_exactly_the_ledger(label_
     assert message in str(refused.value)
 
 
-def test_check_labels_compares_ids_as_text_and_needs_the_column():
-    evaluate.check_labels(_labels([1, 2]), ["1", "2"])  # a csv read without a dtype
+def test_check_labels_compares_the_values_evaluate_joins_on_and_needs_the_column():
+    """An id read as a number never meets the same id read as text in evaluate's join, so a
+    check that compared their text would pass a pairing that then scores as all misses."""
+    with pytest.raises(evaluate.LabelsMismatchError) as refused:
+        evaluate.check_labels(_labels([1, 2]), ["1", "2"])  # a csv read without a dtype
+    assert "(e.g. '1')" in str(refused.value) and "(e.g. 1)" in str(refused.value)
+    evaluate.check_labels(_labels([1, 2]), [2, 1])
     with pytest.raises(evaluate.LabelsMismatchError, match="no entry_id column"):
         evaluate.check_labels(pd.DataFrame({"is_anomaly": [True]}), ["A"])
+
+
+def test_check_labels_names_blank_ids_whatever_else_is_wrong():
+    """pandas 2 reads a blank id as the text '<NA>', pandas 3 keeps it missing: sorting the
+    missing value beside real ids was a TypeError on the newer one only."""
+    for frame in (
+        _labels(["A", None, "B"]),
+        pd.DataFrame({"entry_id": pd.array(["A", pd.NA, "X", "X"], dtype="string"),
+                      "is_anomaly": [False] * 4, "anomaly_type": [""] * 4}),
+    ):
+        with pytest.raises(evaluate.LabelsMismatchError, match="1 row with no entry id"):
+            evaluate.check_labels(frame, ["A", "B"])
+
+
+def test_a_refusal_quotes_ids_so_they_can_be_told_apart_and_cannot_act():
+    with pytest.raises(evaluate.LabelsMismatchError) as refused:
+        evaluate.check_labels(_labels(["A", " B"]), ["A", "B"])  # they would print alike
+    assert "(e.g. 'B')" in str(refused.value) and "(e.g. ' B')" in str(refused.value)
+
+    hostile = "x\x1b]0;title\x07\n::warning::from a ledger cell" + chr(0x202E) + "y" * 200
+    with pytest.raises(evaluate.LabelsMismatchError) as refused:
+        evaluate.check_labels(_labels(["A"]), ["A", hostile])
+    message = str(refused.value)
+    assert message.isascii() and "\x1b" not in message and "\n" not in message
+    assert r"x\x1b]0;title\x07\n::warning::" in message  # escaped, still there to read
+    assert len(message.split("(e.g. ")[1]) <= 61  # cut to a line's worth, and the closing bracket
+
+
+def test_score_by_archetype_of_labels_that_mark_no_anomaly_is_an_empty_table(ledger, labels):
+    from ledgerlens.model import score_ledger
+
+    scores, _ = score_ledger(ledger)
+    table = evaluate.score_by_archetype(scores, labels.assign(is_anomaly=False))
+    assert table.empty
+    assert list(table.columns) == ["anomaly_type", "n", "mean_model_score", "vs_normal"]

@@ -182,13 +182,39 @@ def collect(
 # The renderers are pure over the payload: the same dict always gives the same
 # text, and nothing below reads the ledger, the labels or the clock.
 
-#: Characters that draw nothing or reorder what is drawn: C0/C1 controls, zero-width
-#: characters, bidi embeddings, overrides and isolates, the byte-order mark.
-_UNSEEN = re.compile("[\x00-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]")
+#: Characters a reader cannot see: they draw nothing, reorder what is drawn, or carry text
+#: no eye reads (the tag block maps one-to-one to ASCII). Ranges, not literals, so the list
+#: can be read; a test checks it against the Unicode tables of the Python running it.
+_UNSEEN_RANGES = (
+    (0x0000, 0x001F), (0x007F, 0x009F),      # C0 and C1 controls
+    (0x00AD, 0x00AD),                        # soft hyphen
+    (0x034F, 0x034F),                        # combining grapheme joiner
+    (0x061C, 0x061C),                        # Arabic letter mark (a bidi control)
+    (0x115F, 0x1160), (0x3164, 0x3164), (0xFFA0, 0xFFA0),  # Hangul fillers: letters drawn blank
+    (0x17B4, 0x17B5),                        # Khmer inherent vowels, drawn as nothing
+    (0x180B, 0x180F),                        # Mongolian variation selectors and vowel separator
+    (0x200B, 0x200F),                        # zero-width space and joiners, direction marks
+    (0x202A, 0x202E),                        # bidi embeddings and overrides
+    (0x2060, 0x206F),                        # word joiner, invisible operators, bidi isolates
+    (0xD800, 0xDFFF),                        # surrogates on their own
+    (0xE000, 0xF8FF),                        # private use
+    (0xFE00, 0xFE0F),                        # variation selectors
+    (0xFEFF, 0xFEFF),                        # byte-order mark
+    (0xFFF9, 0xFFFB),                        # interlinear annotation
+    (0x1BCA0, 0x1BCA3), (0x1D173, 0x1D17A),  # shorthand and musical format controls
+    (0xE0000, 0xE0FFF),                      # tags, and the variation selectors supplement
+    (0xF0000, 0x10FFFF),                     # private use planes
+)
+_UNSEEN = re.compile(
+    "[" + "".join(f"{re.escape(chr(a))}-{re.escape(chr(b))}" for a, b in _UNSEEN_RANGES) + "]")
 
 
-def _one_line(value: object) -> str:
-    """``value`` as one line of visible text; None and NaN as nothing."""
+def one_line(value: object) -> str:
+    """``value`` as one line of visible text; None and NaN as nothing.
+
+    What is removed is what ``_UNSEEN_RANGES`` lists. Text a reader *can* see is kept
+    as written, whatever it says: ledger text is data, and hiding it is not the job.
+    """
     if value is None or (isinstance(value, float) and value != value):
         return ""
     return _UNSEEN.sub("", " ".join(str(value).split()))
@@ -205,7 +231,7 @@ def md_code(value: object) -> str:
     body rather than on what is drawn, so a zero-width space after every ``@``
     keeps any ``@name`` in the ledger from appearing in the body at all.
     """
-    text = _one_line(value).replace("@", "@\u200b")
+    text = one_line(value).replace("@", "@\u200b")
     longest = max((len(run) for run in re.findall("`+", text)), default=0)
     fence = "`" * (longest + 1)
 
@@ -292,8 +318,8 @@ def render_text(payload: dict) -> str:
         "",
         *textwrap.wrap(payload["caveat"], 96),
         "",
-        "Ledger      {}".format(_one_line(payload["ledger"]) or "(a frame, not a file)"),
-        "Identity    {}".format(_one_line(payload["ledger_id"])),
+        "Ledger      {}".format(one_line(payload["ledger"]) or "(a frame, not a file)"),
+        "Identity    {}".format(one_line(payload["ledger_id"])),
         "Population  {:,} entries / {:,} lines; fiscal years {}".format(
             payload["entries"], payload["lines"], _years(payload)),
         "",
@@ -304,7 +330,7 @@ def render_text(payload: dict) -> str:
     ]
     for test_id, count in payload["flags_by_test"].items():
         name = jets.REGISTRY[test_id][0] if test_id in jets.REGISTRY else ""
-        out.append(f"  {_one_line(test_id)}  {name:<38}{count:>7,}")
+        out.append(f"  {one_line(test_id)}  {name:<38}{count:>7,}")
     out += ["", "Model tier (scored separately; never blended with the rule tier)"]
     out += wrap.wrap(_model_sentence(model)) + wrap.wrap(_features_sentence(model))
     out += ["", "Tier agreement (counts, not quality)"]
@@ -314,26 +340,27 @@ def render_text(payload: dict) -> str:
         out += ["", "Detection against the labels (rule tier only)"]
         out += wrap.wrap(payload["detection_caveat"])
         out += [f"  {label:<20}{value}" for label, value in _metric_rows(payload["detection"]["metrics"])]
-        out.append("  Recall by archetype")
+        out.append("  Recall by archetype" + (
+            "" if payload["detection"]["by_archetype"] else ": the labels mark no anomaly"))
         for row in payload["detection"]["by_archetype"]:
             caught = "{:,} of {:,}".format(row["caught"], row["n"])
             out.append("    {:<28}{:>12}  {:.3f}  {}".format(
-                _one_line(row["anomaly_type"]), caught, row["recall"],
+                one_line(row["anomaly_type"]), caught, row["recall"],
                 _read_as(row["definitional"])))
 
     top = payload["top_exceptions"]
     out += ["", f"Top {len(top)} by rule score (the model score only breaks ties)"]
-    width = max((len(_one_line(e["entry_id"])) for e in top), default=0)
+    width = max((len(one_line(e["entry_id"])) for e in top), default=0)
     for e in top:
         out.append("  {:<{}}  {}  rule {:>4.1f}  model {:.3f}  {:<10}  {}  ${:,.2f}".format(
-            _one_line(e["entry_id"]), width, _one_line(e["posting_date"]), e["risk_score"],
-            e["model_score"], _one_line(e["agreement"]), _one_line(e["tests_fired"]),
+            one_line(e["entry_id"]), width, one_line(e["posting_date"]), e["risk_score"],
+            e["model_score"], one_line(e["agreement"]), one_line(e["tests_fired"]),
             e["entry_amount"]))
     if not top:
         out.append("  no entry was flagged")
 
     if "review" in payload and payload["review"]["exists"]:
-        out += ["", "Review ({})".format(_one_line(payload["review"]["review_db"]))]
+        out += ["", "Review ({})".format(one_line(payload["review"]["review_db"]))]
         for sentence in _review_sentences(payload["review"]):
             out += wrap.wrap(sentence)
     out += ["", "Notes"]
@@ -398,12 +425,15 @@ def render_markdown(payload: dict) -> str:
             "",
             *_table(("Metric", "Value"), _metric_rows(payload["detection"]["metrics"])),
             "",
-            *_table(("Archetype", "Caught", "Recall", "Read as"), [
+        ]
+        if payload["detection"]["by_archetype"]:
+            out += _table(("Archetype", "Caught", "Recall", "Read as"), [
                 (md_code(row["anomaly_type"]), "{:,} of {:,}".format(row["caught"], row["n"]),
                  "{:.3f}".format(row["recall"]), _read_as(row["definitional"]))
                 for row in payload["detection"]["by_archetype"]
-            ], right=(1, 2)),
-        ]
+            ], right=(1, 2))
+        else:
+            out.append("The labels mark no anomaly, so there is no recall by archetype.")
 
     top = payload["top_exceptions"]
     out += ["", f"### Top {len(top)} by rule score", "",

@@ -44,6 +44,7 @@ from .report import build_workpaper
 from .review import LEGACY_LEDGER_ID, ReviewStore
 from .summary import FORMATS as SUMMARY_FORMATS
 from .summary import collect as collect_summary
+from .summary import one_line
 from .summary import render as render_summary
 
 
@@ -293,8 +294,10 @@ def cmd_summary(args: argparse.Namespace) -> int:
             return 2
     try:
         context = LedgerContext(args.ledger, review_db=args.db).load()
-    except (OSError, ValueError) as exc:  # no such file, not a ledger, a sidecar naming none
-        print(f"error: cannot read the ledger {args.ledger}: {exc}")
+    except (OSError, ValueError) as exc:
+        # No such file, not a ledger, a sidecar naming none, or a population the model
+        # cannot be fitted on. The reason can quote a cell of the file: one line, no controls.
+        print(f"error: cannot summarise the ledger {args.ledger}: {one_line(exc)}")
         return 2
     labels = None
     if args.labels:

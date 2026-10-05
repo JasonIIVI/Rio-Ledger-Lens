@@ -940,6 +940,31 @@ def test_an_unreadable_label_file_is_a_message_not_a_traceback(two_ledgers, tmp_
     columnless.write_text("entry_id,anomaly_type\nJE-2024-000001,\n")
     assert main(["test", ledger, "--labels", str(columnless)]) == 2
     assert "missing column 'is_anomaly'" in capsys.readouterr().out
+    empty = tmp_path / "empty.csv"
+    empty.write_text("")
+    assert main(["test", ledger, "--labels", str(empty)]) == 2
+    assert capsys.readouterr().out.startswith("error: cannot read labels from")
+    guessed = tmp_path / "guessed.csv"
+    guessed.write_text("entry_id,is_anomaly,anomaly_type\nJE-2024-000001,,\n")
+    assert main(["test", ledger, "--labels", str(guessed)]) == 2
+    assert "is_anomaly must be true/false or 1/0" in capsys.readouterr().out
+
+
+def test_labels_that_mark_no_anomaly_are_scored_by_every_command(two_ledgers, tmp_path, capsys):
+    """`score` raised KeyError('mean_model_score') on them while `test` and `summary` ran."""
+    ledger, labels = _pair(two_ledgers)
+    none = tmp_path / "none.csv"
+    none.write_text(re.sub(r"(?m)^([^,\n]+),True,[^\n]*$", r"\1,False,", Path(labels).read_text()))
+    assert "True" not in none.read_text()
+    for command in (["test"], ["score"], ["summary"]):
+        capsys.readouterr()
+        assert main([*command, ledger, "--labels", str(none)]) == 0, command
+    page = capsys.readouterr().out
+    assert "undefined (the labels mark no anomaly)" in page
+    assert "Recall by archetype: the labels mark no anomaly" in page
+    assert main(["summary", ledger, "--labels", str(none), "--format", "markdown"]) == 0
+    markdown = capsys.readouterr().out
+    assert "there is no recall by archetype" in markdown and "| Archetype |" not in markdown
 
 
 # --- summary -----------------------------------------------------------------
@@ -1053,18 +1078,28 @@ def test_summary_rejects_arguments_that_name_nothing(two_ledgers, bad):
     assert stopped.value.code == 2
 
 
+@pytest.mark.filterwarnings("ignore:Could not infer format")
 def test_summary_turns_what_it_cannot_read_into_a_message(two_ledgers, tmp_path, capsys):
     import shutil
 
     ledger, _ = _pair(two_ledgers)
     capsys.readouterr()
     assert main(["summary", str(tmp_path / "missing.csv")]) == 2
-    assert capsys.readouterr().out.startswith("error: cannot read the ledger")
+    assert capsys.readouterr().out.startswith("error: cannot summarise the ledger")
 
     not_a_ledger = tmp_path / "notes.csv"
     not_a_ledger.write_text("a,b\n1,2\n")
     assert main(["summary", str(not_a_ledger)]) == 2
-    assert capsys.readouterr().out.startswith("error: cannot read the ledger")
+    assert capsys.readouterr().out.startswith("error: cannot summarise the ledger")
+
+    # the reason pandas gives quotes the cell it could not read: one line, no control bytes
+    text = Path(ledger).read_text()
+    first_date = re.search(r"\d{4}-\d{2}-\d{2}", text).group(0)
+    (tmp_path / "bad-date.csv").write_text(text.replace(first_date, "\x1b[31mnot-a-date\x07", 1))
+    assert main(["summary", str(tmp_path / "bad-date.csv")]) == 2
+    printed = capsys.readouterr().out
+    assert "not-a-date" in printed and "\x1b" not in printed and "\x07" not in printed
+    assert printed.count("\n") == 1
 
     shutil.copy(ledger, tmp_path / "ledger.csv")
     (tmp_path / "ledger.identity.json").write_text('{"ledger_id": "qbo 123"}')
