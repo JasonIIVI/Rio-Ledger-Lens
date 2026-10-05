@@ -5,6 +5,7 @@
     ledgerlens benford   - run digit analysis, optionally segmented
     ledgerlens score     - run both tiers and compare them
     ledgerlens report    - write the Excel workpaper
+    ledgerlens summary   - one page on a ledger, as text, markdown or JSON
     ledgerlens narrate   - write Claude narratives for the riskiest entries
     ledgerlens eval-narratives - grade the narrative layer against the case set
     ledgerlens adopt-legacy - file review rows from before ledgers were keyed under a ledger
@@ -36,10 +37,14 @@ from .connectors.tokens import (
 from .env import load_dotenv
 from .generate import generate_ledger
 from .ingest import IdentityError, ledger_identity, load_csv, load_labels
+from .ledger_context import LedgerContext
 from .model import combine, score_ledger
 from .narrate import DEFAULT_EFFORT, DEFAULT_MAX_TOKENS, DEFAULT_MODEL, NarrativeError, Narrator
 from .report import build_workpaper
 from .review import LEGACY_LEDGER_ID, ReviewStore
+from .summary import FORMATS as SUMMARY_FORMATS
+from .summary import collect as collect_summary
+from .summary import render as render_summary
 
 
 def _parse_date(text: str) -> date:
@@ -244,6 +249,61 @@ def cmd_report(args: argparse.Namespace) -> int:
     print(f"Workpaper written to {path}")
     print("  {:,} entries in population, {:,} flagged".format(
         len(scored), int((scored["risk_score"] > 0).sum())))
+    return 0
+
+
+def _refuse_summary_out(out: Path) -> str | None:
+    """Why a summary may not be written to ``out``, or None.
+
+    A summary of real books carries descriptions, users and amounts, and CI's rule-1
+    check goes by file name: it would not notice a tracked ``.md`` or ``.json``. So
+    inside a git checkout a summary goes under ``out/``, which git ignores, and
+    nowhere else; outside one, anywhere. Links are followed first, so the answer is
+    about where the bytes would land: an ``out`` that links to ``docs/`` is ``docs/``.
+    What this cannot see: a shell redirect of the printed summary, and a checkout
+    whose own ``.gitignore`` does not ignore ``out/``.
+    """
+    target = out.expanduser().absolute().resolve()
+    root = repository_root(target.parent)  # walks ancestors, existing or not
+    if root is None or (root / "out") in target.parents:
+        return None
+    return (f"{out} is inside the git checkout at {root} but not under its out/ directory, "
+            "which git ignores; a summary is never written where it could be committed")
+
+
+def cmd_summary(args: argparse.Namespace) -> int:
+    """One page on the ledger, for a terminal, a script, or the weekly workflow's Issue."""
+    if args.out:
+        refusal = _refuse_summary_out(Path(args.out))
+        if refusal:
+            print(f"refused: {refusal}")
+            return 2
+    try:
+        context = LedgerContext(args.ledger, review_db=args.db).load()
+    except (OSError, ValueError) as exc:  # no such file, not a ledger, a sidecar naming none
+        print(f"error: cannot read the ledger {args.ledger}: {exc}")
+        return 2
+    labels = None
+    if args.labels:
+        labels, problem = _load_labels(args.labels, context.lines)
+        if problem:
+            print(problem)
+            return 2
+    try:
+        payload = collect_summary(context, labels=labels, top=args.top, ledger=args.ledger)
+    except RuntimeError as exc:  # a review database this version cannot read
+        print(f"error: {exc}")
+        return 2
+    # Nothing but the rendering is printed: `--format json` has to stay one JSON
+    # document, so anything worth saying about the run is a note inside it.
+    text = render_summary(payload, args.format)
+    if not args.out:
+        print(text)
+        return 0
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(text + "\n", encoding="utf-8")
+    print(f"Summary ({args.format}) written to {out}")
     return 0
 
 
@@ -725,6 +785,17 @@ def build_parser() -> argparse.ArgumentParser:
     rp.add_argument("--no-model", action="store_true", help="rule tier only")
     rp.add_argument("--db", help="review database; adds narrative and decision columns")
     rp.set_defaults(func=cmd_report)
+
+    sm = sub.add_parser("summary", help="one page on a ledger, as text, markdown or JSON")
+    sm.add_argument("ledger", help="path to a GL csv")
+    sm.add_argument("--labels", help="ground-truth csv, adds measured quality with its caveat")
+    sm.add_argument("--db", help="review database; adds review progress (counts only)")
+    sm.add_argument("--top", type=_positive_int, default=10, help="exceptions to list")
+    sm.add_argument("--format", choices=SUMMARY_FORMATS, default="text")
+    sm.add_argument("--out", type=_path_arg,
+                    help="write the summary here instead of printing it; inside a git "
+                         "checkout only under out/")
+    sm.set_defaults(func=cmd_summary)
 
     n = sub.add_parser("narrate", help="write Claude narratives for the riskiest entries")
     n.add_argument("ledger", help="path to a GL csv")
