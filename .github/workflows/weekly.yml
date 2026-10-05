@@ -8,14 +8,16 @@
 #     they are partly circular, and the Issue says so above them.
 #   - Synthetic only. No QuickBooks credential is ever given to CI (a refresh
 #     token rotates on each use, so a second holder would lock out the first),
-#     and this file reads no secret at all.
+#     and this file reads no repository secret: its one expression is the
+#     run's own token.
 #   - Quiet. The Issue is opened with the run's own token, and an event made
 #     with that token starts no other workflow. The summary also writes every
 #     string that came from the ledger as inert code, so the body mentions
 #     nobody, whoever is assigned the Issue later.
 #   - Not a promise of "every week". GitHub starts scheduled runs late under
-#     load, and disables the schedule of a public repository after 60 days
-#     without activity; running this by hand (workflow_dispatch) restores it.
+#     load, and disables a scheduled workflow in a public repository after 60
+#     days without repository activity; it is then enabled again from the
+#     Actions tab (or `gh workflow enable weekly.yml`).
 name: Weekly synthetic run
 
 on:

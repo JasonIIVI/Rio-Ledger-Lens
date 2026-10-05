@@ -1,16 +1,20 @@
 """The workflow files, checked without a YAML parser (none is a dependency).
 
-A workflow is only exercised once it is on ``main``, and the weekly one only
-on its schedule, so a mistake in it surfaces days after the change that made
-it. What can be pinned before then is pinned here: what the weekly run is
-allowed to do, that nothing but its own token is interpolated into a script,
-that it mentions nobody, and that every ``ledgerlens ...`` line in any
-workflow still parses with the CLI as it is today, so a renamed flag fails in
-this suite rather than on a Monday.
+``weekly.yml`` and ``claude.yml`` run only from ``main`` (the weekly one on
+its schedule or by hand), so a mistake in them surfaces after the change that
+made it has merged. What can be pinned before then is pinned here: what the
+weekly run is allowed to do, that nothing but its own token is interpolated
+into a script, that it mentions nobody, that every ``ledgerlens ...`` line in
+any workflow still parses with the CLI as it is today (a renamed flag fails in
+this suite rather than on a Monday), and what the step that opens the Issue
+does, by running its script against a stand-in for ``gh``.
 """
 
+import os
 import re
 import shlex
+import shutil
+import subprocess
 from datetime import date
 from pathlib import Path
 
@@ -60,6 +64,7 @@ def commands(text):
             continue
         lexer = shlex.shlex(_YAML_PREFIX.sub("", line), posix=True, punctuation_chars=True)
         lexer.whitespace_split = True
+        lexer.commenters = ""  # whole-line comments are gone already; a "#" inside a word is a "#"
         try:
             tokens = list(lexer)
         except ValueError:  # not shell (an unpaired quote); the count check below notices a miss
@@ -72,8 +77,13 @@ def commands(text):
             while words and re.fullmatch(r"\w+=.*", words[0]):  # VAR=value before the command
                 words.pop(0)
             if words[:1] == ["ledgerlens"]:
-                redirect = [i for i, word in enumerate(words) if set(word) <= set("<>")]
-                found.append(words[1:redirect[0]] if redirect else words[1:])
+                argv, skip = [], False
+                for word in words[1:]:  # a redirect and its target go; what follows them stays
+                    if skip or set(word) <= set("<>"):
+                        skip = not skip
+                    else:
+                        argv.append(word)
+                found.append(argv)
             words = []
     return found
 
@@ -120,6 +130,8 @@ def test_the_extractor_reads_scripts_the_way_a_shell_would():
         '          n=$(ledgerlens summary "data/my ledger.csv" --format json | jq .entries)',
         "          TZ=UTC ledgerlens benford data/ledger.csv || true",
         "          echo \"the run's log names ledgerlens\"",
+        "          ledgerlens score data/ledger.csv --out out/run#1.csv --top 3",
+        "          ledgerlens test data/ledger.csv > out/test.log --top 5",
     ])
     assert commands(text) == [
         ["test", "data/ledger.csv", "--labels", "data/labels.csv"],
@@ -127,6 +139,10 @@ def test_the_extractor_reads_scripts_the_way_a_shell_would():
         ["score", "data/ledger.csv"],
         ["summary", "data/my ledger.csv", "--format", "json"],
         ["benford", "data/ledger.csv"],
+        # a shell reads both of these to the end of the line; a flag hidden after a "#"
+        # inside a word, or after a redirect's target, is parsed like any other
+        ["score", "data/ledger.csv", "--out", "out/run#1.csv", "--top", "3"],
+        ["test", "data/ledger.csv", "--top", "5"],
     ]
 
 
@@ -239,3 +255,96 @@ def test_ci_prints_the_caveat_with_the_figures_its_gate_logs():
     the caveat themselves (tests/test_cli.py); the gate's own script has to as well."""
     ci = read("ci.yml")
     assert ci.index("print(evaluate.DETECTION_CAVEAT)") < ci.index("print(evaluate.format_report(m))")
+
+
+# --- the step that opens the Issue, run for real against a stand-in gh --------
+
+GH_STUB = r"""#!/bin/bash
+# Stands in for gh: records each call, answers the three the step reads from.
+printf '%s\n' "$*" >> "$GH_LOG"
+case "$1 $2" in
+  "label create") [ -z "${GH_FAIL_LABEL:-}" ] || exit 1 ;;
+  "issue list") for number in $GH_PREVIOUS; do echo "$number"; done ;;
+  "issue create")
+    [ -z "${GH_FAIL_CREATE:-}" ] || exit 1
+    while [ $# -gt 1 ]; do [ "$1" != "--body-file" ] || cp "$2" "$GH_POSTED"; shift; done
+    echo "https://github.com/example/repo/issues/13" ;;
+esac
+"""
+
+
+def issue_step(weekly):
+    """The script of the "Open the Issue" step, as bash would be handed it."""
+    block = weekly.split("      - name: Open the Issue\n", 1)[1].split("        run: |\n", 1)[1]
+    lines = []
+    for line in block.splitlines():
+        if line.strip() and not line.startswith(" " * 10):
+            break
+        lines.append(line[10:])
+    return "\n".join(lines) + "\n"
+
+
+def run_issue_step(weekly, tmp_path, previous="11 12", fail_create=False, fail_label=False):
+    if not (shutil.which("bash") and shutil.which("jq")):
+        pytest.skip("needs bash and jq, as the runner has")
+    stub = tmp_path / "bin"
+    stub.mkdir()
+    (stub / "gh").write_text(GH_STUB)
+    (stub / "gh").chmod(0o755)
+    (tmp_path / "out").mkdir()
+    (tmp_path / "out" / "summary.md").write_text("THE SUMMARY\n\nits last line\n")
+    (tmp_path / "out" / "summary.json").write_text('{"run_date": "2001-02-03", "flagged": 3, "entries": 7}')
+    env = {
+        "PATH": f"{stub}{os.pathsep}{os.environ['PATH']}",  # the stand-in is found first: no network
+        "GH_TOKEN": "not-a-token", "GH_LOG": str(tmp_path / "gh.log"),
+        "GH_POSTED": str(tmp_path / "posted.md"), "GH_PREVIOUS": previous,
+        "GITHUB_REPOSITORY": "example/repo", "GITHUB_SERVER_URL": "https://github.com",
+        "GITHUB_RUN_ID": "4242", "GITHUB_SHA": "0123abc",
+    }
+    if fail_create:
+        env["GH_FAIL_CREATE"] = "1"
+    if fail_label:
+        env["GH_FAIL_LABEL"] = "1"
+    run = subprocess.run(["bash", "-c", issue_step(weekly)], cwd=tmp_path, env=env,
+                         capture_output=True, text=True)
+    log = (tmp_path / "gh.log").read_text().splitlines() if (tmp_path / "gh.log").exists() else []
+    return run, log
+
+
+def test_the_issue_step_posts_the_summary_then_closes_only_the_older_issues(weekly, tmp_path):
+    run, log = run_issue_step(weekly, tmp_path)
+    assert run.returncode == 0, run.stderr
+    new = "https://github.com/example/repo/issues/13"
+    closing = f"--comment Superseded by {new}. Closing is not a review of these numbers."
+    assert log == [
+        'label create weekly-run --description Opened by the weekly synthetic run --color 0E8A16 --force',
+        "issue list --label weekly-run --state open --limit 100 --json number --jq .[].number",
+        "issue create --title Weekly synthetic run 2001-02-03: 3 of 7 entries flagged by the rule tier "
+        "--label weekly-run --body-file out/summary.md",
+        f"issue close 11 {closing}",
+        f"issue close 12 {closing}",
+    ]
+    posted = (tmp_path / "posted.md").read_text()
+    # the summary itself, with the run's own line added after it (never in place of it)
+    assert posted.startswith("THE SUMMARY\n\nits last line\n")
+    assert posted.endswith("\nRun: https://github.com/example/repo/actions/runs/4242 at commit 0123abc\n")
+    assert f"Opened {new}" in run.stdout and "@" not in "".join(log) + posted
+
+
+def test_the_issue_step_with_no_older_issue_closes_nothing(weekly, tmp_path):
+    run, log = run_issue_step(weekly, tmp_path, previous="")
+    assert run.returncode == 0, run.stderr  # `set -u` and an empty list
+    assert [line.split()[:2] for line in log] == [["label", "create"], ["issue", "list"], ["issue", "create"]]
+
+
+def test_the_issue_step_closes_nothing_when_the_new_issue_could_not_be_opened(weekly, tmp_path):
+    run, log = run_issue_step(weekly, tmp_path, fail_create=True)
+    assert run.returncode != 0
+    assert not any(line.startswith("issue close") for line in log)  # the last run's Issue stays open
+
+
+def test_the_issue_step_stops_at_the_first_call_that_fails(weekly, tmp_path):
+    """A label that cannot be made is a token or permission problem: said there, not three calls on."""
+    run, log = run_issue_step(weekly, tmp_path, fail_label=True)
+    assert run.returncode != 0
+    assert [line.split()[:2] for line in log] == [["label", "create"]]

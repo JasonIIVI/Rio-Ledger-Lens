@@ -28,26 +28,30 @@ ledger CSV ──▶ ingest ──┼──▶ Benford analysis ─────�
                                                                   └───▶ MCP server (read-only) ───▶ Claude Desktop
 ```
 
-The same flow, with the two ways a run is reported:
+The same flow, drawn more exactly, with the two ways a run is reported:
 
 ```mermaid
 flowchart LR
     csv[Ledger CSV] --> ingest[Ingest and validate]
     qbo[QuickBooks Online sandbox] -->|pull-qbo| ingest
     ingest --> jets[12 journal-entry tests]
-    ingest --> benford[Benford analysis]
     ingest --> forest[Isolation Forest]
-    jets --> queue[Exception queue]
-    benford --> queue
-    forest --> queue
+    ingest --> benford[Benford analysis]
+    jets --> scored[Scored entries: rule score and model score, kept apart]
+    forest --> scored
+    scored --> queue[Exception queue in the dashboard]
     queue --> note[Claude note, advisory]
     note --> reviewer[Named reviewer, append-only decisions]
     reviewer --> workpaper[Excel workpaper]
-    queue --> mcp[MCP server, read-only]
+    scored --> mcp[MCP server, read-only]
     mcp --> desktop[Claude Desktop]
-    queue --> summary[summary: text, markdown, JSON]
+    scored --> summary[summary: text, markdown, JSON]
     summary --> issue[Weekly Issue]
+    benford --> beside[Its own dashboard tab, workpaper sheet and MCP tool]
 ```
+
+Benford analysis is reported beside the queue, not into it: no digit statistic changes an
+entry's score.
 
 The two detection tiers are scored **separately and never blended**. They answer different
 questions, and where they disagree is the most informative output the tool produces.
@@ -74,14 +78,16 @@ pip install -e ".[llm]" && ledgerlens narrate data/ledger.csv # Claude-written r
 ledgerlens eval-narratives data/ledger.csv                    # grade them (docs/narrative-eval.md)
 ```
 
-The review loop on the synthetic ledger, in thirty seconds: name the reviewer, open the
+The review loop on the synthetic ledger, in under half a minute: name the reviewer, open the
 riskiest entry, read why it was flagged and the note Claude wrote, record a decision, and see
 it in the append-only history.
 
-![The dashboard: a reviewer opens a flagged entry, reads the note, and records a decision](docs/demo.gif)
+![The dashboard: a flagged entry is opened, its note read, and a decision recorded](docs/demo.gif)
 
-The notes on screen were written by the real API on 2026-09-23; the recording itself made no
-API call and ran against a copy of the review database.
+The clicks were scripted (the dashboard was driven through a browser extension, and the
+reviewer is called `demo.reviewer`). The notes on screen were written by the real API on
+2026-09-23; the recording itself made no API call and ran against a copy of the review
+database.
 
 ## The tests
 
@@ -216,7 +222,7 @@ kind of flag a reviewer dismisses in seconds, and the reason `precision_by_test`
 
 ## The narrative layer and the human loop
 
-Week 3 adds the part 2026 audit recruiters actually screen for: reading and questioning
+Week 3 added the part 2026 audit recruiters actually screen for: reading and questioning
 AI-flagged exceptions. Claude writes the note a reviewer would otherwise write before opening
 an entry, and a named reviewer records what they decided.
 
@@ -405,23 +411,31 @@ It scores nothing itself, and three rules shape what it prints:
   only", after the circularity caveat, with each archetype shown as caught-of-n and marked
   *measured* or *definitional*. A ratio over nothing reads "undefined", not 0.000. The two
   tiers get separate sections and are never added together; the model's count is called what
-  it is, a budget (the top 2% by rank).
+  it is, a budget (the top 2% by rank, ties included). The JSON carries the same caveats as
+  fields, the detection caveat ahead of the figures, and says which ratios are defined, since
+  it keeps `evaluate`'s own numbers and those give a ratio over nothing as 0.0.
 - **Ledger text is data.** The markdown is written to be posted in public, on a repository
   where a workflow answers mentions. Every string that came from the ledger is rendered as
-  inert code: one line, invisible and direction-changing characters removed, a pipe unable to
-  break a table, and no `@name` left in the raw text. No format carries a note's text, a
-  reviewer's name or another ledger's identity; review is reported as counts.
-- **A summary is written only where git cannot pick it up.** Inside a checkout, `--out` must
-  land under `out/` (links followed). A summary of real books holds descriptions, users and
-  amounts, and a file-name check would not notice a tracked `.md`.
+  inert code: one line, the characters a reader cannot see removed (controls, zero-width and
+  direction marks, tag characters; the list is `summary._UNSEEN_RANGES`), a pipe unable to
+  break a table, and no `@name` left in the raw text. What a reader can see stays as written:
+  a description that says something misleading still says it, inside a code span. No format
+  carries a note's text, a reviewer's name or another ledger's identity; review is reported
+  as counts, and in the JSON as the kind of the latest decision on each listed entry.
+- **`--out` will not write into a checkout outside `out/`** (symlinks followed, and `~`
+  expanded once, so the path judged is the path written). A summary of real books holds
+  descriptions, users, amounts and, for a pull, the realm id, and a file-name check would not
+  notice a tracked `.md`. The guard cannot stop a shell redirect of the printed page, and it
+  takes `out/` to be ignored, as it is here.
 
 **The weekly run.** `.github/workflows/weekly.yml` regenerates the default ledger on Mondays,
 runs both tiers, and opens an Issue labelled `weekly-run` holding that page, closing the
 previous one. The generator is seeded, so the Issue is a regression watch: its numbers move
 only when the code or one of its dependencies changes, and the same caveats sit above them.
-It is not new evidence about detection. The run may write Issues and nothing else, reads no
-secret, and never sees a QuickBooks credential. GitHub pauses the schedule of a public
-repository after 60 days without activity; running the workflow by hand restores it.
+It is not new evidence about detection. The run's token may write Issues and nothing else; it
+reads no repository secret and never sees a QuickBooks credential. GitHub disables a scheduled
+workflow in a public repository after 60 days without repository activity, and it then has to
+be enabled again from the Actions tab (or with `gh workflow enable weekly.yml`).
 
 ## Ask the ledger from Claude Desktop
 
@@ -544,11 +558,12 @@ responses shaped like the real ones. No test touches the network: QuickBooks res
 replayed from `tests/fixtures/qbo/`, and the sign-in test follows a real redirect to a
 loopback server.
 
-A workflow is only exercised once it is on `main`, and the weekly one only on its schedule,
-so `tests/test_workflows.py` pins what it can beforehand: the weekly run's permissions and
-triggers, that nothing but the run's own token is interpolated into a script, and that every
-`ledgerlens ...` line in every workflow still parses with the CLI as it is. A renamed flag
-fails in the suite, not on a Monday.
+The weekly workflow and `claude.yml` run only from `main` (the weekly one on its schedule or
+by hand), so a mistake in them shows up after the merge. `tests/test_workflows.py` pins what
+it can beforehand: the weekly run's permissions and triggers, that nothing but the run's own
+token is interpolated into a script, that every `ledgerlens ...` line in every workflow still
+parses with the CLI as it is, and what the step that opens the Issue does, by running it
+against a stand-in for `gh`. A renamed flag fails in the suite, not on a Monday.
 
 `.env` holds configuration only: the API key and the `QBO_*` client settings. QuickBooks
 tokens are kept by `connectors/tokens.py` under `~/.config/ledgerlens/` (under
