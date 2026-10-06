@@ -1173,13 +1173,20 @@ def test_what_the_readme_says_the_tests_make_of_the_recorded_quarter(qbo_env, ca
     assert inspect.signature(jets.jet_dormant_account).parameters["dormant_days"].default == 120
 
     # and the sentences themselves, as the README prints them
-    readme = " ".join((Path(__file__).resolve().parents[1] / "README.md").read_text().split())
+    from ledgerlens.connectors.qbo import SMALL_LEDGER
+
+    readme = " ".join((Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8").split())
     multi = int((per_entry.size() > 2).sum())
+    words = ("zero", "one", "two", "three", "four", "five")
     for said in (
+        f"({payload['entries']} entries in the recorded quarter)",
+        f"pull warns below {SMALL_LEDGER} entries",
         f"{payload['flagged']} of the {payload['entries']} entries are flagged, {fired['JET-08']} of them by JET-08",
-        "All three journal entries fire JET-12",
+        f"All {words[fired['JET-12']]} journal entries fire JET-12",
+        f"the synthetic company's {words[len(jets.MANUAL_JE_APPROVERS)]} users",
         "JET-09 looks for an account quiet for more than 120 days",
-        f"its 2% budget of {payload['entries']}, not a detection",
+        f"The model tier's {words[payload['model_tier']['flagged']]} flagged entries are its 2% budget of "
+        f"{payload['entries']}, not a detection",
         f"more than two lines ({multi} of the {payload['entries']})",
         "an account pairing seen three times or fewer",
         "the generator's $10,000 approval limit",

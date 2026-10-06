@@ -6,15 +6,22 @@ It checks that the figures are the measured ones. It cannot check that they mean
 reader takes them to mean: that is what the caveat beside each of them is for.
 """
 
+import inspect
 import re
 from pathlib import Path
 
 import pytest
 
 from ledgerlens import evaluate, jets
+from ledgerlens.features import FEATURE_COLUMNS
 from ledgerlens.model import combine, score_ledger
+from ledgerlens.schema import AnomalyType
 
 README = " ".join((Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8").split())
+
+#: The README writes small counts as words; a pinned figure has to be looked for as one.
+WORDS = ("zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+         "eleven", "twelve")
 
 
 @pytest.fixture(scope="module")
@@ -88,3 +95,29 @@ def test_the_archetype_table_and_the_benford_example_are_what_the_default_ledger
     assert f"JET-12 produces {false_flags} of the {m['false_positives']} false positives" in README
     assert m["false_positives"] - false_flags == 1  # "exactly **one** false positive" without it
     assert f"exactly **one** false positive across {m['population']:,} entries" in README
+
+
+def test_the_prose_repeats_the_tables_figures_and_computes_its_counts(measured, ledger):
+    """The bullets and paragraphs restate the tables' figures in words; each is looked for as
+    the measured value spells it, and "nine of the eleven" comes from the archetype lists."""
+    m = measured["metrics"]
+    drift, pair = measured["recall"].loc["benford_drift"], measured["recall"].loc["rare_account_pair"]
+    jet12 = measured["by_test"].loc["JET-12"]
+    false_flags = int(jet12["flags"] - jet12["true_positives"])
+    rate = m["true_anomalies"] / m["population"]
+    assert f"({m['population']:,} entries, {m['true_anomalies']} injected anomalies at {rate:.1%}):" in README
+    assert f"**Benford drift: {drift.recall:.2f} recall.**" in README
+    assert f"{WORDS[int(drift.missed)].capitalize()} of {WORDS[int(drift.n)]} slipped through." in README
+    assert f"**Rare account pairs: {pair.recall:.2f} recall.**" in README
+    assert f"**JET-12 produces {false_flags} of the {m['false_positives']} false positives.**" in README
+    assert m["false_positives"] - false_flags == 1
+    assert f"exactly **one** false positive across {m['population']:,} entries" in README
+    circular = len(AnomalyType.ALL) - len(evaluate.NON_CIRCULAR_ARCHETYPES)
+    assert f"For {WORDS[circular]} of the {WORDS[len(AnomalyType.ALL)]} anomaly archetypes" in README
+    assert f"{WORDS[circular]} of the {WORDS[len(AnomalyType.ALL)]} archetypes are injected by the definition" in README
+    assert f"over {len(FEATURE_COLUMNS)} engineered per-entry features" in README
+    _, report = score_ledger(ledger)
+    names = ", ".join(f"`{column}`" for column in report.dropped_constant)
+    assert f"{WORDS[len(report.dropped_constant)].capitalize()} features ({names}) are constant" in README
+    budget = inspect.signature(combine).parameters["model_top_pct"].default
+    assert f"a budget (the top {budget:.0%} by rank, ties included)" in README

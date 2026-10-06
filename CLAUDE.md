@@ -140,7 +140,7 @@ and the MCP SDK, so the two together cover every code path CI will see.
   `MODEL_TIER_CAVEAT` are the one wording of the two caveats, printed by everything that
   prints the numbers they qualify. `LedgerContext.summary()` lists every test and every tier
   relation, zeros included, and keeps any key outside the two lists. `.github/workflows/weekly.yml` (Mondays 13:23 UTC, or
-  by hand; `contents: read` and `issues: write`; no secret; `github.token` the only
+  by hand; `contents: read` and `issues: write`; no repository secret; `github.token` the only
   expression; credentials not persisted) opens an Issue labelled `weekly-run` from the
   markdown and then closes the previous one. The generator is seeded, so the Issue is a
   regression watch for the code and its dependencies, not new data.
@@ -183,9 +183,10 @@ key needs `ANTHROPIC_WORKSPACE_ID` as well; a workspace-scoped key does not.
 
 ```
                         ┌──▶ 12 journal-entry tests ──┐
-ledger CSV ──▶ ingest ──┼──▶ Benford analysis ────────┼──▶ exception queue ──▶ Claude note ──▶ reviewer ──▶ Excel workpaper
-  or QuickBooks         └──▶ Isolation Forest ────────┘     (Streamlit)      (advisory JSON)  (append-only)
-                                                                  └───▶ MCP server (read-only) ───▶ Claude Desktop
+ledger CSV ──▶ ingest ──┼──▶ Isolation Forest ────────┴──▶ exception queue ──▶ Claude note ──▶ reviewer ──▶ Excel workpaper
+  or QuickBooks         │                                   (Streamlit)      (advisory JSON)  (append-only)
+                        │                                         └───▶ MCP server (read-only) ───▶ Claude Desktop
+                        └──▶ Benford analysis ──▶ reported beside the queue (its own dashboard tab, workpaper sheet, MCP tool)
 ```
 
 | Module | Role |
@@ -316,8 +317,10 @@ unhelpful. Say so wherever the number is quoted.
   `ledgerlens` command added to a workflow is added to that file's `COMMANDS` table.
 - Text that came from a ledger is data. Where it leaves the machine it is made inert: the
   summary's markdown through `summary.md_code`, a prompt through the data-not-instructions
-  rule, a refusal through `repr` of the id it quotes. The dashboard is a local page and
-  still renders flag reasons and notes as markdown. `summary.py` and its tests stay ASCII
+  rule, a refusal through `ascii` of the id it quotes, the workpaper's string cells written
+  as text (openpyxl would store one beginning with `=` as a formula), the CLI's own lines
+  through `summary.one_line`, and the dashboard's flag reasons and notes with their markdown
+  escaped (`app.md`); its tables are drawn as text. `summary.py` and its tests stay ASCII
   (pinned by a test), because their patterns name characters that could not be reviewed if
   written raw.
 - A caveat has one wording (`evaluate.DETECTION_CAVEAT`, `evaluate.MODEL_TIER_CAVEAT`) and is

@@ -23,9 +23,10 @@ the generator exists: without ground truth, "it flagged some things" is not a re
 
 ```
                         ┌──▶ 12 journal-entry tests ──┐
-ledger CSV ──▶ ingest ──┼──▶ Benford analysis ────────┼──▶ exception queue ──▶ Claude note ──▶ reviewer ──▶ Excel workpaper
-  or QuickBooks         └──▶ Isolation Forest ────────┘     (Streamlit)      (advisory JSON)  (append-only)
-                                                                  └───▶ MCP server (read-only) ───▶ Claude Desktop
+ledger CSV ──▶ ingest ──┼──▶ Isolation Forest ────────┴──▶ exception queue ──▶ Claude note ──▶ reviewer ──▶ Excel workpaper
+  or QuickBooks         │                                   (Streamlit)      (advisory JSON)  (append-only)
+                        │                                         └───▶ MCP server (read-only) ───▶ Claude Desktop
+                        └──▶ Benford analysis ──▶ reported beside the queue (its own dashboard tab, workpaper sheet, MCP tool)
 ```
 
 The same flow, drawn more exactly, with the two ways a run is reported:
@@ -41,8 +42,10 @@ flowchart LR
     forest --> scored
     scored --> queue[Exception queue in the dashboard]
     queue --> note[Claude note, advisory]
+    scored -->|narrate| note
     note --> reviewer[Named reviewer, append-only decisions]
     reviewer --> workpaper[Excel workpaper]
+    scored -->|report| workpaper
     scored --> mcp[MCP server, read-only]
     mcp --> desktop[Claude Desktop]
     scored --> summary[summary: text, markdown, JSON]
@@ -50,8 +53,9 @@ flowchart LR
     benford --> beside[Its own dashboard tab, workpaper sheet and MCP tool]
 ```
 
-Benford analysis is reported beside the queue, not into it: no digit statistic changes an
-entry's score.
+Benford analysis is reported beside the queue, not into it: no Benford statistic changes an
+entry's score. (The model tier has a digit-entropy feature of its own, computed per amount;
+it is not the first-digit test.)
 
 The two detection tiers are scored **separately and never blended**. They answer different
 questions, and where they disagree is the most informative output the tool produces.
@@ -418,8 +422,10 @@ It scores nothing itself, and three rules shape what it prints:
   where a workflow answers mentions. Every string that came from the ledger is rendered as
   inert code: one line, the characters a reader cannot see removed (controls, zero-width and
   direction marks, tag characters; the list is `summary._UNSEEN_RANGES`), a pipe unable to
-  break a table, and no `@name` left in the raw text. What a reader can see stays as written:
-  a description that says something misleading still says it, inside a code span. No format
+  break a table, and no `@name` left in the raw text. What a reader can see stays: a
+  description that says something misleading still says it, inside a code span (a few
+  sequences that lean on a removed character, an emoji built with a joiner or a variation
+  form, are drawn differently without it; keeping them would keep the channel). No format
   carries a note's text, a reviewer's name or another ledger's identity; review is reported
   as counts, and in the JSON as the kind of the latest decision on each listed entry.
 - **`--out` will not write into a checkout outside `out/`** (symlinks followed, and `~`
