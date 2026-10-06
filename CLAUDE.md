@@ -162,11 +162,30 @@ and the MCP SDK, so the two together cover every code path CI will see.
   statements about "every format" were false for JSON; the Issue step's shell had no test
   that ran it (it now runs against a stand-in `gh`); the Mermaid diagram drew Benford into
   the queue; the README said running the weekly workflow by hand re-enables it (it is
-  enabled from the Actions tab); and the first GIF carried the recorder's own labels.
+  enabled from the Actions tab); and the first GIF carried the recorder's own labels. A
+  verification pass over those four commits (four verifiers, one per commit, and a critic
+  over the 33 findings) found 44 more, four of them medium: the Issue-step tests' stand-in
+  `gh` logged `"$*"`, so an unquoted `--title $title` passed; the workpaper stored a cell
+  beginning with `=` as a live formula; the dashboard still drew a flag's reason as markdown
+  (an image fetched on load from a `created_by`); and `detection.defined` was pinned by no
+  test with nothing flagged. All 44 fixed in eight commits (`--out ./~/x` kept literal; the
+  eval guard judging the path it writes, from any directory; every ledger load one `error:`
+  line; `ascii` for quoted ids; data rows not file lines; a clear message when the model
+  cannot be fitted; the dashboard's reasons and notes escaped and its cache keyed on what
+  the files are; the unseen list completed and the whitespace a removal leaves collapsed;
+  the workpaper's cells as text; a shell-faithful extractor and a stand-in that records
+  argv; the CI gate run rather than grepped; both ASCII diagrams redrawn; the README's
+  prose figures pinned), each with a test that failed first or a mutant it kills. A
+  verification of those eight (four verifiers, a critic) found 29 more, none medium, also
+  fixed: the ascii cut by escaped length, the model-fit message on every surface, the
+  sidecar in the dashboard's cache key, reasons drawn as code spans (escaped prose still
+  gets a bare URL linked and `->` redrawn: checked in a browser), table cells through
+  one_line, identifiers unwrapped in the workpaper, the extractor's target rule, the
+  stand-in's NUL-separated record, and tests that could not fail.
 - **Next** — week 5 breaks the circularity in the detection numbers (archetypes no rule
   describes, both tiers re-measured), and an approver list and approval limit that can be set
   for JET-12 and JET-06.
-- 596 tests on 3.9 / 606 on 3.12 (the ten MCP tests need 3.10+), ruff clean.
+- 635 tests on 3.9 / 645 on 3.12 (the ten MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
@@ -319,8 +338,10 @@ unhelpful. Say so wherever the number is quoted.
   summary's markdown through `summary.md_code`, a prompt through the data-not-instructions
   rule, a refusal through `ascii` of the id it quotes, the workpaper's string cells written
   as text (openpyxl would store one beginning with `=` as a formula), the CLI's own lines
-  through `summary.one_line`, and the dashboard's flag reasons and notes with their markdown
-  escaped (`app.md`); its tables are drawn as text. `summary.py` and its tests stay ASCII
+  through `summary.one_line`, and in the dashboard a flag's reason as a code span
+  (`summary.md_code`) and the note's prose with its markdown escaped (`app.md`: no construct
+  forms, though Streamlit still links a bare URL and redraws `->`); its tables are drawn as
+  text. `summary.py` and its tests stay ASCII
   (pinned by a test), because their patterns name characters that could not be reviewed if
   written raw.
 - A caveat has one wording (`evaluate.DETECTION_CAVEAT`, `evaluate.MODEL_TIER_CAVEAT`) and is
