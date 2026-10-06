@@ -5,7 +5,9 @@ Streamlit; it is to catch the class of breakage week 2 hit, where a deprecated
 argument silently collapsed every table, and to prove the review loop is wired.
 """
 
+import os
 import re
+import shutil
 import sqlite3
 from pathlib import Path
 
@@ -348,7 +350,22 @@ def test_every_measured_number_sits_beside_its_caveat(data_dir, tmp_path):
     at = _run(data_dir, tmp_path / "review.sqlite")
     assert "Precision" in [m.label for m in at.metric]
     assert any(w.value == evaluate.DETECTION_CAVEAT for w in at.warning)
-    assert any(c.value == evaluate.MODEL_TIER_CAVEAT for c in at.caption)
+    # the tier tab's segment table is the rule tier's figures too: its caveat leads there
+    captions = [c.value for c in at.caption]
+    assert captions.index(evaluate.DETECTION_CAVEAT) < captions.index(evaluate.MODEL_TIER_CAVEAT)
+
+
+def test_a_ratio_over_nothing_reads_undefined_on_the_quality_tab(data_dir, tmp_path):
+    """Labels that mark no anomaly gave Recall 0.000 and F1 0.000: figures that are not figures."""
+    folder = tmp_path / "ledger"
+    folder.mkdir()
+    shutil.copy(data_dir / "ledger.csv", folder / "ledger.csv")
+    (folder / "labels.csv").write_text(re.sub(
+        r"(?m)^([^,\n]+),True,[^\n]*$", r"\1,False,", (data_dir / "labels.csv").read_text()))
+    at = _run(folder, tmp_path / "review.sqlite")
+    shown = {m.label: m.value for m in at.metric}
+    assert re.fullmatch(r"0\.\d{3}", shown["Precision"])  # something was flagged: a figure
+    assert (shown["Recall"], shown["F1"]) == ("undefined", "undefined")
 
 
 def test_labels_written_for_another_ledger_are_set_aside_not_scored(data_dir, tmp_path):
@@ -395,6 +412,100 @@ def test_a_label_file_that_cannot_be_used_is_set_aside_with_its_reason(
     assert any("Labels set aside" in w.value for w in at.warning)
     assert any(said in t.value for t in at.text)
     assert "Precision" not in [m.label for m in at.metric]
+
+
+def test_flag_reasons_render_ledger_text_as_text_never_as_markdown(data_dir, tmp_path):
+    """Reasons quote who keyed an entry, an account's name, another entry's id, and whoever wrote
+    the ledger chose them. As markdown, a created_by was an image the browser fetched when the
+    entry was shown and a link under any words they liked; the note beside it is built from the
+    same cells. Escaped, the text is drawn as written and does nothing."""
+    import pandas as pd
+
+    from ledgerlens import jets
+    from ledgerlens.ingest import load_csv
+
+    client = tmp_path / "client"
+    client.mkdir()
+    hostile = "![](http://127.0.0.1:9/beacon.png)[Review complete](http://127.0.0.1:9/login) # not a heading"
+    raw = pd.read_csv(data_dir / "ledger.csv", dtype=str, keep_default_na=False)
+    raw["created_by"] = hostile
+    raw.to_csv(client / "ledger.csv", index=False)
+    (client / "labels.csv").write_text((data_dir / "labels.csv").read_text())
+    flags = jets.run_all(load_csv(client / "ledger.csv"))
+    picked = flags[flags["reason"].str.contains("beacon.png", regex=False)]["entry_id"].iloc[0]
+    db = tmp_path / "review.sqlite"
+    ReviewStore(db, _identity(client)).save_narrative(picked, {
+        "summary": f"Keyed by {hostile}.", "why_flagged": "w", "evidence_to_request": ["e"],
+        "suggested_control": "c", "confidence": "low"}, model="m")
+    at = _run(client, db)
+    at.selectbox(key="picked").select(picked).run()
+    assert not at.exception, at.exception
+    shown = [m.value for m in at.markdown if "beacon" in m.value]  # the dot is escaped too
+    assert len(shown) >= 2  # a reason and the note's summary
+    for value in shown:
+        assert "![](" not in value and "](http" not in value  # no image, no link
+        assert r"\!\[\]\(http" in value and r"\[Review complete\]\(http" in value
+        assert r"\# not a heading" in value  # drawn as a "#", not read as one
+
+
+def _identity(folder):
+    from ledgerlens.ingest import ledger_identity, load_csv
+
+    return ledger_identity(load_csv(folder / "ledger.csv"), folder / "ledger.csv")
+
+
+def test_a_label_file_corrected_on_disk_is_read_again(data_dir, tmp_path):
+    """load() is cached by path: a mismatch it caught stayed on screen after the file was fixed,
+    and an unreadable file's reason would have too. The key says what the file is as well."""
+    folder = tmp_path / "ledger"
+    folder.mkdir()
+    shutil.copy(data_dir / "ledger.csv", folder / "ledger.csv")
+    good = (data_dir / "labels.csv").read_text()
+    (folder / "labels.csv").write_text("".join(good.splitlines(keepends=True)[:-1]))  # one unlabelled
+    at = _run(folder, tmp_path / "review.sqlite")
+    assert any("Labels set aside" in w.value for w in at.warning)
+    (folder / "labels.csv").write_text(good)
+    at.run()
+    assert not at.exception, at.exception
+    assert not any("Labels set aside" in w.value for w in at.warning)
+    assert "Precision" in [m.label for m in at.metric]
+
+
+def test_an_unreadable_label_file_is_set_aside_with_its_reason(data_dir, tmp_path):
+    """The OSError half of the handler: a file that is there and cannot be read."""
+    if os.geteuid() == 0:
+        pytest.skip("root reads anything")
+    folder = tmp_path / "ledger"
+    folder.mkdir()
+    shutil.copy(data_dir / "ledger.csv", folder / "ledger.csv")
+    shutil.copy(data_dir / "labels.csv", folder / "labels.csv")
+    (folder / "labels.csv").chmod(0o000)
+    try:
+        at = _run(folder, tmp_path / "review.sqlite")
+    finally:
+        (folder / "labels.csv").chmod(0o644)
+    assert any("Labels set aside" in w.value for w in at.warning)
+    assert any("Permission denied" in t.value for t in at.text)
+    assert "Precision" not in [m.label for m in at.metric]
+
+
+def test_a_labels_path_the_filesystem_rejects_is_set_aside_and_a_pasted_space_is_forgiven(
+        data_dir, tmp_path):
+    """A name too long raised from the is_file() outside the handler and took the page down; a
+    path pasted with a trailing space was silently "no labels"."""
+    at = AppTest.from_file(str(APP), default_timeout=300)
+    at.session_state["ledger_path"] = str(data_dir / "ledger.csv")
+    at.session_state["labels_path"] = str(tmp_path / ("x" * 300))
+    at.session_state["db_path"] = str(tmp_path / "review.sqlite")
+    at.session_state["reviewer"] = ""
+    at.run()
+    assert not at.exception, at.exception
+    assert any("Labels set aside" in w.value for w in at.warning)
+    assert any("too long" in t.value for t in at.text)
+    at.text_input(key="labels_path").set_value(str(data_dir / "labels.csv") + "  ").run()
+    assert not at.exception, at.exception
+    assert not any("Labels set aside" in w.value for w in at.warning)
+    assert "Precision" in [m.label for m in at.metric]
 
 
 @pytest.mark.parametrize("labels_path", ["", "   ", "a-directory"])

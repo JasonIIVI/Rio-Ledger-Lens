@@ -11,6 +11,7 @@ reviewer's name. Run with:
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -30,8 +31,23 @@ st.set_page_config(page_title="LedgerLens", layout="wide")
 DATA = Path("data")
 
 
+def _stamp(path: str) -> tuple | None:
+    """What a file is, beside where it is: its size and modification time, or None.
+
+    ``load`` is cached by its arguments. Keyed by path alone, a label file corrected
+    on disk kept showing the problem the first read found, and a regenerated ledger
+    kept its old numbers, until the server was restarted.
+    """
+    try:
+        status = os.stat(path)
+    except (OSError, ValueError):  # no such file, or a name the filesystem rejects: load says so
+        return None
+    return (status.st_mtime_ns, status.st_size)
+
+
 @st.cache_data(show_spinner=False)
-def load(ledger_path: str, labels_path: str):
+def load(ledger_path: str, labels_path: str, stamps: tuple):
+    """``stamps`` is part of the cache key and nothing else: see ``_stamp``."""
     df = load_csv(ledger_path)
     # Computed here so it is cached with the frame it describes: the store is
     # bound to the ledger on screen, never to a stale one.
@@ -44,10 +60,13 @@ def load(ledger_path: str, labels_path: str):
     # sidebar's default file sits beside every ledger in data/, a QuickBooks pull
     # included, and numbers from a pairing that does not exist are worse than none.
     labels, labels_problem = None, None
-    if labels_path.strip() and Path(labels_path).is_file():  # the field is optional: blank is none
+    if labels_path:  # the field is optional: blank is none
         try:
-            labels = load_labels(labels_path)
-            evaluate.check_labels(labels, df["entry_id"].unique())
+            # The stat is inside the handler: a name the filesystem rejects (too long) is
+            # a reason shown in the sidebar, as an unreadable file is; a directory is none.
+            if Path(labels_path).is_file():
+                labels = load_labels(labels_path)
+                evaluate.check_labels(labels, df["entry_id"].unique())
         except KeyError as exc:
             labels, labels_problem = None, f"missing column {exc}"
         except (OSError, ValueError) as exc:  # unreadable, not a label file, or a mismatch
@@ -55,9 +74,25 @@ def load(ledger_path: str, labels_path: str):
     return df, flags, combined, scores, report, labels, ledger_id, labels_problem
 
 
+_MARKUP = re.compile(r"([!-/:-@\[-`{-~])")  # every ASCII punctuation character
+
+
 def md(text: str) -> str:
-    """Escape dollar signs: Streamlit renders ``$7,428.45 ... $7,284.88`` as LaTeX otherwise."""
-    return str(text).replace("$", r"\$")
+    """``text`` as markdown that draws the text itself and nothing else.
+
+    A flag's reason quotes ledger cells (who keyed the entry, an account's name,
+    another entry's id) and a note is written from them; both are rendered through
+    ``st.markdown``. A backslash before each ASCII punctuation character leaves the
+    text as written: no image is fetched on load, no link sits under words of the
+    author's choosing, no heading or list is made, and ``$7,428.45 ... $7,284.88``
+    is not LaTeX.
+    """
+    return _MARKUP.sub(r"\\\1", str(text))
+
+
+def _ratio(value: float, defined: bool) -> str:
+    """A ratio over nothing is not a figure, as ``summary`` says too."""
+    return f"{value:.3f}" if defined else "undefined"
 
 
 def render_narrative(narrative: dict) -> None:
@@ -69,8 +104,8 @@ def render_narrative(narrative: dict) -> None:
     st.caption(
         "Control: {control} · Confidence: {confidence} · Written by {model} at {when} · "
         "note #{note_id}".format(
-            control=narrative["suggested_control"], confidence=narrative["confidence"],
-            model=narrative.get("model") or "unknown model",
+            control=md(narrative["suggested_control"]), confidence=md(narrative["confidence"]),
+            model=md(narrative.get("model") or "unknown model"),
             when=narrative.get("generated_at", ""),
             note_id=narrative.get("id", "?"),
         )
@@ -82,7 +117,7 @@ st.caption("Journal entry testing and exception review. A flag is a question, no
 
 ledger_path = st.sidebar.text_input("Ledger CSV", str(DATA / "ledger.csv"), key="ledger_path")
 labels_path = st.sidebar.text_input("Labels CSV (optional)", str(DATA / "labels.csv"),
-                                    key="labels_path")
+                                    key="labels_path").strip()  # a pasted trailing space is not "no labels"
 db_path = st.sidebar.text_input("Review database", str(DATA / "review.sqlite"), key="db_path")
 reviewer = st.sidebar.text_input(
     "Reviewer", key="reviewer", help="Every decision is recorded under this name.",
@@ -94,7 +129,7 @@ if not Path(ledger_path).exists():
 
 try:
     df, flags, combined, scores, report, labels, ledger_id, labels_problem = load(
-        ledger_path, labels_path)
+        ledger_path, labels_path, (_stamp(ledger_path), _stamp(labels_path)))
 except IdentityError as exc:  # a sidecar that names no ledger: never guess which one it is
     st.error(str(exc))
     st.stop()
@@ -325,6 +360,9 @@ with tab_tiers:
         "separate. The useful signal is where they disagree."
     )
     if labels is not None:
+        # The segment table carries the rule tier's figures too ("rules only" and "both"
+        # are its flagged entries): its caveat first, the model tier's after the lift.
+        st.caption(evaluate.DETECTION_CAVEAT)
         st.dataframe(evaluate.compare_tiers(combined, labels),
                      width="stretch", hide_index=True)
         st.markdown("**Model lift over random selection**")
@@ -368,9 +406,10 @@ with tab_quality:
     else:
         metrics = evaluate.evaluate(flags, labels, df["entry_id"].unique())
         a, b, c = st.columns(3)
-        a.metric("Precision", "{:.3f}".format(metrics["precision"]))
-        b.metric("Recall", "{:.3f}".format(metrics["recall"]))
-        c.metric("F1", "{:.3f}".format(metrics["f1"]))
+        flagged, truth = metrics["flagged"] > 0, metrics["true_anomalies"] > 0
+        a.metric("Precision", _ratio(metrics["precision"], flagged))
+        b.metric("Recall", _ratio(metrics["recall"], truth))
+        c.metric("F1", _ratio(metrics["f1"], flagged and truth))
         st.warning(evaluate.DETECTION_CAVEAT)
         st.markdown("**Recall by archetype**")
         st.dataframe(evaluate.recall_by_archetype(flags, labels),
