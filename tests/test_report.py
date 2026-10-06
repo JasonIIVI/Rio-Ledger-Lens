@@ -182,3 +182,43 @@ def test_the_summary_sheet_puts_the_circularity_caveat_beside_precision_and_reca
     text = " ".join(str(c.value) for row in openpyxl.load_workbook(bare)["Summary"].iter_rows()
                     for c in row if c.value)
     assert "Precision" not in text and "nine of eleven" not in text
+    # the sentence is wrapped inside its column and does not widen it: the counts stay beside
+    # their labels, where a reader of the printed sheet looks for them
+    sheet = openpyxl.load_workbook(path)["Summary"]
+    caveat_cell = sheet.cell(row=caveat_row + 1, column=2)
+    assert caveat_cell.alignment.wrap_text is True
+    assert not sheet.cell(row=caveat_row, column=2).alignment.wrap_text  # the numbers are left alone
+    widths = sheet.column_dimensions["B"].width, openpyxl.load_workbook(bare)["Summary"].column_dimensions["B"].width
+    assert widths[0] == widths[1] < 30, widths
+
+
+def test_a_ratio_over_nothing_is_written_as_undefined_not_zero(ledger, labels, tmp_path):
+    """Labels that mark no anomaly gave "Recall 0" beside "False negatives 0"."""
+    path, _ = _workpaper(ledger, labels.assign(is_anomaly=False, anomaly_type=""), tmp_path)
+    cells = _summary_cells(path)
+    assert cells["Precision"] == 0  # something was flagged, every flag a false positive: a figure
+    assert cells["Recall"] == "undefined (the labels mark no anomaly)"
+    assert cells["False negatives"] == 0
+
+
+def test_ledger_text_is_written_as_text_never_as_a_formula(ledger, tmp_path):
+    """openpyxl stores a string that begins with "=" as a live formula. The Exceptions and All
+    flags sheets carry ids, users and descriptions as whoever wrote the ledger typed them, and
+    the reasons quote them; a workpaper is handed over to someone who opens it in Excel."""
+    hostile = '=HYPERLINK("https://example.invalid/x","open the support")'
+    tainted = ledger.copy()
+    first = tainted["entry_id"].iloc[0]
+    tainted.loc[tainted["entry_id"] == first, "created_by"] = hostile
+    tainted.loc[tainted["entry_id"] == first, "description"] = "#REF!"  # read as an error code
+    flags = jets.run_all(tainted)
+    scored = jets.score_entries(tainted, flags)
+    scored.loc[scored["entry_id"] == first, "risk_score"] = 99.0  # on the Exceptions sheet for sure
+    path = build_workpaper(scored, flags, tmp_path / "wp.xlsx")
+    wb = openpyxl.load_workbook(path)  # not data_only: a formula cell reads back with data_type "f"
+    typed = [(ws.title, c.coordinate, c.data_type) for ws in wb.worksheets
+             for row in ws.iter_rows() for c in row if c.data_type in ("f", "e")]
+    assert typed == []
+    ws = wb["Exceptions"]
+    header = [c.value for c in ws[1]]
+    rows = {r[header.index("entry_id")]: r for r in ws.iter_rows(min_row=2, values_only=True)}
+    assert rows[first][header.index("created_by")] == hostile  # the text is there, as text

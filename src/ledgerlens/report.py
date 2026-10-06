@@ -34,11 +34,29 @@ SEVERITY_FILL = {
 }
 
 
-def _autofit(ws, max_width: int = 60) -> None:
+def _autofit(ws, max_width: int = 60, skip_wrapped: bool = False) -> None:
+    """Size each column to its longest value; a wrapped cell can be left out of the measure."""
     for column in ws.columns:
         letter = get_column_letter(column[0].column)
-        longest = max((len(str(c.value)) for c in column if c.value is not None), default=0)
+        longest = max((len(str(c.value)) for c in column
+                       if c.value is not None and not (skip_wrapped and c.alignment.wrap_text)),
+                      default=0)
         ws.column_dimensions[letter].width = min(max(11, longest + 2), max_width)
+
+
+def _text_not_formulas(book) -> None:
+    """Every string cell as text, in every sheet.
+
+    openpyxl stores a string that begins with "=" as a formula, and one that reads
+    like an error code as an error. These cells hold ledger text (an id, a user, a
+    description, a reason that quotes them), and a workpaper is handed over: it must
+    not carry a formula somebody wrote into the books.
+    """
+    for ws in book.worksheets:
+        for row in ws.iter_rows():
+            for cell in row:
+                if cell.data_type in ("f", "e") and isinstance(cell.value, str):
+                    cell.data_type = "s"
 
 
 def _write_table(ws, df: pd.DataFrame, start_row: int = 1) -> None:
@@ -141,11 +159,13 @@ def build_workpaper(
             ("Shown in this workpaper", int(len(exceptions))),
         ]
         if metrics:
+            # A ratio over nothing is not a figure: said so, as `summary` says it.
+            flagged, truth = metrics.get("flagged", 0) > 0, metrics.get("true_anomalies", 0) > 0
             rows += [
                 ("", ""),
                 ("Evaluated against labels", "yes"),
-                ("Precision", metrics.get("precision")),
-                ("Recall", metrics.get("recall")),
+                ("Precision", metrics.get("precision") if flagged else "undefined (nothing was flagged)"),
+                ("Recall", metrics.get("recall") if truth else "undefined (the labels mark no anomaly)"),
                 ("False positives", metrics.get("false_positives")),
                 ("False negatives", metrics.get("false_negatives")),
                 # a workpaper is read by someone who saw neither the README nor the dashboard
@@ -166,7 +186,9 @@ def build_workpaper(
         for i, (label, value) in enumerate(rows, start=3):
             ws.cell(row=i, column=1, value=label).font = LABEL_FONT
             cell = ws.cell(row=i, column=2, value=value)
-            if isinstance(value, str) and len(value) > 60:  # a sentence: wrapped, not run off the sheet
+            if isinstance(value, str) and len(value) > 60:
+                # a sentence: wrapped inside the column rather than run off the sheet, and
+                # left out of the column's measure so the counts stay beside their labels
                 cell.alignment = Alignment(wrap_text=True, vertical="top")
 
         note_row = 3 + len(rows) + 1
@@ -175,7 +197,7 @@ def build_workpaper(
         ws.cell(row=note_row + 1, column=1, value=(
             "Each exception below identifies an entry whose characteristics warrant enquiry. "
             "None of them asserts an error or an irregularity."))
-        _autofit(ws)
+        _autofit(ws, skip_wrapped=True)
 
         # ---- Exceptions: severity shading by highest severity fired ----
         ws = book["Exceptions"]
@@ -236,5 +258,7 @@ def build_workpaper(
             if line and not line.startswith("  "):
                 cell.font = LABEL_FONT
         ws.column_dimensions["A"].width = 105
+
+        _text_not_formulas(book)
 
     return out_path
