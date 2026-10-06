@@ -1502,11 +1502,38 @@ def test_score_report_and_narrate_say_when_the_model_cannot_be_fitted(two_ledger
     raw = pd.read_csv(ledger, dtype=str, keep_default_na=False)
     one = tmp_path / "one.csv"
     raw[raw["entry_id"] == raw["entry_id"].iloc[0]].to_csv(one, index=False)
+    one_labels = tmp_path / "one-labels.csv"
+    one_labels.write_text(f"entry_id,is_anomaly,anomaly_type\n{raw['entry_id'].iloc[0]},False,\n")
     for argv in (["score", str(one)], ["report", str(one), "--out", str(tmp_path / "wp.xlsx")],
-                 ["narrate", str(one), "--db", str(tmp_path / "r.sqlite")]):
+                 ["narrate", str(one), "--db", str(tmp_path / "r.sqlite")],
+                 ["eval-narratives", str(one), "--select", "--labels", str(one_labels),
+                  "--cases", str(tmp_path / "c.json")]):
         capsys.readouterr()
         assert main(argv) == 2, argv
         printed = capsys.readouterr().out
         assert printed.startswith("error: the model tier cannot be fitted on 1 entry"), argv
-        assert printed.count("\n") == 1 and ("--no-model" in printed) == (argv[0] != "score"), argv
-    assert not (tmp_path / "wp.xlsx").exists() and not (tmp_path / "r.sqlite").exists()
+        assert printed.count("\n") == 1, argv
+        assert ("--no-model" in printed) == (argv[0] in ("report", "narrate")), argv
+    for leftover in ("wp.xlsx", "r.sqlite", "c.json"):
+        assert not (tmp_path / leftover).exists(), leftover
+
+
+def test_eval_narratives_turns_an_unwritable_report_into_a_message(tmp_path, capsys, monkeypatch, llm):
+    """The rows are written first; a report whose parent is a file was a traceback after them,
+    and the line says where the rows are so a --regrade can rebuild the report for free."""
+    from ledgerlens import cli
+    from ledgerlens.narrate import Narrator
+
+    monkeypatch.chdir(tmp_path)
+    main(["generate", "--start", "2024-01-01", "--end", "2024-06-30", "--out-dir", str(tmp_path)])
+    ledger, labels = str(tmp_path / "ledger.csv"), str(tmp_path / "labels.csv")
+    cases = tmp_path / "cases.json"
+    main(["eval-narratives", ledger, "--select", "--labels", labels, "--cases", str(cases)])
+    monkeypatch.setattr(cli, "Narrator", lambda **kw: Narrator(client=llm.client(), **kw))
+    (tmp_path / "afile").write_text("x")
+    capsys.readouterr()
+    assert main(["eval-narratives", ledger, "--cases", str(cases), "--runs-dir", str(tmp_path / "runs"),
+                 "--out", str(tmp_path / "afile" / "r.md"), "--limit", "1"]) == 2
+    printed = capsys.readouterr().out
+    assert printed.startswith("error: cannot write the report to") and printed.count("\n") == 1
+    assert str(tmp_path / "runs") in printed and (tmp_path / "runs" / "results.jsonl").exists()

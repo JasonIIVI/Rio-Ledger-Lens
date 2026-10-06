@@ -518,6 +518,15 @@ def test_text_hidden_in_tag_characters_does_not_reach_the_page():
     assert summary.md_code("a" + chr(0x061C) + chr(0x00AD) + "b") == "`ab`"
 
 
+def test_code_span_is_the_span_alone_without_the_github_body_measures():
+    """The dashboard draws a flag's reason with it: no zero-width space after an "@" (an
+    invisible character a reviewer would copy along), no pipe entity (it would split the span)."""
+    assert summary.code_span("ana@corp.example | Misc") == "`ana@corp.example | Misc`"
+    assert summary.code_span("x`y") == "``x`y``" and summary.code_span("`") == "`` ` ``"
+    assert summary.code_span("  two\n\nlines ") == "`two lines`" and summary.code_span("") == ""
+    assert chr(0x200B) not in summary.code_span("a@b") and summary.md_code("a@b") != summary.code_span("a@b")
+
+
 def test_md_code_writes_exactly_what_a_reader_expects():
     assert summary.md_code("JE-2024-000001") == "`JE-2024-000001`"
     assert summary.md_code("a|b") == "`a`&#124;`b`"

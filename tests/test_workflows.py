@@ -193,7 +193,7 @@ def test_the_extractor_reads_scripts_the_way_a_shell_would():
         '          n=$(ledgerlens summary data/ledger.csv --format json 2>/dev/null); echo "$n"',
         "          ledgerlens test data/ledger.csv >out/log; ledgerlens score data/ledger.csv",
         '          ledgerlens score data/ledger.csv --top 5 >"$OUT"/s.json --top 3',
-        "          ledgerlens benford data/ledger.csv >| out/b.txt|tee out/t.txt",
+        "          ledgerlens benford data/ledger.csv >| out/b.txt --by created_by|tee out/t.txt",
     ])
     assert commands(text) == [
         ["test", "data/ledger.csv", "--labels", "data/labels.csv"],
@@ -219,7 +219,7 @@ def test_the_extractor_reads_scripts_the_way_a_shell_would():
         ["test", "data/ledger.csv"],
         ["score", "data/ledger.csv"],
         ["score", "data/ledger.csv", "--top", "5", "--top", "3"],
-        ["benford", "data/ledger.csv"],
+        ["benford", "data/ledger.csv", "--by", "created_by"],
     ]
 
 

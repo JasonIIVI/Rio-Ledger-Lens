@@ -428,7 +428,8 @@ def test_flag_reasons_render_ledger_text_as_text_never_as_markdown(data_dir, tmp
 
     client = tmp_path / "client"
     client.mkdir()
-    hostile = "![](http://127.0.0.1:9/beacon.png)[Review complete](http://127.0.0.1:9/login) # not a heading"
+    hostile = ("![](http://127.0.0.1:9/beacon.png)[Review complete](http://127.0.0.1:9/login) "
+               "# not a heading ana@corp.example")
     raw = pd.read_csv(data_dir / "ledger.csv", dtype=str, keep_default_na=False)
     raw["created_by"] = hostile
     raw.to_csv(client / "ledger.csv", index=False)
@@ -451,6 +452,7 @@ def test_flag_reasons_render_ledger_text_as_text_never_as_markdown(data_dir, tmp
         reason = value.split(") - ", 1)[1]
         assert hostile in reason and reason.startswith("`") and reason.endswith("`")
         assert "`" not in hostile  # so the span above is the only fence on the line's right half
+        assert chr(0x200B) not in reason  # the GitHub-body measure of md_code is not planted here
     for value in notes:  # escaped prose: every ASCII punctuation character, "$" among them
         assert "![](" not in value and "](http" not in value
         assert r"\!\[\]\(http" in value and r"\# not a heading" in value

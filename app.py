@@ -24,7 +24,7 @@ from ledgerlens.ingest import identity_path, ledger_identity, load_csv, load_lab
 from ledgerlens.model import combine, score_ledger
 from ledgerlens.narrate import NarrativeError, Narrator, build_prompt, entry_context
 from ledgerlens.review import DECISIONS, LEGACY_LEDGER_ID, Decision, ReviewStore
-from ledgerlens.summary import md_code
+from ledgerlens.summary import code_span
 
 load_dotenv()
 st.set_page_config(page_title="LedgerLens", layout="wide")
@@ -89,7 +89,7 @@ def md(text: str) -> str:
     after the escapes are resolved remain: a bare URL or address is drawn as a
     link to itself, and ``->`` or ``--`` as an arrow or a dash (one version draws
     ``:smile:`` as an emoji). A flag's reason, which quotes ledger cells verbatim,
-    is drawn as a code span instead (``summary.md_code``), where nothing acts and
+    is drawn as a code span instead (``summary.code_span``), where nothing acts and
     nothing is redrawn; checked in a browser on both Streamlit versions.
     """
     return _MARKUP.sub(r"\\\1", str(text))
@@ -254,7 +254,7 @@ with tab_queue:
         for f in flags[flags["entry_id"] == picked].itertuples():
             # the reason quotes ledger cells: a code span, where a URL is not a link and
             # nothing is redrawn (md() leaves both to Streamlit, see its docstring)
-            st.markdown(f"- `{f.test_id}` **{f.test_name}** ({f.severity}) - {md_code(f.reason)}")
+            st.markdown(f"- `{f.test_id}` **{f.test_name}** ({f.severity}) - {code_span(f.reason)}")
 
         st.markdown("**Journal entry lines**")
         st.dataframe(

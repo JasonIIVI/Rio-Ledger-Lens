@@ -778,7 +778,11 @@ def cmd_eval_narratives(args: argparse.Namespace) -> int:
 
     flags = jets.run_all(df)
     scored = jets.score_entries(df, flags)
-    model_scores, _ = score_ledger(df)
+    try:
+        model_scores, _ = score_ledger(df)
+    except ValueError as exc:  # a population the model cannot be fitted on
+        print(f"error: {one_line(exc)}")
+        return 2
     scored = combine(scored, model_scores)
 
     if args.select:

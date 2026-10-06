@@ -246,6 +246,32 @@ def one_line(value: object) -> str:
     return " ".join(_UNSEEN.sub("", " ".join(str(value).split())).split())
 
 
+def _fence(text: str) -> str:
+    """A run of backticks longer than any inside ``text``: the one fence that closes."""
+    return "`" * (max((len(run) for run in re.findall("`+", text)), default=0) + 1)
+
+
+def _span(part: str, fence: str) -> str:
+    if not part:
+        return ""
+    # A span's text may not begin or end with a backtick; one space each side is dropped.
+    pad = " " if part[0] == "`" or part[-1] == "`" else ""
+    return fence + pad + part + pad + fence
+
+
+def code_span(value: object) -> str:
+    """``value`` as one line of inert markdown code, for a page where only the span matters.
+
+    The dashboard draws a flag's reason with it: inside a code span a URL is not a link
+    and nothing is redrawn. The two measures :func:`md_code` adds for a GitHub body (a
+    zero-width space after every ``@``, a pipe written as an entity between two spans)
+    have no place there: the first would plant an invisible character in text a reviewer
+    copies, the second would split the span.
+    """
+    text = one_line(value)
+    return _span(text, _fence(text))
+
+
 def md_code(value: object) -> str:
     """``value`` as a markdown code span that renders nothing but its own text.
 
@@ -258,17 +284,8 @@ def md_code(value: object) -> str:
     keeps any ``@name`` in the ledger from appearing in the body at all.
     """
     text = one_line(value).replace("@", "@\u200b")
-    longest = max((len(run) for run in re.findall("`+", text)), default=0)
-    fence = "`" * (longest + 1)
-
-    def span(part: str) -> str:
-        if not part:
-            return ""
-        # A span's text may not begin or end with a backtick; one space each side is dropped.
-        pad = " " if part[0] == "`" or part[-1] == "`" else ""
-        return fence + pad + part + pad + fence
-
-    return "&#124;".join(span(part) for part in text.split("|"))
+    fence = _fence(text)
+    return "&#124;".join(_span(part, fence) for part in text.split("|"))
 
 
 def _ratio(value: float, defined: bool, why: str) -> str:
