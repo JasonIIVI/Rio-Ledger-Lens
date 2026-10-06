@@ -50,7 +50,7 @@ def uncommented(text):
 
 _QUOTED = re.compile(r"'[^']*'|\"(?:\\.|[^\"\\])*\"")
 #: An fd digit if the word starts with one, the operator, and the whitespace before its target.
-_REDIRECT = re.compile(r"((?:(?<=\s)|^)\d+)?(>>|>&|<&|&>>?|>|<)\s*")
+_REDIRECT = re.compile(r"((?:(?<=\s)|^)\d+)?(>>|>&|>\||<&|&>>?|>|<)\s*")
 
 
 def shell_line(line):
@@ -58,23 +58,27 @@ def shell_line(line):
 
     A ``#`` opens a comment only at the start of a word, outside quotes; inside a
     word (``out/run#1.csv``) or quoted it is a ``#``. A redirect is ``>``, ``>>``,
-    ``<``, ``>&``, ``<&`` or ``&>``, an fd digit before it when the word starts with
-    one (``2>&1``), and the word after it, quoted or not; outside quotes only.
+    ``>|``, ``<``, ``>&``, ``<&`` or ``&>``, an fd digit before it when the word
+    starts with one (``2>&1``), and the word after it; the word ends at whitespace or
+    at a metacharacter (``;``, ``|``, ``&``, a bracket, another redirect), and a quoted
+    part glued to it (``>"$OUT"/s.json``) belongs to it. Outside quotes only.
     """
     out, i, eat_target = [], 0, False
     while i < len(line):
         quoted = _QUOTED.match(line, i)
         if quoted:
-            if not eat_target:
+            if not eat_target:  # a quoted span inside a target is part of the target
                 out.append(quoted.group(0))
-            eat_target = False
             i = quoted.end()
             continue
         ch = line[i]
         if eat_target:
-            if ch.isspace():
-                eat_target = False
-                out.append(ch)
+            if ch.isspace() or ch in ";|&()<>":
+                eat_target = False  # a metacharacter is read again below, as the shell reads it
+                if ch.isspace():
+                    out.append(ch)
+                    i += 1
+                continue
             i += 1  # the target's unquoted part goes with the operator
             continue
         if ch == "#" and (i == 0 or line[i - 1].isspace()):
@@ -137,6 +141,13 @@ def parse(argv):
         pytest.fail(f"`ledgerlens {' '.join(argv)}` no longer parses")
 
 
+def loose_count(text):
+    """Every ``ledgerlens <subcommand>`` outside a comment, read the way ``commands`` reads a
+    line, so a trailing comment that names a command is not counted against the extractor."""
+    shell = "\n".join(shell_line(_YAML_PREFIX.sub("", line)) for line in uncommented(text).splitlines())
+    return len(re.findall(rf"\bledgerlens[ \t]+(?:{'|'.join(SUBCOMMANDS)})\b", shell))
+
+
 def test_every_workflow_is_listed_here():
     assert {p.name for p in WORKFLOWS.iterdir()} == set(COMMANDS)
 
@@ -150,9 +161,12 @@ def test_every_ledgerlens_command_in_a_workflow_still_parses(name):
         parse(argv)
     # Nothing the splitting above cannot see (`time ledgerlens ...`, a line it could not
     # read as shell): every "ledgerlens <subcommand>" outside a comment is a command found.
-    names = "|".join(SUBCOMMANDS)
-    loose = re.findall(rf"\bledgerlens[ \t]+(?:{names})\b", uncommented(text))
-    assert len(loose) == len(found)
+    assert loose_count(text) == len(found)
+
+
+def test_a_trailing_comment_that_names_a_command_counts_for_neither_half():
+    text = "          ledgerlens generate --out-dir data  # seeded; ledgerlens test reads it next\n"
+    assert commands(text) == [["generate", "--out-dir", "data"]] and loose_count(text) == 1
 
 
 def test_the_extractor_reads_scripts_the_way_a_shell_would():
@@ -176,6 +190,10 @@ def test_the_extractor_reads_scripts_the_way_a_shell_would():
         "          ledgerlens score data/ledger.csv --top 5 >& out/all.log",
         '          ledgerlens summary "data/#1 ledger.csv" --out "out/a > b.md"  # quoted: text',
         "          ledgerlens benford data/ledger.csv  # the generator's default",
+        '          n=$(ledgerlens summary data/ledger.csv --format json 2>/dev/null); echo "$n"',
+        "          ledgerlens test data/ledger.csv >out/log; ledgerlens score data/ledger.csv",
+        '          ledgerlens score data/ledger.csv --top 5 >"$OUT"/s.json --top 3',
+        "          ledgerlens benford data/ledger.csv >| out/b.txt|tee out/t.txt",
     ])
     assert commands(text) == [
         ["test", "data/ledger.csv", "--labels", "data/labels.csv"],
@@ -194,6 +212,13 @@ def test_the_extractor_reads_scripts_the_way_a_shell_would():
         ["summary", "data/ledger.csv", "--format", "json"],
         ["score", "data/ledger.csv", "--top", "5"],
         ["summary", "data/#1 ledger.csv", "--out", "out/a > b.md"],
+        ["benford", "data/ledger.csv"],
+        # a target ends at a metacharacter as well as at whitespace, a quoted part glued to it
+        # belongs to it, and `>|` is a redirect: the words after them are the next command's
+        ["summary", "data/ledger.csv", "--format", "json"],
+        ["test", "data/ledger.csv"],
+        ["score", "data/ledger.csv"],
+        ["score", "data/ledger.csv", "--top", "5", "--top", "3"],
         ["benford", "data/ledger.csv"],
     ]
 
@@ -324,14 +349,21 @@ def test_the_gates_script_prints_the_caveat_before_the_figures_it_logs(tmp_path)
     assert evaluate.DETECTION_CAVEAT in printed
     assert printed.index(evaluate.DETECTION_CAVEAT) < printed.index("Precision")
     assert printed.endswith("detection quality within expected bounds")
+    # and the gate can fail: labels that mark no anomaly put recall at 0, under its floor
+    labels = tmp_path / "data" / "labels.csv"
+    labels.write_text(re.sub(r"(?m)^([^,\n]+),True,[^\n]*$", r"\1,False,", labels.read_text()))
+    failing = subprocess.run([sys.executable, "-"], input=script, cwd=tmp_path,
+                             capture_output=True, text=True)
+    assert failing.returncode == 1 and "::error::recall 0.000 fell below floor 0.90" in failing.stdout
 
 
 # --- the step that opens the Issue, run for real against a stand-in gh --------
 
 GH_STUB = r"""#!/bin/bash
-# Stands in for gh: records each call (the repository it was aimed at, then one argument
-# per line, then a blank line) and answers the four the step reads from or relies on.
-{ printf 'GH_REPO=%s\n' "${GH_REPO-}"; printf '%s\n' "$@"; echo; } >> "$GH_LOG"
+# Stands in for gh: records each call (the argument count, the repository it was aimed at,
+# then every argument, each ended by a NUL so an empty one or one holding a newline is kept
+# whole) and answers the four the step reads from or relies on.
+printf '%s\0' "$#" "GH_REPO=${GH_REPO-}" "$@" >> "$GH_LOG"
 case "$1 $2" in
   "label create") [ -z "${GH_FAIL_LABEL:-}" ] || exit 1 ;;
   "issue list") [ -z "${GH_FAIL_LIST:-}" ] || exit 1; for number in $GH_PREVIOUS; do echo "$number"; done ;;
@@ -381,14 +413,21 @@ def run_issue_step(weekly, tmp_path, previous="11 12", fail_create=False, fail_l
             env[f"GH_FAIL_{name}"] = "1"
     run = subprocess.run(["bash", "-c", issue_step(weekly)], cwd=tmp_path, env=env,
                          capture_output=True, text=True)
-    log = (tmp_path / "gh.log").read_text() if (tmp_path / "gh.log").exists() else ""
-    calls = []
-    for record in log.split("\n\n"):
-        if record.strip():
-            repo, *argv = record.splitlines()
-            assert repo == "GH_REPO=example/repo", repo  # every call aimed at this run's repository
-            calls.append(argv)
-    return run, calls
+    return run, gh_calls(tmp_path / "gh.log")
+
+
+def gh_calls(log_path):
+    """The calls the stand-in recorded, each an argv list, every one aimed at this run's repository."""
+    if not log_path.exists():
+        return []
+    fields = log_path.read_text().split("\0")[:-1]  # every field ends with a NUL
+    calls, i = [], 0
+    while i < len(fields):
+        count, repo = int(fields[i]), fields[i + 1]
+        assert repo == "GH_REPO=example/repo", repo
+        calls.append(fields[i + 2:i + 2 + count])
+        i += 2 + count
+    return calls
 
 
 def test_the_issue_step_posts_the_summary_then_closes_only_the_older_issues(weekly, tmp_path):
@@ -452,6 +491,24 @@ def test_the_issue_step_fails_when_an_older_issue_cannot_be_closed(weekly, tmp_p
 def test_the_issue_step_runs_in_bash_with_the_runs_token_and_nothing_else(weekly):
     """`shell: bash` (the script relies on it), the token as GH_TOKEN, and no `if:` or
     `continue-on-error:` that would let the step be skipped or its failure ignored."""
-    header = weekly.split("      - name: Open the Issue\n", 1)[1].split("        run: |\n", 1)[0]
+    step = weekly.split("      - name: Open the Issue\n", 1)[1].split("\n      - ", 1)[0]
+    header = step.split("        run: |\n", 1)[0]
     assert [line.strip() for line in header.splitlines()] == [
         "shell: bash", "env:", "GH_TOKEN: ${{ github.token }}"]
+    # a YAML key can follow the script as well as precede it: the step's keys, wherever they are
+    keys = [line.strip() for line in step.splitlines()
+            if line.startswith(" " * 8) and not line.startswith(" " * 9)]
+    assert keys == ["shell: bash", "env:", "run: |"]
+
+
+def test_the_stand_in_records_an_empty_argument_and_one_holding_a_newline(tmp_path):
+    """One argument per line could not hold either: the record format is NUL-separated with
+    the argument count first, so what the step hands gh is read back exactly."""
+    stub = tmp_path / "gh"
+    stub.write_text(GH_STUB)
+    stub.chmod(0o755)
+    env = {"PATH": os.environ["PATH"], "GH_LOG": str(tmp_path / "gh.log"), "GH_REPO": "example/repo"}
+    subprocess.run([str(stub), "issue", "close", "11", "--comment", "", "two\nlines"], env=env, check=True)
+    subprocess.run([str(stub), "issue", "list"], env=env, check=True)
+    assert gh_calls(tmp_path / "gh.log") == [
+        ["issue", "close", "11", "--comment", "", "two\nlines"], ["issue", "list"]]

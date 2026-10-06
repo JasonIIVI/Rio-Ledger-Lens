@@ -88,6 +88,17 @@ def test_summary_counts_current_decisions_only(store):
     assert summary.to_dict() == {"dismiss": 2, "escalate": 1}
 
 
+def test_summary_counts_decisions_of_any_type_a_hand_made_file_may_hold(store, monkeypatch):
+    """The column is constrained by this file's own DDL; a file made by hand can hold bytes,
+    numbers or NULL, which pandas cannot sort together: `summary --db` was a TypeError."""
+    mixed = pd.DataFrame({"entry_id": ["A", "B", "C", "D", "E"],
+                          "decision": [bytes([1]), 7, 1.5, None, "accept"]})
+    monkeypatch.setattr(store, "current", lambda: mixed)
+    out = store.summary()
+    assert sorted(out["decision"]) == sorted(["accept", repr(bytes([1])), "7", "1.5", "None"])
+    assert out["entries"].tolist() == [1, 1, 1, 1, 1]
+
+
 def test_outstanding_is_the_flagged_entries_without_a_decision(store, small_ledger):
     ledger, _ = small_ledger
     flags = jets.run_all(ledger)

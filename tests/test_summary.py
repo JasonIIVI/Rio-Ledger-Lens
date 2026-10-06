@@ -360,10 +360,13 @@ def test_the_json_says_which_ratios_are_undefined_and_leads_with_the_caveat(
     assert keys.index("detection_caveat") < keys.index("detection")
     text = summary.render(payload, "json")
     assert text.index('"detection_caveat":') < text.index('"detection":') < text.index('"precision":')
-    # the two tier caveats lead what they qualify in the JSON too
+    # the two tier caveats lead what they qualify in the JSON too, and the page-wide caveat
+    # opens the JSON as it opens the page
     assert keys.index("tier_agreement_caveat") < keys.index("tier_agreement")
     assert list(payload["model_tier"])[0] == "caveat"
-    assert text.index('"model_tier": {') < text.index('"caveat":') < text.index('"n_entries":')
+    assert text.index('"model_tier": {') < text.index('"n_entries":')
+    assert text.index('"caveat":', text.index('"model_tier": {')) < text.index('"n_entries":')
+    assert keys[0] == "caveat" and text.index('"caveat":') < text.index('"run_date":')
 
 
 def test_defined_is_computed_by_collect_from_what_was_flagged_and_what_the_labels_mark(
@@ -424,6 +427,8 @@ HOSTILE = [
     "\u202egnp.exe\u202c \u200bzero\ufeffwidth",
     "\x1b[31mred\x1b[0m\x00\x07",
     ":tada: **bold** _em_ ~~gone~~ # heading\n- item\n> quote",
+    chr(0x200B) + " Inc",  # a removal that leaves whitespace behind, on one side
+    "a " + chr(0x200B) + " b",  # and on both
 ]
 
 
@@ -465,9 +470,12 @@ DRAWN_FORMAT = (set(range(0x0600, 0x0606)) | {0x06DD, 0x070F, 0x0890, 0x0891, 0x
 
 
 def _seen(text):
-    """What is left of ``text`` for a reader, by the Unicode tables rather than by summary's list."""
-    return "".join(ch for ch in " ".join(text.split())
+    """What is left of ``text`` for a reader, by the Unicode tables rather than by summary's list:
+    one line (the whitespace controls go first, as spaces), the unseen categories removed, and
+    the whitespace a removal leaves behind collapsed too."""
+    kept = "".join(ch for ch in " ".join(text.split())
                    if unicodedata.category(ch) not in ("Cc", "Cf", "Co", "Cs"))
+    return " ".join(kept.split())
 
 
 @pytest.mark.parametrize("hostile", HOSTILE)
@@ -572,7 +580,9 @@ def test_text_output_drops_control_characters_from_ledger_text(payload):
 def test_the_module_is_written_in_ascii():
     """The patterns here name invisible and direction-changing characters; written raw they
     could not be reviewed, so the source spells every one as an escape."""
-    for path in (Path(summary.__file__), Path(__file__)):
+    # test_evaluate.py too: it spells a variation selector and a Latin-1 letter, and twice the
+    # characters reached the file raw because the tool that wrote them decoded the escapes
+    for path in (Path(summary.__file__), Path(__file__), Path(__file__).with_name("test_evaluate.py")):
         assert path.read_text(encoding="utf-8").isascii(), path.name
 
 

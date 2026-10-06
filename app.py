@@ -20,10 +20,11 @@ import streamlit as st
 from ledgerlens import evaluate, jets
 from ledgerlens.benford import benford_test
 from ledgerlens.env import load_dotenv
-from ledgerlens.ingest import IdentityError, ledger_identity, load_csv, load_labels
+from ledgerlens.ingest import identity_path, ledger_identity, load_csv, load_labels
 from ledgerlens.model import combine, score_ledger
 from ledgerlens.narrate import NarrativeError, Narrator, build_prompt, entry_context
 from ledgerlens.review import DECISIONS, LEGACY_LEDGER_ID, Decision, ReviewStore
+from ledgerlens.summary import md_code
 
 load_dotenv()
 st.set_page_config(page_title="LedgerLens", layout="wide")
@@ -36,7 +37,8 @@ def _stamp(path: str) -> tuple | None:
 
     ``load`` is cached by its arguments. Keyed by path alone, a label file corrected
     on disk kept showing the problem the first read found, and a regenerated ledger
-    kept its old numbers, until the server was restarted.
+    kept its old numbers, until the server was restarted. The key covers the three
+    files ``load`` reads: the ledger, the labels and the ledger's identity sidecar.
     """
     try:
         status = os.stat(path)
@@ -78,14 +80,17 @@ _MARKUP = re.compile(r"([!-/:-@\[-`{-~])")  # every ASCII punctuation character
 
 
 def md(text: str) -> str:
-    """``text`` as markdown that draws the text itself and nothing else.
+    """``text`` as markdown that forms no construct of its own.
 
-    A flag's reason quotes ledger cells (who keyed the entry, an account's name,
-    another entry's id) and a note is written from them; both are rendered through
-    ``st.markdown``. A backslash before each ASCII punctuation character leaves the
-    text as written: no image is fetched on load, no link sits under words of the
-    author's choosing, no heading or list is made, and ``$7,428.45 ... $7,284.88``
-    is not LaTeX.
+    The note is written from ledger cells and rendered as prose through
+    ``st.markdown``. A backslash before each ASCII punctuation character keeps a
+    heading, a list, an image, a link under chosen words, HTML and LaTeX
+    (``$7,428.45 ... $7,284.88``) from forming. Two things Streamlit does to prose
+    after the escapes are resolved remain: a bare URL or address is drawn as a
+    link to itself, and ``->`` or ``--`` as an arrow or a dash (one version draws
+    ``:smile:`` as an emoji). A flag's reason, which quotes ledger cells verbatim,
+    is drawn as a code span instead (``summary.md_code``), where nothing acts and
+    nothing is redrawn; checked in a browser on both Streamlit versions.
     """
     return _MARKUP.sub(r"\\\1", str(text))
 
@@ -129,8 +134,11 @@ if not Path(ledger_path).exists():
 
 try:
     df, flags, combined, scores, report, labels, ledger_id, labels_problem = load(
-        ledger_path, labels_path, (_stamp(ledger_path), _stamp(labels_path)))
-except IdentityError as exc:  # a sidecar that names no ledger: never guess which one it is
+        ledger_path, labels_path,
+        (_stamp(ledger_path), _stamp(labels_path), _stamp(str(identity_path(ledger_path)))))
+except ValueError as exc:
+    # A sidecar that names no ledger (never guess which one it is), a file that is not a
+    # ledger, or a population the model cannot be fitted on: a message, not an exception page.
     st.error(str(exc))
     st.stop()
 if labels_problem:
@@ -244,7 +252,9 @@ with tab_queue:
 
         st.markdown("**Why it was flagged**")
         for f in flags[flags["entry_id"] == picked].itertuples():
-            st.markdown(f"- `{f.test_id}` **{f.test_name}** ({f.severity}) - {md(f.reason)}")
+            # the reason quotes ledger cells: a code span, where a URL is not a link and
+            # nothing is redrawn (md() leaves both to Streamlit, see its docstring)
+            st.markdown(f"- `{f.test_id}` **{f.test_name}** ({f.severity}) - {md_code(f.reason)}")
 
         st.markdown("**Journal entry lines**")
         st.dataframe(

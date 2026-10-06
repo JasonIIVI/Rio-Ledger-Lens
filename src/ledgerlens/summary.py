@@ -74,7 +74,9 @@ def _decision_kind(value: object) -> str | None:
 
     The store's own constraint lives in the file's DDL, and a review database is
     a file somebody else may have made: whatever text it holds in that column
-    has no place on a page written to be posted.
+    has no place on a page written to be posted. None stays None: no decision
+    recorded, or (in a file made by hand) one stored as NULL, which the review
+    counts as unrecognised; the listed entry cannot tell the two apart.
     """
     if value is None:
         return None
@@ -109,6 +111,7 @@ def collect(
     base = context.summary()
     report = context.model_report
     payload = {
+        "caveat": CAVEAT,  # the page-wide caveat opens the page; it opens the JSON too
         "run_date": (today or datetime.now(timezone.utc).date()).isoformat(),
         # What a scheduled run can see change that a push to main cannot.
         "versions": {
@@ -193,7 +196,6 @@ def collect(
     if "review" in payload and not payload["review"]["exists"]:
         notes.append(NO_REVIEW_DB_NOTE)
     payload["notes"] = notes
-    payload["caveat"] = CAVEAT
     return payload
 
 

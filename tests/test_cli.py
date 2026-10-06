@@ -1454,3 +1454,59 @@ def test_a_ledger_the_model_cannot_be_fitted_on_is_said_in_those_words(two_ledge
     assert printed.startswith("error: cannot summarise the ledger") and "StandardScaler" not in printed
     assert "the model tier cannot be fitted on 1 entry: every one of the 16 features is constant" in printed
     assert main(["test", str(one)]) == 0
+
+
+def test_a_cell_printed_in_a_table_is_one_line_too(two_ledgers, tmp_path, capsys):
+    """`benford --by` printed a segment key (a ledger cell) raw, and the two archetype tables
+    printed a label file's anomaly_type raw: escape bytes and newlines reached the terminal."""
+    import pandas as pd
+
+    ledger, labels = _pair(two_ledgers)
+    raw = pd.read_csv(ledger, dtype=str, keep_default_na=False)
+    raw["created_by"] = raw["created_by"].replace(raw["created_by"].iloc[0], "bob\x1b]0;owned\x07\nnext")
+    hostile = tmp_path / "hostile.csv"
+    raw.to_csv(hostile, index=False)
+    capsys.readouterr()
+    assert main(["benford", str(hostile), "--by", "created_by", "--min-n", "10"]) == 0
+    printed = capsys.readouterr().out
+    assert "bob]0;owned next" in printed and "\x1b" not in printed and "\x07" not in printed
+    lab = pd.read_csv(labels, dtype=str, keep_default_na=False)
+    lab.loc[lab["anomaly_type"] != "", "anomaly_type"] = "odd\x1b]0;owned\x07\ntype"
+    odd = tmp_path / "odd-labels.csv"
+    lab.to_csv(odd, index=False)
+    for command in ("test", "score"):
+        assert main([command, ledger, "--labels", str(odd)]) == 0, command
+        printed = capsys.readouterr().out
+        assert "odd]0;owned type" in printed and "\x1b" not in printed and "\x07" not in printed, command
+
+
+def test_eval_narratives_select_turns_an_unwritable_case_file_into_a_message(tmp_path, capsys):
+    """`summary --out` was one `error:` line for a parent that is a file; `--select --cases` was
+    a traceback after the labels were read and both tiers scored."""
+    main(["generate", "--start", "2024-01-01", "--end", "2024-03-31", "--out-dir", str(tmp_path / "books")])
+    ledger, labels = str(tmp_path / "books" / "ledger.csv"), str(tmp_path / "books" / "labels.csv")
+    (tmp_path / "afile").write_text("x")
+    capsys.readouterr()
+    assert main(["eval-narratives", ledger, "--select", "--labels", labels,
+                 "--cases", str(tmp_path / "afile" / "c.json")]) == 2
+    printed = capsys.readouterr().out
+    assert printed.startswith("error: cannot write the case file to") and printed.count("\n") == 1
+
+
+def test_score_report_and_narrate_say_when_the_model_cannot_be_fitted(two_ledgers, tmp_path, capsys):
+    """`summary` said it in plain words; these three were still the traceback, and the last two
+    can run the rule tier alone, which the line now says."""
+    import pandas as pd
+
+    ledger, _ = _pair(two_ledgers)
+    raw = pd.read_csv(ledger, dtype=str, keep_default_na=False)
+    one = tmp_path / "one.csv"
+    raw[raw["entry_id"] == raw["entry_id"].iloc[0]].to_csv(one, index=False)
+    for argv in (["score", str(one)], ["report", str(one), "--out", str(tmp_path / "wp.xlsx")],
+                 ["narrate", str(one), "--db", str(tmp_path / "r.sqlite")]):
+        capsys.readouterr()
+        assert main(argv) == 2, argv
+        printed = capsys.readouterr().out
+        assert printed.startswith("error: the model tier cannot be fitted on 1 entry"), argv
+        assert printed.count("\n") == 1 and ("--no-model" in printed) == (argv[0] != "score"), argv
+    assert not (tmp_path / "wp.xlsx").exists() and not (tmp_path / "r.sqlite").exists()

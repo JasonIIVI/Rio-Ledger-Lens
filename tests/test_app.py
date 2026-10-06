@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import sqlite3
+import string
 from pathlib import Path
 
 import pytest
@@ -417,8 +418,9 @@ def test_a_label_file_that_cannot_be_used_is_set_aside_with_its_reason(
 def test_flag_reasons_render_ledger_text_as_text_never_as_markdown(data_dir, tmp_path):
     """Reasons quote who keyed an entry, an account's name, another entry's id, and whoever wrote
     the ledger chose them. As markdown, a created_by was an image the browser fetched when the
-    entry was shown and a link under any words they liked; the note beside it is built from the
-    same cells. Escaped, the text is drawn as written and does nothing."""
+    entry was shown and a link under any words they liked. A reason is now a code span, where
+    nothing acts or is redrawn; the note beside it is prose built from the same cells, escaped
+    so that no construct forms (Streamlit still links a bare URL in prose: app.md says so)."""
     import pandas as pd
 
     from ledgerlens import jets
@@ -435,17 +437,56 @@ def test_flag_reasons_render_ledger_text_as_text_never_as_markdown(data_dir, tmp
     picked = flags[flags["reason"].str.contains("beacon.png", regex=False)]["entry_id"].iloc[0]
     db = tmp_path / "review.sqlite"
     ReviewStore(db, _identity(client)).save_narrative(picked, {
-        "summary": f"Keyed by {hostile}.", "why_flagged": "w", "evidence_to_request": ["e"],
-        "suggested_control": "c", "confidence": "low"}, model="m")
+        "summary": f"Keyed by {hostile}. Debits $7,428.45 and credits $7,284.88; {string.punctuation}",
+        "why_flagged": "w", "evidence_to_request": ["e"], "suggested_control": "c",
+        "confidence": "low"}, model="m")
     at = _run(client, db)
     at.selectbox(key="picked").select(picked).run()
     assert not at.exception, at.exception
-    shown = [m.value for m in at.markdown if "beacon" in m.value]  # the dot is escaped too
-    assert len(shown) >= 2  # a reason and the note's summary
-    for value in shown:
-        assert "![](" not in value and "](http" not in value  # no image, no link
-        assert r"\!\[\]\(http" in value and r"\[Review complete\]\(http" in value
-        assert r"\# not a heading" in value  # drawn as a "#", not read as one
+    shown = [m.value for m in at.markdown if "beacon" in m.value]
+    reasons = [v for v in shown if v.startswith("- `JET-")]
+    notes = [v for v in shown if v not in reasons]
+    assert reasons and notes
+    for value in reasons:  # one code span, as the summary's markdown writes every ledger string
+        reason = value.split(") - ", 1)[1]
+        assert hostile in reason and reason.startswith("`") and reason.endswith("`")
+        assert "`" not in hostile  # so the span above is the only fence on the line's right half
+    for value in notes:  # escaped prose: every ASCII punctuation character, "$" among them
+        assert "![](" not in value and "](http" not in value
+        assert r"\!\[\]\(http" in value and r"\# not a heading" in value
+        assert r"\$7\,428\.45" in value and "".join("\\" + c for c in string.punctuation) in value
+
+
+def test_a_ledger_the_model_cannot_be_fitted_on_is_a_message_not_an_exception_page(data_dir, tmp_path):
+    import pandas as pd
+
+    folder = tmp_path / "one"
+    folder.mkdir()
+    raw = pd.read_csv(data_dir / "ledger.csv", dtype=str, keep_default_na=False)
+    raw[raw["entry_id"] == raw["entry_id"].iloc[0]].to_csv(folder / "ledger.csv", index=False)
+    at = AppTest.from_file(str(APP), default_timeout=300)
+    at.session_state["ledger_path"] = str(folder / "ledger.csv")
+    at.session_state["labels_path"] = ""
+    at.session_state["db_path"] = str(tmp_path / "review.sqlite")
+    at.session_state["reviewer"] = ""
+    at.run()
+    assert not at.exception, at.exception
+    assert any("cannot be fitted on 1 entry" in e.value for e in at.error)
+    assert "Entries" not in [m.label for m in at.metric]
+
+
+def test_a_sidecar_written_after_the_first_load_is_read_on_the_next_run(data_dir, tmp_path):
+    """load() reads three files; the cache key named two. A QuickBooks pull's sidecar landing
+    a moment after its CSV, or one corrected by hand, left the page keyed to the old identity."""
+    side = tmp_path / "side"
+    side.mkdir()
+    shutil.copy(data_dir / "ledger.csv", side / "ledger.csv")
+    at = _run(side, tmp_path / "review.sqlite")
+    assert any("keyed by `csv:" in c.value for c in at.caption)
+    (side / "ledger.identity.json").write_text('{"ledger_id": "qbo:9130350000"}')
+    at.run()
+    assert not at.exception, at.exception
+    assert any("keyed by `qbo:9130350000`" in c.value for c in at.caption)
 
 
 def _identity(folder):

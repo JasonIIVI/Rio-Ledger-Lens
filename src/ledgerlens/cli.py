@@ -112,6 +112,17 @@ def _load_ledger(path: str) -> tuple[pd.DataFrame | None, str | None]:
         return None, f"error: cannot read the ledger {path}: {one_line(exc)}"
 
 
+def _inert(table: pd.DataFrame, column: str) -> pd.DataFrame:
+    """``table`` with one text column made one line each.
+
+    A label file's archetype names and a ledger's segment keys are printed in the
+    archetype and Benford tables as they were typed, control bytes and newlines
+    included, otherwise; the ids and descriptions the other lists print already
+    go through ``one_line``.
+    """
+    return table.assign(**{column: table[column].map(one_line)})
+
+
 def _expand_home(text: str) -> Path:
     """``text`` as a path, ``~`` expanded only when it is the first character.
 
@@ -166,7 +177,7 @@ def cmd_test(args: argparse.Namespace) -> int:
         print(textwrap.fill(evaluate.DETECTION_CAVEAT, 96, break_on_hyphens=False))
         print(evaluate.format_report(metrics))
         print("\nRecall by archetype:")
-        print(evaluate.recall_by_archetype(flags, labels).to_string(index=False))
+        print(_inert(evaluate.recall_by_archetype(flags, labels), "anomaly_type").to_string(index=False))
         print("\nPrecision by test:")
         print(evaluate.precision_by_test(flags, labels).to_string(index=False))
     return 0
@@ -183,7 +194,7 @@ def cmd_benford(args: argparse.Namespace) -> int:
             print(f"No segment of '{args.by}' had at least {args.min_n} entries.")
             return 0
         print(f"Benford first-digit test, segmented by {args.by} (>= {args.min_n} rows):\n")
-        print(result.to_string(index=False))
+        print(_inert(result, "label").to_string(index=False))
     else:
         r = benford_test(df["abs_amount"], label="ALL")
         print("Benford first-digit test over {:,} amounts".format(r["n"]))
@@ -216,7 +227,11 @@ def cmd_score(args: argparse.Namespace) -> int:
             return 2
     flags = jets.run_all(df)
     scored = jets.score_entries(df, flags)
-    model_scores, report = score_ledger(df, contamination=args.contamination)
+    try:
+        model_scores, report = score_ledger(df, contamination=args.contamination)
+    except ValueError as exc:  # a population the model cannot be fitted on: said, not raised
+        print(f"error: {one_line(exc)}")
+        return 2
     combined = combine(scored, model_scores, model_top_pct=args.model_top_pct)
 
     print(report.describe())
@@ -246,7 +261,8 @@ def cmd_score(args: argparse.Namespace) -> int:
         print("\n--- model lift over random selection ---")
         print(evaluate.model_lift(model_scores, labels).to_string(index=False))
         print("\n--- which archetypes the model can perceive ---")
-        print(evaluate.score_by_archetype(model_scores, labels).to_string(index=False))
+        print(_inert(evaluate.score_by_archetype(model_scores, labels), "anomaly_type")
+              .to_string(index=False))
     return 0
 
 
@@ -267,7 +283,11 @@ def cmd_report(args: argparse.Namespace) -> int:
 
     model_report = None
     if not args.no_model:
-        model_scores, report = score_ledger(df)
+        try:
+            model_scores, report = score_ledger(df)
+        except ValueError as exc:  # a population the model cannot be fitted on
+            print(f"error: {one_line(exc)} (--no-model writes the rule tier alone)")
+            return 2
         scored = combine(scored, model_scores)
         model_report = report.describe()
 
@@ -390,7 +410,11 @@ def cmd_narrate(args: argparse.Namespace) -> int:
     flags = jets.run_all(df)
     scored = jets.score_entries(df, flags)
     if not args.no_model:
-        model_scores, _ = score_ledger(df)
+        try:
+            model_scores, _ = score_ledger(df)
+        except ValueError as exc:  # a population the model cannot be fitted on
+            print(f"error: {one_line(exc)} (--no-model ranks by the rule tier alone)")
+            return 2
         scored = combine(scored, model_scores)
 
     try:
@@ -763,8 +787,12 @@ def cmd_eval_narratives(args: argparse.Namespace) -> int:
                   "would be lost)")
             return 2
         cases = narrative_eval.select_cases(scored, flags, labels)
-        path = narrative_eval.save_cases(cases, cases_path, generator={"ledger": args.ledger},
-                                         ledger_sha256=ledger_sha256)
+        try:
+            path = narrative_eval.save_cases(cases, cases_path, generator={"ledger": args.ledger},
+                                             ledger_sha256=ledger_sha256)
+        except OSError as exc:  # a parent that is a file, a directory nobody may write to
+            print(f"error: cannot write the case file to {cases_path}: {exc}")
+            return 2
         print(f"Wrote {len(cases)} case skeleton(s) to {path}. Add must_mention and "
               "expected_confidence by hand before running.")
         return 0
@@ -812,11 +840,16 @@ def cmd_eval_narratives(args: argparse.Namespace) -> int:
 
     summary = narrative_eval.aggregate(rows)
     out = out_path
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(
-        narrative_eval.render_markdown(rows, summary, runs_dir=runs_dir, cases=cases),
-        encoding="utf-8",
-    )
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(
+            narrative_eval.render_markdown(rows, summary, runs_dir=runs_dir, cases=cases),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        # The rows are safe in runs_dir; a --regrade rebuilds the report without the API.
+        print(f"error: cannot write the report to {out}: {exc} (the rows are in {runs_dir})")
+        return 2
 
     print("Graded {graded}/{cases} cases ({invalid} invalid, {errors} errors kept out of the "
           "score)".format(**summary))

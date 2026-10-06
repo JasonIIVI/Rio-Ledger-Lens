@@ -1,6 +1,6 @@
-"""The README quotes numbers. Each one here is computed from the default ledger, or from a
-replay of the recorded QuickBooks fixtures, and then looked for in the README's text, so a
-figure that moves fails a test instead of going stale on the page.
+"""The README quotes numbers. Each one here is computed from the default ledger and then looked
+for in the README's text, so a figure that moves fails a test instead of going stale on the page
+(the QuickBooks paragraph's figures are pinned beside the fixture replay, in tests/test_cli.py).
 
 It checks that the figures are the measured ones. It cannot check that they mean what a
 reader takes them to mean: that is what the caveat beside each of them is for.

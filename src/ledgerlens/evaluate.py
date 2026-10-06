@@ -67,11 +67,17 @@ def _example(value: object) -> str:
     character Python calls printable, and print a code point assigned after
     this Python's Unicode tables one way and a newer Python's another.
     """
-    if isinstance(value, str) and len(value) > 48:
+    text = ascii(value)
+    if isinstance(value, str) and (len(value) > 48 or len(text) > 60):
         # Cut the id, then quote it: the quote closes, no escape is cut in half, and the
-        # length says that two ids alike this far are not being called the same.
-        return f"{ascii(value[:48])}... ({len(value)} characters)"
-    return ascii(value)
+        # length says that two ids alike this far are not being called the same. The cut
+        # is by what the escaped text takes up, not by a count of characters: ascii()
+        # writes a Latin-1 letter as four, a CJK character as six and an emoji as ten.
+        prefix = value[:48]
+        while prefix and len(ascii(prefix)) > 50:
+            prefix = prefix[:-1]
+        return f"{ascii(prefix)}... ({len(value)} characters)"
+    return text
 
 
 def check_labels(labels: pd.DataFrame, all_entry_ids) -> None:

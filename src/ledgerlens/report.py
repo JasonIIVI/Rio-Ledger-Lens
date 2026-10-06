@@ -49,8 +49,8 @@ def _text_not_formulas(book) -> None:
 
     openpyxl stores a string that begins with "=" as a formula, and one that reads
     like an error code as an error. These cells hold ledger text (an id, a user, a
-    description, a reason that quotes them), and a workpaper is handed over: it must
-    not carry a formula somebody wrote into the books.
+    source, a reason that quotes them) and the review store's notes, and a workpaper
+    is handed over: it must not carry a formula somebody wrote into the books.
     """
     for ws in book.worksheets:
         for row in ws.iter_rows():
@@ -186,9 +186,11 @@ def build_workpaper(
         for i, (label, value) in enumerate(rows, start=3):
             ws.cell(row=i, column=1, value=label).font = LABEL_FONT
             cell = ws.cell(row=i, column=2, value=value)
-            if isinstance(value, str) and len(value) > 60:
+            if isinstance(value, str) and len(value) > 60 and " " in value:
                 # a sentence: wrapped inside the column rather than run off the sheet, and
-                # left out of the column's measure so the counts stay beside their labels
+                # left out of the column's measure so the counts stay beside their labels.
+                # An identifier (the ledger's identity) has no space, stays on one line and
+                # widens the column up to the cap: a reader compares it character by character.
                 cell.alignment = Alignment(wrap_text=True, vertical="top")
 
         note_row = 3 + len(rows) + 1
