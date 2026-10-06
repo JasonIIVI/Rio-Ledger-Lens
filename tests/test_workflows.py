@@ -15,13 +15,15 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
+import textwrap
 from datetime import date
 from pathlib import Path
 
 import pytest
 
-from ledgerlens import summary
-from ledgerlens.cli import build_parser
+from ledgerlens import evaluate, summary
+from ledgerlens.cli import build_parser, main
 from ledgerlens.ledger_context import LedgerContext
 
 WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
@@ -46,6 +48,46 @@ def uncommented(text):
     return re.sub(r"(?m)^[ \t]*#.*$", "", text)
 
 
+_QUOTED = re.compile(r"'[^']*'|\"(?:\\.|[^\"\\])*\"")
+#: An fd digit if the word starts with one, the operator, and the whitespace before its target.
+_REDIRECT = re.compile(r"((?:(?<=\s)|^)\d+)?(>>|>&|<&|&>>?|>|<)\s*")
+
+
+def shell_line(line):
+    """``line`` with its comment and its redirects removed, the way a shell reads them.
+
+    A ``#`` opens a comment only at the start of a word, outside quotes; inside a
+    word (``out/run#1.csv``) or quoted it is a ``#``. A redirect is ``>``, ``>>``,
+    ``<``, ``>&``, ``<&`` or ``&>``, an fd digit before it when the word starts with
+    one (``2>&1``), and the word after it, quoted or not; outside quotes only.
+    """
+    out, i, eat_target = [], 0, False
+    while i < len(line):
+        quoted = _QUOTED.match(line, i)
+        if quoted:
+            if not eat_target:
+                out.append(quoted.group(0))
+            eat_target = False
+            i = quoted.end()
+            continue
+        ch = line[i]
+        if eat_target:
+            if ch.isspace():
+                eat_target = False
+                out.append(ch)
+            i += 1  # the target's unquoted part goes with the operator
+            continue
+        if ch == "#" and (i == 0 or line[i - 1].isspace()):
+            break
+        redirect = _REDIRECT.match(line, i)
+        if redirect:
+            i, eat_target = redirect.end(), True
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def commands(text):
     """Every ``ledgerlens <args>`` a workflow's scripts run, as argv lists.
 
@@ -53,7 +95,9 @@ def commands(text):
     ``;``, ``&&``, ``||``, ``|`` and ``$( )``, and a command counts when its
     first word (after any ``VAR=value``) is ``ledgerlens``. So ``--cov=ledgerlens``,
     ``from ledgerlens import`` (the Python heredoc in ci.yml) and ``ledgerlens-mcp``
-    are not taken for one. Comment lines go first: prose may say "; ledgerlens x".
+    are not taken for one. Comment lines go first: prose may say "; ledgerlens x". Then
+    each line loses its trailing comment and its redirects (:func:`shell_line`) before it
+    is split.
     """
     text = uncommented(text)
     text = re.sub(r"\\\n[ \t]*", " ", text)        # a continued line is one command
@@ -62,9 +106,9 @@ def commands(text):
     for line in text.splitlines():
         if "ledgerlens" not in line:
             continue
-        lexer = shlex.shlex(_YAML_PREFIX.sub("", line), posix=True, punctuation_chars=True)
+        lexer = shlex.shlex(shell_line(_YAML_PREFIX.sub("", line)), posix=True, punctuation_chars=True)
         lexer.whitespace_split = True
-        lexer.commenters = ""  # whole-line comments are gone already; a "#" inside a word is a "#"
+        lexer.commenters = ""  # comments are gone already (shell_line); a "#" left is a "#"
         try:
             tokens = list(lexer)
         except ValueError:  # not shell (an unpaired quote); the count check below notices a miss
@@ -77,13 +121,7 @@ def commands(text):
             while words and re.fullmatch(r"\w+=.*", words[0]):  # VAR=value before the command
                 words.pop(0)
             if words[:1] == ["ledgerlens"]:
-                argv, skip = [], False
-                for word in words[1:]:  # a redirect and its target go; what follows them stays
-                    if skip or set(word) <= set("<>"):
-                        skip = not skip
-                    else:
-                        argv.append(word)
-                found.append(argv)
+                found.append(words[1:])
             words = []
     return found
 
@@ -132,6 +170,12 @@ def test_the_extractor_reads_scripts_the_way_a_shell_would():
         "          echo \"the run's log names ledgerlens\"",
         "          ledgerlens score data/ledger.csv --out out/run#1.csv --top 3",
         "          ledgerlens test data/ledger.csv > out/test.log --top 5",
+        "          ledgerlens generate --out-dir data  # seeded: the same ledger every week",
+        "          ledgerlens test data/ledger.csv --labels data/labels.csv > test.log 2>&1",
+        "          ledgerlens summary data/ledger.csv --format json 2>/dev/null >out/s.json",
+        "          ledgerlens score data/ledger.csv --top 5 >& out/all.log",
+        '          ledgerlens summary "data/#1 ledger.csv" --out "out/a > b.md"  # quoted: text',
+        "          ledgerlens benford data/ledger.csv  # the generator's default",
     ])
     assert commands(text) == [
         ["test", "data/ledger.csv", "--labels", "data/labels.csv"],
@@ -143,6 +187,14 @@ def test_the_extractor_reads_scripts_the_way_a_shell_would():
         # inside a word, or after a redirect's target, is parsed like any other
         ["score", "data/ledger.csv", "--out", "out/run#1.csv", "--top", "3"],
         ["test", "data/ledger.csv", "--top", "5"],
+        # a "#" that starts a word opens a comment (an apostrophe in it is not an unpaired
+        # quote), and every redirect form goes with its target; inside quotes both are text
+        ["generate", "--out-dir", "data"],
+        ["test", "data/ledger.csv", "--labels", "data/labels.csv"],
+        ["summary", "data/ledger.csv", "--format", "json"],
+        ["score", "data/ledger.csv", "--top", "5"],
+        ["summary", "data/#1 ledger.csv", "--out", "out/a > b.md"],
+        ["benford", "data/ledger.csv"],
     ]
 
 
@@ -250,25 +302,44 @@ def test_ci_still_has_its_rule_1_job_and_claude_yml_its_mention_gate():
     assert "contains(github.event.issue.title, '@claude')" in claude
 
 
-def test_ci_prints_the_caveat_with_the_figures_its_gate_logs():
+def gate_script(ci):
+    """The Python the detection gate hands `python -`, as the runner would."""
+    step = ci.split("      - name: Assert detection has not regressed\n", 1)[1]
+    body = step.split("python - <<'PY'\n", 1)[1].split("          PY\n", 1)[0]
+    return textwrap.dedent(body)
+
+
+def test_the_gates_script_prints_the_caveat_before_the_figures_it_logs(tmp_path):
     """The detection gate's log is public, and so is the weekly run's: `test` and `score` print
-    the caveat themselves (tests/test_cli.py); the gate's own script has to as well."""
-    ci = read("ci.yml")
-    assert ci.index("print(evaluate.DETECTION_CAVEAT)") < ci.index("print(evaluate.format_report(m))")
+    the caveat themselves (tests/test_cli.py); the gate's own script has to as well. Run, not
+    read: a commented-out print, an `if False:` and a line that breaks the heredoc all kept
+    the substring in the file."""
+    script = gate_script(read("ci.yml"))
+    assert "load_labels" in script and "sys.exit(1)" in script
+    main(["generate", "--out-dir", str(tmp_path / "data")])  # what the step before it does
+    run = subprocess.run([sys.executable, "-"], input=script, cwd=tmp_path,
+                         capture_output=True, text=True)
+    assert run.returncode == 0, run.stderr
+    printed = " ".join(run.stdout.split())
+    assert evaluate.DETECTION_CAVEAT in printed
+    assert printed.index(evaluate.DETECTION_CAVEAT) < printed.index("Precision")
+    assert printed.endswith("detection quality within expected bounds")
 
 
 # --- the step that opens the Issue, run for real against a stand-in gh --------
 
 GH_STUB = r"""#!/bin/bash
-# Stands in for gh: records each call, answers the three the step reads from.
-printf '%s\n' "$*" >> "$GH_LOG"
+# Stands in for gh: records each call (the repository it was aimed at, then one argument
+# per line, then a blank line) and answers the four the step reads from or relies on.
+{ printf 'GH_REPO=%s\n' "${GH_REPO-}"; printf '%s\n' "$@"; echo; } >> "$GH_LOG"
 case "$1 $2" in
   "label create") [ -z "${GH_FAIL_LABEL:-}" ] || exit 1 ;;
-  "issue list") for number in $GH_PREVIOUS; do echo "$number"; done ;;
+  "issue list") [ -z "${GH_FAIL_LIST:-}" ] || exit 1; for number in $GH_PREVIOUS; do echo "$number"; done ;;
   "issue create")
     [ -z "${GH_FAIL_CREATE:-}" ] || exit 1
     while [ $# -gt 1 ]; do [ "$1" != "--body-file" ] || cp "$2" "$GH_POSTED"; shift; done
     echo "https://github.com/example/repo/issues/13" ;;
+  "issue close") [ -z "${GH_FAIL_CLOSE:-}" ] || exit 1 ;;
 esac
 """
 
@@ -284,7 +355,10 @@ def issue_step(weekly):
     return "\n".join(lines) + "\n"
 
 
-def run_issue_step(weekly, tmp_path, previous="11 12", fail_create=False, fail_label=False):
+def run_issue_step(weekly, tmp_path, previous="11 12", fail_create=False, fail_label=False,
+                   fail_list=False, fail_close=False):
+    """Run the step's script against the stand-in. Returns the run and the calls gh saw, each
+    an argv list (so an unquoted "$title" shows as twelve arguments, not as one line)."""
     if not (shutil.which("bash") and shutil.which("jq")):
         pytest.skip("needs bash and jq, as the runner has")
     stub = tmp_path / "bin"
@@ -301,50 +375,83 @@ def run_issue_step(weekly, tmp_path, previous="11 12", fail_create=False, fail_l
         "GITHUB_REPOSITORY": "example/repo", "GITHUB_SERVER_URL": "https://github.com",
         "GITHUB_RUN_ID": "4242", "GITHUB_SHA": "0123abc",
     }
-    if fail_create:
-        env["GH_FAIL_CREATE"] = "1"
-    if fail_label:
-        env["GH_FAIL_LABEL"] = "1"
+    for name, failing in (("CREATE", fail_create), ("LABEL", fail_label), ("LIST", fail_list),
+                          ("CLOSE", fail_close)):
+        if failing:
+            env[f"GH_FAIL_{name}"] = "1"
     run = subprocess.run(["bash", "-c", issue_step(weekly)], cwd=tmp_path, env=env,
                          capture_output=True, text=True)
-    log = (tmp_path / "gh.log").read_text().splitlines() if (tmp_path / "gh.log").exists() else []
-    return run, log
+    log = (tmp_path / "gh.log").read_text() if (tmp_path / "gh.log").exists() else ""
+    calls = []
+    for record in log.split("\n\n"):
+        if record.strip():
+            repo, *argv = record.splitlines()
+            assert repo == "GH_REPO=example/repo", repo  # every call aimed at this run's repository
+            calls.append(argv)
+    return run, calls
 
 
 def test_the_issue_step_posts_the_summary_then_closes_only_the_older_issues(weekly, tmp_path):
-    run, log = run_issue_step(weekly, tmp_path)
+    run, calls = run_issue_step(weekly, tmp_path)
     assert run.returncode == 0, run.stderr
     new = "https://github.com/example/repo/issues/13"
-    closing = f"--comment Superseded by {new}. Closing is not a review of these numbers."
-    assert log == [
-        'label create weekly-run --description Opened by the weekly synthetic run --color 0E8A16 --force',
-        "issue list --label weekly-run --state open --limit 100 --json number --jq .[].number",
-        "issue create --title Weekly synthetic run 2001-02-03: 3 of 7 entries flagged by the rule tier "
-        "--label weekly-run --body-file out/summary.md",
-        f"issue close 11 {closing}",
-        f"issue close 12 {closing}",
+    closing = ["--comment", f"Superseded by {new}. Closing is not a review of these numbers."]
+    assert calls == [  # one argument per element: a title or a comment left unquoted would be many
+        ["label", "create", "weekly-run", "--description", "Opened by the weekly synthetic run",
+         "--color", "0E8A16", "--force"],
+        ["issue", "list", "--label", "weekly-run", "--state", "open", "--limit", "100",
+         "--json", "number", "--jq", ".[].number"],
+        ["issue", "create", "--title",
+         "Weekly synthetic run 2001-02-03: 3 of 7 entries flagged by the rule tier",
+         "--label", "weekly-run", "--body-file", "out/summary.md"],
+        ["issue", "close", "11", *closing],
+        ["issue", "close", "12", *closing],
     ]
     posted = (tmp_path / "posted.md").read_text()
-    # the summary itself, with the run's own line added after it (never in place of it)
-    assert posted.startswith("THE SUMMARY\n\nits last line\n")
-    assert posted.endswith("\nRun: https://github.com/example/repo/actions/runs/4242 at commit 0123abc\n")
-    assert f"Opened {new}" in run.stdout and "@" not in "".join(log) + posted
+    # the summary itself, a blank line, then the run's own line: exactly that, so the line is
+    # never part of the summary's last list item and never in place of anything
+    assert posted == ("THE SUMMARY\n\nits last line\n"
+                      "\nRun: https://github.com/example/repo/actions/runs/4242 at commit 0123abc\n")
+    assert f"Opened {new}" in run.stdout
+    assert "@" not in " ".join(" ".join(argv) for argv in calls) + posted
 
 
 def test_the_issue_step_with_no_older_issue_closes_nothing(weekly, tmp_path):
-    run, log = run_issue_step(weekly, tmp_path, previous="")
+    run, calls = run_issue_step(weekly, tmp_path, previous="")
     assert run.returncode == 0, run.stderr  # `set -u` and an empty list
-    assert [line.split()[:2] for line in log] == [["label", "create"], ["issue", "list"], ["issue", "create"]]
+    assert [argv[:2] for argv in calls] == [["label", "create"], ["issue", "list"], ["issue", "create"]]
 
 
 def test_the_issue_step_closes_nothing_when_the_new_issue_could_not_be_opened(weekly, tmp_path):
-    run, log = run_issue_step(weekly, tmp_path, fail_create=True)
+    run, calls = run_issue_step(weekly, tmp_path, fail_create=True)
     assert run.returncode != 0
-    assert not any(line.startswith("issue close") for line in log)  # the last run's Issue stays open
+    assert not any(argv[:2] == ["issue", "close"] for argv in calls)  # the last run's Issue stays open
 
 
 def test_the_issue_step_stops_at_the_first_call_that_fails(weekly, tmp_path):
     """A label that cannot be made is a token or permission problem: said there, not three calls on."""
-    run, log = run_issue_step(weekly, tmp_path, fail_label=True)
+    run, calls = run_issue_step(weekly, tmp_path, fail_label=True)
     assert run.returncode != 0
-    assert [line.split()[:2] for line in log] == [["label", "create"]]
+    assert [argv[:2] for argv in calls] == [["label", "create"]]
+
+
+def test_the_issue_step_opens_nothing_when_the_older_issues_cannot_be_listed(weekly, tmp_path):
+    """A list that failed quietly would open a new Issue and close nothing: two open at once."""
+    run, calls = run_issue_step(weekly, tmp_path, fail_list=True)
+    assert run.returncode != 0
+    assert [argv[:2] for argv in calls] == [["label", "create"], ["issue", "list"]]
+
+
+def test_the_issue_step_fails_when_an_older_issue_cannot_be_closed(weekly, tmp_path):
+    """The new Issue exists by then; the run still fails, so an older one left open is seen."""
+    run, calls = run_issue_step(weekly, tmp_path, fail_close=True)
+    assert run.returncode != 0 and calls[-1][:2] == ["issue", "close"]
+    assert (tmp_path / "posted.md").exists()
+
+
+def test_the_issue_step_runs_in_bash_with_the_runs_token_and_nothing_else(weekly):
+    """`shell: bash` (the script relies on it), the token as GH_TOKEN, and no `if:` or
+    `continue-on-error:` that would let the step be skipped or its failure ignored."""
+    header = weekly.split("      - name: Open the Issue\n", 1)[1].split("        run: |\n", 1)[0]
+    assert [line.strip() for line in header.splitlines()] == [
+        "shell: bash", "env:", "GH_TOKEN: ${{ github.token }}"]
