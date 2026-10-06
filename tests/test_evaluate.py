@@ -247,10 +247,10 @@ def test_a_refusal_quotes_ids_so_they_can_be_told_apart_and_cannot_act():
 
     # an id that differs from another by a character no eye sees is not printed as the same id
     with pytest.raises(evaluate.LabelsMismatchError) as refused:
-        evaluate.check_labels(_labels(["A️"]), ["A"])  # a variation selector: printable to Python
+        evaluate.check_labels(_labels(["A" + chr(0xFE0F)]), ["A"])  # a variation selector: printable to Python
     message = str(refused.value)
     assert message.isascii() and "(e.g. 'A')" in message and "(e.g. 'A\\ufe0f')" in message
-    assert evaluate._example("café") == "'caf\\xe9'"  # the same text on every Python's tables
+    assert evaluate._example("caf" + chr(0xE9)) == "'caf\\xe9'"  # the same text on every Python's tables
 
 
 def test_check_labels_orders_ids_of_two_types_without_a_type_error():

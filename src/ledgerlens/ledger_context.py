@@ -174,8 +174,9 @@ class LedgerContext:
             # fixed order: a reader comparing two runs has to be able to tell "did not
             # fire" from "was not run". Both count rows of their own kind: flags_by_test
             # counts flags (one entry can raise several), tier_agreement counts entries.
-            # A key neither list names is kept, after the fixed ones: the breakdown always
-            # adds up to the total above it, whatever a later test or tier relation is called.
+            # A key neither list names is kept, after the fixed ones, so a later test or
+            # tier relation counts toward the total above it whatever it is called (a
+            # missing key would not: groupby and value_counts drop it before this sees it).
             "flags_by_test": {
                 **{test_id: int(by_test.get(test_id, 0)) for test_id in jets.REGISTRY},
                 **{str(k): int(v) for k, v in by_test.items() if k not in jets.REGISTRY},

@@ -49,7 +49,8 @@ TUNING_NOTE = (
 NO_LABELS_NOTE = "No labels were given, so detection quality was not measured for this ledger."
 MODEL_TIER_NOTE = (
     "Scored separately and never blended with the rule tier. The count is the model's budget, "
-    "a share of the entries by rank with ties at the cutoff included, not anything found."
+    "a share of the entries by rank (at least one entry, ties at the cutoff included), not "
+    "anything found."
 )
 AGREEMENT_NOTE = "Counts of how the two tiers relate, not a measure of quality."
 SMALL_NOTE = (
@@ -128,13 +129,14 @@ def collect(
         "flag_rate": base["flag_rate"],
         "flags_raised": base["flags_raised"],
         "flags_by_test": base["flags_by_test"],
-        "tier_agreement": base["tier_agreement"],
+        # Each caveat ahead of what it qualifies, in the JSON as on the page.
         "tier_agreement_caveat": AGREEMENT_NOTE,
+        "tier_agreement": base["tier_agreement"],
         "model_tier": {
+            "caveat": MODEL_TIER_NOTE,
             **asdict(report),
             "top_pct": context.model_top_pct,
             "flagged": int(context.combined["model_flag"].sum()),
-            "caveat": MODEL_TIER_NOTE,
         },
         "top_exceptions": [_entry(r) for r in context.top_exceptions(limit=top)["entries"]],
     }
@@ -144,6 +146,10 @@ def collect(
         by_decision: dict[str, int] = {}
         for name in (*DECISIONS, "unrecognised"):
             count = sum(n for kind, n in status["by_decision"].items() if _decision_kind(kind) == name)
+            if name == "unrecognised":
+                # A decided entry whose kind the store's count skipped (a NULL in a file made
+                # by hand, which the DDL would refuse) is decided and unrecognised, not absent.
+                count += max(0, status["decided"] - sum(status["by_decision"].values()))
             if count:
                 by_decision[name] = count
         payload["review"] = {
@@ -204,6 +210,7 @@ _UNSEEN_RANGES = (
     (0x034F, 0x034F),                        # combining grapheme joiner
     (0x061C, 0x061C),                        # Arabic letter mark (a bidi control)
     (0x115F, 0x1160), (0x3164, 0x3164), (0xFFA0, 0xFFA0),  # Hangul fillers: letters drawn blank
+    (0x2800, 0x2800),                        # Braille blank: a letter drawn blank, as the fillers are
     (0x17B4, 0x17B5),                        # Khmer inherent vowels, drawn as nothing
     (0x180B, 0x180F),                        # Mongolian variation selectors and vowel separator
     (0x200B, 0x200F),                        # zero-width space and joiners, direction marks
@@ -213,7 +220,7 @@ _UNSEEN_RANGES = (
     (0xE000, 0xF8FF),                        # private use
     (0xFE00, 0xFE0F),                        # variation selectors
     (0xFEFF, 0xFEFF),                        # byte-order mark
-    (0xFFF9, 0xFFFB),                        # interlinear annotation
+    (0xFFF0, 0xFFFB),                        # specials reserved to draw nothing, interlinear annotation
     (0x1BCA0, 0x1BCA3), (0x1D173, 0x1D17A),  # shorthand and musical format controls
     (0xE0000, 0xE0FFF),                      # tags, and the variation selectors supplement
     (0xF0000, 0x10FFFF),                     # private use planes
@@ -225,12 +232,16 @@ _UNSEEN = re.compile(
 def one_line(value: object) -> str:
     """``value`` as one line of visible text; None and NaN as nothing.
 
-    What is removed is what ``_UNSEEN_RANGES`` lists. Text a reader *can* see is kept
-    as written, whatever it says: ledger text is data, and hiding it is not the job.
+    What is removed is what ``_UNSEEN_RANGES`` lists, and the whitespace that a
+    removal leaves behind. Text a reader *can* see is kept, whatever it says: ledger
+    text is data, and hiding it is not the job. A few sequences that lean on a
+    removed character are drawn differently without it (an emoji built with a
+    joiner or a tag sequence, a variation form, a private-use glyph a font happens
+    to draw); keeping any of them would keep the hidden channel open.
     """
     if value is None or (isinstance(value, float) and value != value):
         return ""
-    return _UNSEEN.sub("", " ".join(str(value).split()))
+    return " ".join(_UNSEEN.sub("", " ".join(str(value).split())).split())
 
 
 def md_code(value: object) -> str:
@@ -290,8 +301,8 @@ def _years(payload: dict) -> str:
 
 
 def _model_sentence(model: dict) -> str:
-    return "The Isolation Forest flags the top {:.1%} of entries by rank: {:,} of {:,}.".format(
-        model["top_pct"], model["flagged"], model["n_entries"])
+    return ("The Isolation Forest flags the top {:.1%} of entries by rank, at least one: "
+            "{:,} of {:,}.".format(model["top_pct"], model["flagged"], model["n_entries"]))
 
 
 def _features_sentence(model: dict) -> str:
