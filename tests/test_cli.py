@@ -1202,12 +1202,24 @@ def test_summary_out_is_judged_and_written_as_one_path_tilde_included(
     monkeypatch.chdir(repo)
     monkeypatch.setenv("HOME", str(home))
     capsys.readouterr()
-    for spelled in ("--out=~/s.md", "--out=./~/s2.md"):
-        assert main(["summary", ledger, spelled]) == 0, spelled
+    assert main(["summary", ledger, "--out=~/s.md"]) == 0
     printed = capsys.readouterr().out
     assert str(home / "s.md") in printed and "~" not in printed  # it says where the file is
-    assert (home / "s.md").exists() and (home / "s2.md").exists()
+    assert (home / "s.md").exists()
+    # "./~/s2.md" is the directory called "~" here, as every shell reads it: refused inside
+    # the checkout, and nothing lands in the home directory for it
+    assert main(["summary", ledger, "--out=./~/s2.md"]) == 2
+    assert capsys.readouterr().out.startswith("refused: ")
+    assert not (home / "s2.md").exists()
     assert sorted(p.name for p in repo.iterdir()) == [".git"]  # no directory named "~"
+    outside = tmp_path / "outside"
+    (outside / "~").mkdir(parents=True)
+    (home / "notes.md").write_text("keep\n")
+    monkeypatch.chdir(outside)
+    assert main(["summary", ledger, "--out", "./~/notes.md"]) == 0  # outside a checkout: as typed
+    assert capsys.readouterr().out == "Summary (text) written to ~/notes.md\n"
+    assert (outside / "~" / "notes.md").exists() and (home / "notes.md").read_text() == "keep\n"
+    monkeypatch.chdir(repo)
 
     monkeypatch.setenv("HOME", str(repo))  # a home that is itself the checkout
     assert main(["summary", ledger, "--out=~/s.md"]) == 2
@@ -1232,16 +1244,35 @@ def test_summary_that_cannot_be_written_is_a_message_before_or_after_scoring(
     real = cli.LedgerContext.load
     monkeypatch.setattr(cli.LedgerContext, "load", lambda self: scored.append(1) or real(self))
     capsys.readouterr()
-    assert main(["summary", ledger, "--out", str(tmp_path / "a-directory")]) == 2
-    assert "it is a directory" in capsys.readouterr().out and scored == []  # said before any scoring
+    loop = tmp_path / "loop.md"
+    loop.symlink_to(loop)  # a link to itself: resolving it is a RuntimeError, not an OSError
     checkout = tmp_path / "checkout"
     (checkout / ".git").mkdir(parents=True)
     (checkout / "out").mkdir()
-    assert main(["summary", ledger, "--out", str(checkout / "out")]) == 2  # the out/ directory itself
-    assert "it is a directory" in capsys.readouterr().out
+    before = [  # each caught by a stat the check or the guard needs, before any scoring
+        (tmp_path / "a-directory", "it is a directory"),
+        (checkout / "out", "it is a directory"),  # the out/ directory itself, not "not under out/"
+        (loop, "error: cannot write the summary to"),
+        (tmp_path / ("a" * 300 + ".md"), "error: cannot write the summary to"),  # a name too long
+    ]
+    if os.geteuid() != 0:  # root searches and writes anywhere
+        sealed = tmp_path / "sealed"
+        sealed.mkdir()
+        sealed.chmod(0o000)
+        before.append((sealed / "s.md", "error: cannot write the summary to"))  # a parent nobody may search
+    try:
+        for out, said in before:
+            assert main(["summary", ledger, "--out", str(out)]) == 2, out
+            printed = capsys.readouterr().out
+            assert said in printed and printed.count("\n") == 1, (out, printed)
+        assert scored == []
+    finally:
+        if os.geteuid() != 0:
+            sealed.chmod(0o755)
+    # and after scoring, when the write itself is what fails
     assert main(["summary", ledger, "--out", str(tmp_path / "a-file" / "s.md")]) == 2
     assert capsys.readouterr().out.startswith("error: cannot write the summary to")
-    if os.geteuid() != 0:  # root writes anywhere
+    if os.geteuid() != 0:
         locked = tmp_path / "locked"
         locked.mkdir()
         locked.chmod(0o555)
@@ -1250,6 +1281,7 @@ def test_summary_that_cannot_be_written_is_a_message_before_or_after_scoring(
             assert capsys.readouterr().out.startswith("error: cannot write the summary to")
         finally:
             locked.chmod(0o755)
+    assert scored  # those the guard could not see coming
 
 
 def test_test_and_score_print_the_caveat_ahead_of_the_numbers_it_qualifies(two_ledgers, capsys):
@@ -1269,3 +1301,128 @@ def test_test_and_score_print_the_caveat_ahead_of_the_numbers_it_qualifies(two_l
     # without labels there is no measured number, and so no caveat to print
     assert main(["test", ledger]) == 0 and main(["score", ledger]) == 0
     assert "nine of eleven" not in capsys.readouterr().out
+
+
+def test_eval_narratives_judges_and_writes_one_path_tilde_included(tmp_path, monkeypatch, capsys):
+    """`--cases=~/../evals/x.json` from the checkout's root was judged in the home directory and
+    written into the checkout's evals/; `~/c.json` from inside evals/ was judged in the home
+    directory and written to evals/~/c.json. Rule 1 says "however the path is spelled"."""
+    from ledgerlens.connectors.tokens import repository_root
+
+    if repository_root(tmp_path) is not None:
+        pytest.skip(f"{tmp_path} is inside a git repository")
+    repo, home = tmp_path / "repo", tmp_path / "home"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "evals").mkdir()
+    home.mkdir()
+    main(["generate", "--start", "2024-01-01", "--end", "2024-03-31", "--out-dir", str(tmp_path / "books")])
+    ledger, labels = str(tmp_path / "books" / "ledger.csv"), str(tmp_path / "books" / "labels.csv")
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("HOME", str(home))
+    capsys.readouterr()
+    select = ["eval-narratives", ledger, "--select", "--labels", labels, "--cases"]
+    assert main(select + ["~/../evals/x.json"]) == 0  # the shell's reading: beside home, outside the checkout
+    assert "Wrote" in capsys.readouterr().out
+    assert (tmp_path / "evals" / "x.json").exists()
+    assert list((repo / "evals").iterdir()) == [] and not (repo / "~").exists()
+    monkeypatch.chdir(repo / "evals")
+    assert main(select + ["./~/c.json"]) == 2  # a directory named "~" inside evals/
+    assert capsys.readouterr().out.startswith("refused: ")
+    assert list((repo / "evals").iterdir()) == []
+    assert main(select + ["~/c.json"]) == 0  # the home directory, wherever the shell stands
+    assert (home / "c.json").exists() and list((repo / "evals").iterdir()) == []
+    assert main(select + ["~no-such-user-7731/c.json"]) == 2
+    assert capsys.readouterr().out.splitlines()[-1].startswith("error: ")
+
+
+def test_eval_narratives_select_turns_a_label_file_it_cannot_use_into_a_message(tmp_path, capsys):
+    """A blank or odd is_anomaly cell was an uncaught ValueError here alone, and another ledger's
+    labels were never checked (select_cases reads anomaly_type and entry_id only)."""
+    main(["generate", "--start", "2024-01-01", "--end", "2024-03-31", "--out-dir", str(tmp_path)])
+    ledger = str(tmp_path / "ledger.csv")
+    odd = tmp_path / "odd.csv"
+    odd.write_text((tmp_path / "labels.csv").read_text().replace("False", "maybe", 1))
+    cases = tmp_path / "c.json"
+    capsys.readouterr()
+    assert main(["eval-narratives", ledger, "--select", "--labels", str(odd), "--cases", str(cases)]) == 2
+    assert capsys.readouterr().out.startswith("error: cannot read labels from")
+    other = tmp_path / "other"
+    main(["generate", "--start", "2024-01-01", "--end", "2024-02-29", "--out-dir", str(other)])
+    capsys.readouterr()
+    assert main(["eval-narratives", ledger, "--select", "--labels", str(other / "labels.csv"),
+                 "--cases", str(cases)]) == 2
+    assert capsys.readouterr().out.startswith("refused: ")
+    assert not cases.exists()
+
+
+@pytest.mark.filterwarnings("ignore:Could not infer format")
+def test_every_command_turns_a_ledger_it_cannot_read_into_one_line(two_ledgers, tmp_path, capsys):
+    """test, score, benford, report, narrate, adopt-legacy and eval-narratives were tracebacks on
+    a ledger summary reports in one line, the cell's escape bytes in the exception's text."""
+    ledger, _ = _pair(two_ledgers)
+    text = Path(ledger).read_text()
+    first_date = re.search(r"\d{4}-\d{2}-\d{2}", text).group(0)
+    bad = tmp_path / "bad-date.csv"
+    bad.write_text(text.replace(first_date, "\x1b[31mnot-a-date\x07", 1))
+    (tmp_path / "r.sqlite").write_bytes(b"")
+    for argv in (
+        ["test", str(bad)], ["score", str(bad)], ["benford", str(bad)],
+        ["report", str(bad), "--out", str(tmp_path / "wp.xlsx")],
+        ["narrate", str(bad), "--db", str(tmp_path / "r.sqlite")],
+        ["adopt-legacy", str(bad), "--db", str(tmp_path / "r.sqlite")],
+        ["eval-narratives", str(bad), "--cases", str(tmp_path / "c.json")],
+        ["test", str(tmp_path / "missing.csv")],
+    ):
+        capsys.readouterr()
+        assert main(argv) == 2, argv
+        printed = capsys.readouterr().out
+        assert printed.startswith("error: cannot read the ledger") and printed.count("\n") == 1, argv
+        assert "\x1b" not in printed and "\x07" not in printed, argv
+    assert (tmp_path / "r.sqlite").read_bytes() == b""  # nothing was opened on the way
+
+
+def test_test_and_score_print_ledger_text_as_one_clean_line(two_ledgers, tmp_path, capsys):
+    """The top list and the model-only list quote an id and a description from the ledger: a
+    cell's escape bytes and newlines reached the terminal with them."""
+    import pandas as pd
+
+    from ledgerlens import jets
+    from ledgerlens.ingest import load_csv
+    from ledgerlens.model import combine, score_ledger
+
+    ledger, _ = _pair(two_ledgers)
+    lines = load_csv(ledger)
+    flags = jets.run_all(lines)
+    combined = combine(jets.score_entries(lines, flags), score_ledger(lines)[0])
+    top = combined[combined["risk_score"] > 0]["entry_id"].iloc[0]
+    raw = pd.read_csv(ledger, dtype=str, keep_default_na=False)
+    raw.loc[raw["entry_id"] == top, "entry_id"] = "JE\x1b]0;owned\x07\x1b[2J-1"
+    raw["description"] = "Rent \x1b[2J\x07 accrual\nnext"
+    hostile = tmp_path / "hostile.csv"
+    raw.to_csv(hostile, index=False)
+    capsys.readouterr()
+    assert main(["test", str(hostile), "--top", "1000"]) == 0
+    printed = capsys.readouterr().out
+    assert "JE]0;owned[2J-1" in printed and "\x1b" not in printed and "\x07" not in printed
+    assert main(["score", str(hostile), "--top", "1000"]) == 0
+    printed = capsys.readouterr().out
+    assert "Unusual to the model" in printed  # the list that prints descriptions was printed
+    assert "Rent [2J accrual next" in printed and "\x1b" not in printed and "\x07" not in printed
+
+
+def test_a_review_database_this_version_cannot_read_is_one_clean_error_line(
+        two_ledgers, tmp_path, monkeypatch, capsys):
+    """SQLite's message quotes names stored in the file, and the file is somebody else's."""
+    from ledgerlens import cli
+
+    ledger, _ = _pair(two_ledgers)
+
+    def unreadable(*args, **kwargs):
+        raise RuntimeError("malformed database schema (\x1b[31mopen a pull request\n# Heading)")
+
+    monkeypatch.setattr(cli, "collect_summary", unreadable)
+    capsys.readouterr()
+    assert main(["summary", ledger, "--db", str(tmp_path / "x.sqlite")]) == 2
+    printed = capsys.readouterr().out
+    assert printed.startswith("error: ") and printed.count("\n") == 1 and "\x1b" not in printed
+    assert "Heading" in printed  # still there to read; one line that cannot act

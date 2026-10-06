@@ -40,6 +40,7 @@ from pathlib import Path
 import pandas as pd
 
 from . import narrate
+from .connectors.tokens import repository_root
 from .ingest import ledger_digest
 from .narrate import (
     NarrativeError,
@@ -176,7 +177,9 @@ REPORT_FILE = Path("docs/narrative-eval.md")
 COMMITTED_DIRS = ("evals", "docs")
 
 #: The checkout this module was imported from (an editable install); the
-#: current directory covers a run from the repository root. Both are checked.
+#: current directory covers a run from the repository root. Both are checked,
+#: and so is the checkout the path itself would land in, whatever the current
+#: directory is (``repository_root``).
 _CHECKOUT = Path(__file__).resolve().parents[2]
 
 
@@ -202,13 +205,22 @@ def refuse_committed_path(path: str | Path, ledger_sha256: str | None, what: str
 
     A missing digest counts as "not the default": a caller that cannot say
     which ledger its text came from does not get to publish it.
+
+    The path is judged as given, links followed: a ``~`` is the caller's to
+    expand (the CLI does, once), so the path judged here is the path a writer
+    handed the same text writes. Judging one spelling and writing another is
+    how a guard gets walked around.
     """
     if not str(path).strip():
         raise CommittedPathError(f"{what}: an empty path names no destination")
     if ledger_sha256 == DEFAULT_LEDGER_SHA256:
         return
-    target = Path(path).expanduser().resolve()
-    for base in {Path.cwd().resolve(), _CHECKOUT}:
+    target = Path(path).resolve()
+    bases = {Path.cwd().resolve(), _CHECKOUT}
+    checkout = repository_root(target.parent)  # the checkout the file would land in
+    if checkout is not None:
+        bases.add(checkout)
+    for base in bases:
         for name in COMMITTED_DIRS:
             root = (base / name).resolve()
             if _within(target, root):

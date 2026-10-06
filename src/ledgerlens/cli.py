@@ -99,8 +99,35 @@ def _load_labels(path: str, df: pd.DataFrame) -> tuple[pd.DataFrame | None, str 
     return labels, None
 
 
+def _load_ledger(path: str) -> tuple[pd.DataFrame | None, str | None]:
+    """``(lines, None)``, or ``(None, the line to print)`` when ``path`` is not a ledger.
+
+    No such file, not a ledger, a cell that will not parse. The reason can quote a
+    cell of the file: one line, no controls, like every error line that quotes ledger
+    text.
+    """
+    try:
+        return load_csv(path), None
+    except (OSError, ValueError) as exc:
+        return None, f"error: cannot read the ledger {path}: {one_line(exc)}"
+
+
+def _expand_home(text: str) -> Path:
+    """``text`` as a path, ``~`` expanded only when it is the first character.
+
+    A shell passes ``--out=~/x.md`` on as typed, so the tool expands it. But
+    ``Path("./~/x.md").expanduser()`` would go to the home directory too, the ``./``
+    being gone before expanduser looks, and every shell reads that spelling as the
+    directory called ``~`` here. Raises RuntimeError for ``~name`` with no such user.
+    """
+    return Path(text).expanduser() if text.startswith("~") else Path(text)
+
+
 def cmd_test(args: argparse.Namespace) -> int:
-    df = load_csv(args.ledger)
+    df, problem = _load_ledger(args.ledger)
+    if problem:
+        print(problem)
+        return 2
     labels = None
     if args.labels:
         labels, problem = _load_labels(args.labels, df)
@@ -129,7 +156,8 @@ def cmd_test(args: argparse.Namespace) -> int:
     if not top.empty:
         print(f"\nTop {len(top)} by risk score:")
         for r in top.itertuples():
-            print(f"  {r.entry_id}  score {r.risk_score:>4.1f}  {r.tests_fired}  ${r.entry_amount:,.2f}")
+            print(f"  {one_line(r.entry_id)}  score {r.risk_score:>4.1f}  {r.tests_fired}  "
+                  f"${r.entry_amount:,.2f}")
 
     if labels is not None:
         metrics = evaluate.evaluate(flags, labels, df["entry_id"].unique())
@@ -145,7 +173,10 @@ def cmd_test(args: argparse.Namespace) -> int:
 
 
 def cmd_benford(args: argparse.Namespace) -> int:
-    df = load_csv(args.ledger)
+    df, problem = _load_ledger(args.ledger)
+    if problem:
+        print(problem)
+        return 2
     if args.by:
         result = segmented_benford(df, by=args.by, min_n=args.min_n)
         if result.empty:
@@ -173,7 +204,10 @@ def cmd_benford(args: argparse.Namespace) -> int:
 
 def cmd_score(args: argparse.Namespace) -> int:
     """Run both tiers and show how they agree."""
-    df = load_csv(args.ledger)
+    df, problem = _load_ledger(args.ledger)
+    if problem:
+        print(problem)
+        return 2
     labels = None
     if args.labels:
         labels, problem = _load_labels(args.labels, df)
@@ -199,7 +233,8 @@ def cmd_score(args: argparse.Namespace) -> int:
     if not interesting.empty:
         print(f"\nUnusual to the model but matching no rule (top {len(interesting)}):")
         for r in interesting.itertuples():
-            print(f"  {r.entry_id}  model {r.model_score:.3f}  ${r.entry_amount:,.2f}  {r.description}")
+            print(f"  {one_line(r.entry_id)}  model {r.model_score:.3f}  ${r.entry_amount:,.2f}  "
+                  f"{one_line(r.description)}")
 
     if labels is not None:
         print("\n--- tier comparison ---")
@@ -214,7 +249,10 @@ def cmd_score(args: argparse.Namespace) -> int:
 
 def cmd_report(args: argparse.Namespace) -> int:
     """Write the Excel workpaper."""
-    df = load_csv(args.ledger)
+    df, problem = _load_ledger(args.ledger)
+    if problem:
+        print(problem)
+        return 2
     labels = None
     if args.labels:
         labels, problem = _load_labels(args.labels, df)
@@ -283,17 +321,21 @@ def cmd_summary(args: argparse.Namespace) -> int:
     out = None
     if args.out:
         try:
-            # Expanded once, here: a shell leaves `--out=~/x.md` as typed, and the path
-            # the guard judges has to be the path the summary is written to.
-            out = Path(args.out).expanduser()
-        except RuntimeError as exc:  # ~name, and no such user
+            # Expanded once, here, from a leading "~" only: a shell leaves `--out=~/x.md` as
+            # typed, and the path the guard judges has to be the path the summary is written
+            # to. The directory check comes first (said now, not after both tiers have run),
+            # before the guard would call the out/ directory itself "not under out/".
+            out = _expand_home(args.out)
+            is_dir = out.is_dir()
+            refusal = None if is_dir else _refuse_summary_out(out)
+        except (OSError, RuntimeError) as exc:
+            # ~name with no such user, a link to itself, a parent nobody may search, a name
+            # too long: the check and the guard each need a stat, and a stat can fail
             print(f"error: cannot write the summary to {args.out}: {exc}")
             return 2
-        if out.is_dir():  # said now, not after both tiers have run; and before the guard,
-            # which would call the out/ directory itself "not under out/"
+        if is_dir:
             print(f"error: cannot write the summary to {out}: it is a directory")
             return 2
-        refusal = _refuse_summary_out(out)
         if refusal:
             print(f"refused: {refusal}")
             return 2
@@ -315,8 +357,10 @@ def cmd_summary(args: argparse.Namespace) -> int:
         return 2
     try:
         payload = collect_summary(context, labels=labels, top=args.top, ledger=args.ledger)
-    except RuntimeError as exc:  # a review database this version cannot read
-        print(f"error: {exc}")
+    except RuntimeError as exc:
+        # A review database this version cannot read. SQLite's message quotes names
+        # stored in the file, and the file is somebody else's: one line, no controls.
+        print(f"error: {one_line(exc)}")
         return 2
     # Nothing but the rendering is printed: `--format json` has to stay one JSON
     # document, so anything worth saying about the run is a note inside it.
@@ -336,7 +380,10 @@ def cmd_summary(args: argparse.Namespace) -> int:
 
 def cmd_narrate(args: argparse.Namespace) -> int:
     """Write Claude narratives for the riskiest entries and cache them in the review store."""
-    df = load_csv(args.ledger)
+    df, problem = _load_ledger(args.ledger)
+    if problem:
+        print(problem)
+        return 2
     flags = jets.run_all(df)
     scored = jets.score_entries(df, flags)
     if not args.no_model:
@@ -391,7 +438,10 @@ def cmd_adopt_legacy(args: argparse.Namespace) -> int:
     if not Path(args.db).exists():
         print(f"error: no review database at {args.db}")
         return 2
-    df = load_csv(args.ledger)
+    df, problem = _load_ledger(args.ledger)
+    if problem:
+        print(problem)
+        return 2
     try:
         ledger_id = ledger_identity(df, args.ledger)
         store = ReviewStore(args.db, ledger_id)  # migrates a schema-3 file on the way
@@ -664,26 +714,40 @@ def cmd_eval_narratives(args: argparse.Namespace) -> int:
     if args.select and not args.labels:
         print("--select needs --labels: the label file decides which entries to test")
         return 2
-    df = load_csv(args.ledger)
+    df, problem = _load_ledger(args.ledger)
+    if problem:
+        print(problem)
+        return 2
     # Rule 1 at the point of writing, before anything is scored: the committed
     # case file, runs directory and report are for the generator's default
-    # output and nothing else, however a path is spelled.
+    # output and nothing else, however a path is spelled. Each path is expanded
+    # once, here, from a leading "~" only; from here on the path judged is the
+    # path written (narrative_eval judges the literal path it is given).
     ledger_sha256 = narrative_eval.ledger_digest(df)
     default_ledger = ledger_sha256 == narrative_eval.DEFAULT_LEDGER_SHA256
     try:
+        cases_path, out_path = _expand_home(args.cases), _expand_home(args.out)
         if args.select:
-            narrative_eval.refuse_committed_path(args.cases, ledger_sha256, "the case file")
+            narrative_eval.refuse_committed_path(cases_path, ledger_sha256, "the case file")
         else:
-            runs_dir = (Path(args.runs_dir) if args.runs_dir is not None
+            runs_dir = (_expand_home(args.runs_dir) if args.runs_dir is not None
                         else narrative_eval.default_runs_dir(args.model, regrade=args.regrade))
             narrative_eval.refuse_committed_path(runs_dir, ledger_sha256, "the runs directory")
-            narrative_eval.refuse_committed_path(args.out, ledger_sha256, "the report")
+            narrative_eval.refuse_committed_path(out_path, ledger_sha256, "the report")
     except narrative_eval.CommittedPathError as exc:
         print(f"refused: {exc}")
         return 2
-    except FileNotFoundError as exc:
+    except (OSError, RuntimeError) as exc:
+        # no newest run to re-grade, a parent nobody may search, ~name with no such user
         print(f"error: {exc}")
         return 2
+
+    labels = None
+    if args.select:  # the label file decides which entries to test: read before anything is scored
+        labels, problem = _load_labels(args.labels, df)
+        if problem:
+            print(problem)
+            return 2
 
     flags = jets.run_all(df)
     scored = jets.score_entries(df, flags)
@@ -691,19 +755,19 @@ def cmd_eval_narratives(args: argparse.Namespace) -> int:
     scored = combine(scored, model_scores)
 
     if args.select:
-        if Path(args.cases).exists() and not args.overwrite:
+        if cases_path.exists() and not args.overwrite:
             print(f"{args.cases} exists; --overwrite replaces it (hand-written expectations "
                   "would be lost)")
             return 2
-        cases = narrative_eval.select_cases(scored, flags, load_labels(args.labels))
-        path = narrative_eval.save_cases(cases, args.cases, generator={"ledger": args.ledger},
+        cases = narrative_eval.select_cases(scored, flags, labels)
+        path = narrative_eval.save_cases(cases, cases_path, generator={"ledger": args.ledger},
                                          ledger_sha256=ledger_sha256)
         print(f"Wrote {len(cases)} case skeleton(s) to {path}. Add must_mention and "
               "expected_confidence by hand before running.")
         return 0
 
     try:
-        cases = narrative_eval.load_cases(args.cases)
+        cases = narrative_eval.load_cases(cases_path)
     except FileNotFoundError:
         print(f"error: case file not found: {args.cases} (run from the repository root, or pass "
               "--cases PATH)")
@@ -722,7 +786,7 @@ def cmd_eval_narratives(args: argparse.Namespace) -> int:
         return 2
     if args.limit is not None:
         cases = cases[:args.limit]
-    cases_sha256 = narrative_eval.cases_digest(args.cases)
+    cases_sha256 = narrative_eval.cases_digest(cases_path)
 
     narrator = Narrator(model=args.model, max_tokens=args.max_tokens, effort=args.effort)
     try:
@@ -744,7 +808,7 @@ def cmd_eval_narratives(args: argparse.Namespace) -> int:
         return 1
 
     summary = narrative_eval.aggregate(rows)
-    out = Path(args.out)
+    out = out_path
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(
         narrative_eval.render_markdown(rows, summary, runs_dir=runs_dir, cases=cases),
