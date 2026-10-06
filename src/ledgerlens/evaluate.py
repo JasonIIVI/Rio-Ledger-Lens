@@ -28,9 +28,10 @@ from .schema import AnomalyType
 NON_CIRCULAR_ARCHETYPES = (AnomalyType.BENFORD_DRIFT, AnomalyType.RARE_ACCOUNT_PAIR)
 
 #: Printed beside every rule-tier precision or recall the tool shows: `test`,
-#: `summary`, the dashboard, the workpaper and CI's detection gate. It carries no
-#: figure: the numbers beside it move with the ledger, the reason to distrust
-#: them does not.
+#: `score` (whose segment table's "rules only" and "both" rows are the rule tier's
+#: flagged entries), `summary`, the dashboard, the workpaper and CI's detection
+#: gate. It carries no figure: the numbers beside it move with the ledger, the
+#: reason to distrust them does not.
 DETECTION_CAVEAT = (
     "Read these sceptically. For nine of eleven archetypes the generator injects the anomaly "
     "using the same definition the test looks for, so recall on those is close to "
@@ -39,7 +40,7 @@ DETECTION_CAVEAT = (
 )
 
 #: The same caveat for the model tier's segment and lift tables: `score` and the
-#: dashboard's tier tab.
+#: dashboard's tier tab, where it follows DETECTION_CAVEAT ("the same" points at it).
 MODEL_TIER_CAVEAT = (
     "The same circularity applies to the model tier: these anomalies were defined as rule "
     "violations, so almost everything the model ranks highly the rules had already caught. "
@@ -56,18 +57,21 @@ def _count(n: int, one: str, many: str) -> str:
 
 
 def _example(value: object) -> str:
-    """An id as it is quoted in a refusal: ``repr``, cut to a line's worth.
+    """An id as it is quoted in a refusal: ``ascii``, cut to a line's worth.
 
     Whoever wrote the ledger chose this text, and the refusal is shown in a
-    terminal, a CI log and the dashboard. ``repr`` escapes control and invisible
-    characters, and it shows what the eye would miss: a stray space, or an id
-    read as a number beside the same id read as text.
+    terminal, a CI log and the dashboard. ``ascii`` escapes every character
+    outside ASCII, the control and invisible ones among them, so it shows what
+    the eye would miss: a stray space, a variation selector, an id read as a
+    number beside the same id read as text. ``repr`` would keep an invisible
+    character Python calls printable, and print a code point assigned after
+    this Python's Unicode tables one way and a newer Python's another.
     """
     if isinstance(value, str) and len(value) > 48:
         # Cut the id, then quote it: the quote closes, no escape is cut in half, and the
         # length says that two ids alike this far are not being called the same.
-        return f"{value[:48]!r}... ({len(value)} characters)"
-    return repr(value)
+        return f"{ascii(value[:48])}... ({len(value)} characters)"
+    return ascii(value)
 
 
 def check_labels(labels: pd.DataFrame, all_entry_ids) -> None:

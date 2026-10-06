@@ -84,6 +84,14 @@ class AnomalyModel:
         variances = features.var(axis=0)
         keep = [c for c in features.columns if variances.get(c, 0.0) > 1e-12]
         dropped = [c for c in features.columns if c not in keep]
+        if not keep:
+            # One entry, or a population whose every feature is constant: nothing to
+            # rank. Said here, in these words, not as "0 feature(s)" from inside
+            # StandardScaler, which reads as a fault in the file.
+            raise ValueError(
+                "the model tier cannot be fitted on {} {}: every one of the {} features is "
+                "constant".format(len(features), "entry" if len(features) == 1 else "entries",
+                                  features.shape[1]))
 
         self.columns_ = keep
         matrix = features[keep].to_numpy(dtype=float)

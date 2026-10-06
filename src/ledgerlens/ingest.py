@@ -171,10 +171,12 @@ def load_labels(path: str | Path) -> pd.DataFrame:
     truth = df["is_anomaly"].str.strip().str.lower().map(_TRUTH)
     unread = truth.isna()
     if unread.any():
-        first = int(unread.to_numpy().argmax()) + 2  # the header is line 1
+        # Counted in data rows, not file lines: pandas skips a blank line, and a quoted
+        # cell can span two, so a line number would send the reader to a line that is fine.
+        first = int(unread.to_numpy().argmax()) + 1
         raise ValueError(
             f"is_anomaly must be true/false or 1/0 on every row; {int(unread.sum())} row(s) are "
-            f"blank or something else, the first on line {first}")
+            f"blank or something else, the first is data row {first}")
     df["is_anomaly"] = truth.astype(bool)
     df["anomaly_type"] = df["anomaly_type"].fillna("").astype("string")
     return df

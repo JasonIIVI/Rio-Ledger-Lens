@@ -1285,7 +1285,7 @@ def test_summary_that_cannot_be_written_is_a_message_before_or_after_scoring(
 
 
 def test_test_and_score_print_the_caveat_ahead_of_the_numbers_it_qualifies(two_ledgers, capsys):
-    """Their output is a public CI log on every push and every Monday."""
+    """`test`'s output is a public CI log on every push; both commands' every Monday."""
     from ledgerlens import evaluate
 
     ledger, labels = _pair(two_ledgers)
@@ -1296,11 +1296,15 @@ def test_test_and_score_print_the_caveat_ahead_of_the_numbers_it_qualifies(two_l
     assert printed.index(evaluate.DETECTION_CAVEAT) < printed.index("Precision")
     assert main(["score", ledger, "--labels", labels]) == 0
     printed = " ".join(capsys.readouterr().out.split())
-    assert evaluate.MODEL_TIER_CAVEAT in printed
-    assert printed.index(evaluate.MODEL_TIER_CAVEAT) < printed.index("share_of_all_anomalies")
+    # the segment table's "rules only" and "both" rows are the rule tier's precision and
+    # recall, so its caveat leads, and "the same circularity" has something to point at
+    assert evaluate.DETECTION_CAVEAT in printed and evaluate.MODEL_TIER_CAVEAT in printed
+    assert (printed.index(evaluate.DETECTION_CAVEAT) < printed.index(evaluate.MODEL_TIER_CAVEAT)
+            < printed.index("share_of_all_anomalies"))
     # without labels there is no measured number, and so no caveat to print
     assert main(["test", ledger]) == 0 and main(["score", ledger]) == 0
-    assert "nine of eleven" not in capsys.readouterr().out
+    unlabelled = capsys.readouterr().out
+    assert "nine of eleven" not in unlabelled and "same circularity" not in unlabelled
 
 
 def test_eval_narratives_judges_and_writes_one_path_tilde_included(tmp_path, monkeypatch, capsys):
@@ -1426,3 +1430,20 @@ def test_a_review_database_this_version_cannot_read_is_one_clean_error_line(
     printed = capsys.readouterr().out
     assert printed.startswith("error: ") and printed.count("\n") == 1 and "\x1b" not in printed
     assert "Heading" in printed  # still there to read; one line that cannot act
+
+
+def test_a_ledger_the_model_cannot_be_fitted_on_is_said_in_those_words(two_ledgers, tmp_path, capsys):
+    """One entry leaves every feature constant. sklearn's "0 feature(s) ... StandardScaler" read
+    as a fault in the file; the line now says what cannot be done and why, and `test` still runs."""
+    import pandas as pd
+
+    ledger, _ = _pair(two_ledgers)
+    raw = pd.read_csv(ledger, dtype=str, keep_default_na=False)
+    one = tmp_path / "one.csv"
+    raw[raw["entry_id"] == raw["entry_id"].iloc[0]].to_csv(one, index=False)
+    capsys.readouterr()
+    assert main(["summary", str(one)]) == 2
+    printed = capsys.readouterr().out
+    assert printed.startswith("error: cannot summarise the ledger") and "StandardScaler" not in printed
+    assert "the model tier cannot be fitted on 1 entry: every one of the 16 features is constant" in printed
+    assert main(["test", str(one)]) == 0

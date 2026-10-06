@@ -238,6 +238,9 @@ def cmd_score(args: argparse.Namespace) -> int:
 
     if labels is not None:
         print("\n--- tier comparison ---")
+        # The segment table carries the rule tier's figures too ("rules only" and "both"
+        # are its flagged entries), so its caveat leads and the model tier's follows it.
+        print(textwrap.fill(evaluate.DETECTION_CAVEAT, 96, break_on_hyphens=False))
         print(textwrap.fill(evaluate.MODEL_TIER_CAVEAT, 96, break_on_hyphens=False))
         print(evaluate.compare_tiers(combined, labels).to_string(index=False))
         print("\n--- model lift over random selection ---")

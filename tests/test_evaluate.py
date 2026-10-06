@@ -245,6 +245,22 @@ def test_a_refusal_quotes_ids_so_they_can_be_told_apart_and_cannot_act():
     assert "(65 characters)" in str(refused.value) and "(75 characters)" in str(refused.value)
     assert evaluate._example("short id") == "'short id'" and evaluate._example(7) == "7"
 
+    # an id that differs from another by a character no eye sees is not printed as the same id
+    with pytest.raises(evaluate.LabelsMismatchError) as refused:
+        evaluate.check_labels(_labels(["A️"]), ["A"])  # a variation selector: printable to Python
+    message = str(refused.value)
+    assert message.isascii() and "(e.g. 'A')" in message and "(e.g. 'A\\ufe0f')" in message
+    assert evaluate._example("café") == "'caf\\xe9'"  # the same text on every Python's tables
+
+
+def test_check_labels_orders_ids_of_two_types_without_a_type_error():
+    """key=repr in the three sorts: an int and a text id cannot be ordered against each other."""
+    with pytest.raises(evaluate.LabelsMismatchError) as refused:
+        evaluate.check_labels(_labels([1, "2"]), ["1", 2])
+    assert "2 ledger entries have no label" in str(refused.value)
+    with pytest.raises(evaluate.LabelsMismatchError, match="more than once"):
+        evaluate.check_labels(_labels([1, "1", 1, "1"]), [1, "1"])
+
 
 def test_score_by_archetype_of_labels_that_mark_no_anomaly_is_an_empty_table(ledger, labels):
     from ledgerlens.model import score_ledger

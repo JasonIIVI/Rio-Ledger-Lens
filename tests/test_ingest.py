@@ -104,14 +104,25 @@ def test_load_labels_reads_is_anomaly_as_written(tmp_path, cells, expected):
     assert load_labels(path)["is_anomaly"].tolist() == expected
 
 
-@pytest.mark.parametrize("cells, line", [(["True", "", "False"], 3), (["no", "yes"], 2),
-                                         (["False", "False", "1.5"], 4)])
-def test_load_labels_refuses_a_cell_it_would_have_had_to_guess(tmp_path, cells, line):
+@pytest.mark.parametrize("cells, row", [(["True", "", "False"], 2), (["no", "yes"], 1),
+                                        (["False", "False", "1.5"], 3)])
+def test_load_labels_refuses_a_cell_it_would_have_had_to_guess(tmp_path, cells, row):
     """astype(bool) made a blank cell and "no" both True: every such row an injected anomaly."""
     from ledgerlens.ingest import load_labels
 
     path = tmp_path / "labels.csv"
     path.write_text("entry_id,is_anomaly,anomaly_type\n" + "".join(
         f"JE-{i},{cell},\n" for i, cell in enumerate(cells)))
-    with pytest.raises(ValueError, match=f"is_anomaly must be true/false or 1/0.*line {line}"):
+    with pytest.raises(ValueError, match=f"is_anomaly must be true/false or 1/0.*data row {row}$"):
+        load_labels(path)
+
+
+def test_load_labels_counts_data_rows_not_file_lines(tmp_path):
+    """pandas skips a blank line and a quoted cell can span two: a file line number sent the
+    reader to a line that was fine (here the bad row is file line 6)."""
+    from ledgerlens.ingest import load_labels
+
+    path = tmp_path / "labels.csv"
+    path.write_text('entry_id,is_anomaly,anomaly_type\nJE-1,False,"two\nlines"\n\n\nJE-2,maybe,x\n')
+    with pytest.raises(ValueError, match="1 row\\(s\\) are blank or something else, the first is data row 2$"):
         load_labels(path)
