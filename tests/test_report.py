@@ -171,6 +171,10 @@ def test_the_summary_sheet_puts_the_circularity_caveat_beside_precision_and_reca
     assert ["Precision", "Recall"] == [v for v in labels_in_column_a if v in ("Precision", "Recall")]
     caveat_row = labels_in_column_a.index("Read these as")
     assert cells[caveat_row][1] == evaluate.DETECTION_CAVEAT
+    sheet = openpyxl.load_workbook(path)["Summary"]
+    caveat_cell = sheet.cell(row=caveat_row + 1, column=2)
+    assert caveat_cell.alignment.wrap_text is True  # a sentence, wrapped inside its column
+    assert not sheet.cell(row=caveat_row, column=2).alignment.wrap_text  # the numbers are left alone
     assert 0 < caveat_row - labels_in_column_a.index("Recall") <= 3  # the same block, not a footnote
 
     scored = jets.score_entries(ledger, flags)

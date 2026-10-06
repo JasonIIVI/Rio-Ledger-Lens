@@ -1057,15 +1057,22 @@ def test_a_summary_is_only_written_where_git_cannot_pick_it_up(two_ledgers, tmp_
     assert main(["summary", ledger, "--out", str(tmp_path / "elsewhere" / "s.txt")]) == 0  # no checkout
 
 
-def test_summary_refuses_labels_for_another_ledger_and_writes_nothing(two_ledgers, tmp_path, capsys):
+def test_summary_refuses_labels_for_another_ledger_and_writes_nothing(
+        two_ledgers, tmp_path, capsys, monkeypatch):
+    from ledgerlens import cli
+
     ledger, _ = _pair(two_ledgers, "a")
     _, other_labels = _pair(two_ledgers, "b")
     target = tmp_path / "s.md"
+    scored = []
+    real = cli.LedgerContext.load
+    monkeypatch.setattr(cli.LedgerContext, "load", lambda self: scored.append(1) or real(self))
     capsys.readouterr()
     assert main(["summary", ledger, "--labels", other_labels, "--out", str(target)]) == 2
     printed = capsys.readouterr().out
     assert printed.startswith("refused: ") and "Precision" not in printed
     assert not target.exists()
+    assert scored == []  # refused before either tier ran, as test, score and report refuse
 
 
 @pytest.mark.parametrize("bad", [
@@ -1227,6 +1234,11 @@ def test_summary_that_cannot_be_written_is_a_message_before_or_after_scoring(
     capsys.readouterr()
     assert main(["summary", ledger, "--out", str(tmp_path / "a-directory")]) == 2
     assert "it is a directory" in capsys.readouterr().out and scored == []  # said before any scoring
+    checkout = tmp_path / "checkout"
+    (checkout / ".git").mkdir(parents=True)
+    (checkout / "out").mkdir()
+    assert main(["summary", ledger, "--out", str(checkout / "out")]) == 2  # the out/ directory itself
+    assert "it is a directory" in capsys.readouterr().out
     assert main(["summary", ledger, "--out", str(tmp_path / "a-file" / "s.md")]) == 2
     assert capsys.readouterr().out.startswith("error: cannot write the summary to")
     if os.geteuid() != 0:  # root writes anywhere

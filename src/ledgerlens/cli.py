@@ -289,26 +289,30 @@ def cmd_summary(args: argparse.Namespace) -> int:
         except RuntimeError as exc:  # ~name, and no such user
             print(f"error: cannot write the summary to {args.out}: {exc}")
             return 2
+        if out.is_dir():  # said now, not after both tiers have run; and before the guard,
+            # which would call the out/ directory itself "not under out/"
+            print(f"error: cannot write the summary to {out}: it is a directory")
+            return 2
         refusal = _refuse_summary_out(out)
         if refusal:
             print(f"refused: {refusal}")
             return 2
-        if out.is_dir():  # said now, not after both tiers have run
-            print(f"error: cannot write the summary to {out}: it is a directory")
-            return 2
+    context = None
     try:
-        context = LedgerContext(args.ledger, review_db=args.db).load()
+        df = load_csv(args.ledger)
+        ledger_id = ledger_identity(df, args.ledger)
+        labels = None
+        if args.labels:  # checked before either tier runs, as test, score and report do
+            labels, problem = _load_labels(args.labels, df)
+            if problem:
+                print(problem)
+                return 2
+        context = LedgerContext(df, review_db=args.db, ledger_id=ledger_id).load()
     except (OSError, ValueError) as exc:
         # No such file, not a ledger, a sidecar naming none, or a population the model
         # cannot be fitted on. The reason can quote a cell of the file: one line, no controls.
         print(f"error: cannot summarise the ledger {args.ledger}: {one_line(exc)}")
         return 2
-    labels = None
-    if args.labels:
-        labels, problem = _load_labels(args.labels, context.lines)
-        if problem:
-            print(problem)
-            return 2
     try:
         payload = collect_summary(context, labels=labels, top=args.top, ledger=args.ledger)
     except RuntimeError as exc:  # a review database this version cannot read

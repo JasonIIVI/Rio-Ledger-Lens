@@ -234,7 +234,16 @@ def test_a_refusal_quotes_ids_so_they_can_be_told_apart_and_cannot_act():
     message = str(refused.value)
     assert message.isascii() and "\x1b" not in message and "\n" not in message
     assert r"x\x1b]0;title\x07\n::warning::" in message  # escaped, still there to read
-    assert len(message.split("(e.g. ")[1]) <= 61  # cut to a line's worth, and the closing bracket
+    quoted = message.split("(e.g. ")[1]
+    assert len(quoted) < 110 and quoted.count("'") == 2  # cut to a line's worth; the quote closes
+    assert quoted.endswith(f"... ({len(hostile)} characters))")
+
+    # two long ids alike for their first 48 characters are not printed as the same id
+    long_a, long_b = "JE-" + "9" * 60 + "-A", "JE-" + "9" * 70 + "-B"
+    with pytest.raises(evaluate.LabelsMismatchError) as refused:
+        evaluate.check_labels(_labels([long_a]), [long_b])
+    assert "(65 characters)" in str(refused.value) and "(75 characters)" in str(refused.value)
+    assert evaluate._example("short id") == "'short id'" and evaluate._example(7) == "7"
 
 
 def test_score_by_archetype_of_labels_that_mark_no_anomaly_is_an_empty_table(ledger, labels):

@@ -93,6 +93,7 @@ def test_load_labels_reads_entry_ids_as_text(tmp_path):
     (["True", "False"], [True, False]),
     (["TRUE", " false "], [True, False]),
     (["1", "0"], [True, False]),
+    (["1.0", "0.0"], [True, False]),  # what pandas writes for a boolean column that held a blank
 ])
 def test_load_labels_reads_is_anomaly_as_written(tmp_path, cells, expected):
     from ledgerlens.ingest import load_labels

@@ -165,7 +165,9 @@ def build_workpaper(
                           f"{int(others['decisions'].sum())} decided entries")]
         for i, (label, value) in enumerate(rows, start=3):
             ws.cell(row=i, column=1, value=label).font = LABEL_FONT
-            ws.cell(row=i, column=2, value=value)
+            cell = ws.cell(row=i, column=2, value=value)
+            if isinstance(value, str) and len(value) > 60:  # a sentence: wrapped, not run off the sheet
+                cell.alignment = Alignment(wrap_text=True, vertical="top")
 
         note_row = 3 + len(rows) + 1
         ws.cell(row=note_row, column=1,

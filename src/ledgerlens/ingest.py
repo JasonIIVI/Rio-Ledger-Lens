@@ -157,7 +157,9 @@ def load_csv(path: str | Path) -> pd.DataFrame:
     return prepare(df)
 
 
-_TRUTH = {"true": True, "false": False, "1": True, "0": False}
+#: What a label's is_anomaly cell may hold. "1.0" and "0.0" are what pandas writes for a
+#: boolean column that once held a blank; anything else is refused rather than guessed.
+_TRUTH = {"true": True, "false": False, "1": True, "0": False, "1.0": True, "0.0": False}
 
 
 def load_labels(path: str | Path) -> pd.DataFrame:

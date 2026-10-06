@@ -63,3 +63,28 @@ def test_the_tier_and_lift_tables_are_what_the_default_ledger_measures(measured)
                  rf"\| \**{row.lift_vs_random:.0f}x\** \|")
         assert re.search(cells, README), top_n
     assert "Read the lift as re-ranking, not as detection" in README
+
+
+def test_the_archetype_table_and_the_benford_example_are_what_the_default_ledger_measures(
+        ledger, labels, measured):
+    from ledgerlens.benford import benford_test
+
+    scores, _ = score_ledger(ledger)
+    by_archetype = evaluate.score_by_archetype(scores, labels).set_index("anomaly_type")
+    for archetype in ("round_amount", "unbalanced_entry", "benford_drift", "weekend_entry",
+                      "duplicate_entry"):
+        row = by_archetype.loc[archetype]
+        assert f"| {archetype} | {row.mean_model_score:.3f} | {row.vs_normal:+.2f} |" in README, archetype
+
+    digits = benford_test(ledger["abs_amount"], "population")
+    assert f"MAD {digits['mad']:.5f} ({digits['conformity'].lower()})" in README.lower().replace("mad", "MAD")
+    assert f"chi-square {digits['chi_square']:.2f} (critical 15.507 at 5%, 8 df) -> exceeds" in README
+    assert digits["exceeds_critical"]
+    assert (f"(observed {digits['observed_prop'][1]:.2%} of leading 1s against an expected "
+            f"{digits['expected_prop'][1]:.2%})") in README
+
+    m, jet12 = measured["metrics"], measured["by_test"].loc["JET-12"]
+    false_flags = int(jet12["flags"] - jet12["true_positives"])
+    assert f"JET-12 produces {false_flags} of the {m['false_positives']} false positives" in README
+    assert m["false_positives"] - false_flags == 1  # "exactly **one** false positive" without it
+    assert f"exactly **one** false positive across {m['population']:,} entries" in README

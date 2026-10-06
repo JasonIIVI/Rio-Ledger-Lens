@@ -63,8 +63,11 @@ def _example(value: object) -> str:
     characters, and it shows what the eye would miss: a stray space, or an id
     read as a number beside the same id read as text.
     """
-    text = repr(value)
-    return text if len(text) <= 60 else text[:57] + "..."
+    if isinstance(value, str) and len(value) > 48:
+        # Cut the id, then quote it: the quote closes, no escape is cut in half, and the
+        # length says that two ids alike this far are not being called the same.
+        return f"{value[:48]!r}... ({len(value)} characters)"
+    return repr(value)
 
 
 def check_labels(labels: pd.DataFrame, all_entry_ids) -> None:
