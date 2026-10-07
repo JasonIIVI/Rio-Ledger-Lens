@@ -1,6 +1,7 @@
 import pandas as pd
 
 from ledgerlens import jets
+from ledgerlens.ingest import prepare
 from ledgerlens.schema import AnomalyType
 
 
@@ -119,3 +120,73 @@ def test_scoring_handles_zero_flags(ledger):
     scored = jets.score_entries(ledger, empty)
     assert (scored["risk_score"] == 0).all()
     assert len(scored) == ledger["entry_id"].nunique()
+
+
+# --- ties on the posting date -------------------------------------------------
+
+
+def _entries(rows):
+    """A tiny ledger from (entry id, posted, keyed, debit account, credit account, amount,
+    description) rows: two lines per entry, the debit line first."""
+    lines = []
+    for entry_id, posted, keyed, debit_account, credit_account, amount, description in rows:
+        sides = ((debit_account, amount, 0.0), (credit_account, 0.0, amount))
+        for line_no, (account, debit, credit) in enumerate(sides, start=1):
+            lines.append({
+                "entry_id": entry_id, "line_no": line_no,
+                "posting_date": pd.Timestamp(posted), "entered_at": pd.Timestamp(keyed),
+                "fiscal_year": 2024, "period": pd.Timestamp(posted).month,
+                "account_code": account, "account_name": "Account " + account,
+                "account_type": "Asset", "description": description, "debit": debit,
+                "credit": credit, "source": "Manual", "created_by": "u1",
+            })
+    return prepare(pd.DataFrame(lines))
+
+
+def test_a_same_day_duplicate_is_the_one_keyed_later():
+    """Two postings of one invoice on one day tie on the date. The one keyed first stands as
+    the original and the other is flagged, whatever order the rows arrive in; keyed at the
+    same time, the lower id stands. Left to a one-key sort, the tie was the sort's to order,
+    and the original could be flagged as a duplicate of its own re-post."""
+    rows = [("JE-1", "2024-03-15", "2024-03-15 10:00", "6000", "1000", 500.0, "Invoice 42"),
+            ("JE-2", "2024-03-15", "2024-03-15 09:00", "6000", "1000", 500.0, "Invoice 42")]
+    for order in (rows, rows[::-1]):
+        flags = jets.jet_duplicate_entries(_entries(order))
+        assert list(flags["entry_id"]) == ["JE-1"]
+        assert "as JE-2 posted 0 day(s) earlier" in flags["reason"].iloc[0]
+    same_time = [row[:2] + ("2024-03-15 09:00",) + row[3:] for row in rows]
+    for order in (same_time, same_time[::-1]):
+        assert list(jets.jet_duplicate_entries(_entries(order))["entry_id"]) == ["JE-2"]
+    # the posting date still decides first: JE-3, keyed after JE-4 but posted the day
+    # before it, is the original
+    backdated = [
+        ("JE-3", "2024-03-10", "2024-03-12 09:00", "6000", "1000", 500.0, "Invoice 43"),
+        ("JE-4", "2024-03-11", "2024-03-11 09:00", "6000", "1000", 500.0, "Invoice 43")]
+    flags = jets.jet_duplicate_entries(_entries(backdated))
+    assert list(flags["entry_id"]) == ["JE-4"]
+    assert "as JE-3 posted 1 day(s) earlier" in flags["reason"].iloc[0]
+
+
+def test_a_dormant_account_is_woken_by_the_entry_keyed_first():
+    """Two entries on the day a quiet account wakes tie on the date. The gap, and so the
+    flag, go to the one keyed first, whatever order the rows arrive in; keyed at the same
+    time, to the lower id."""
+    rows = [("JE-1", "2024-01-02", "2024-01-02 09:00", "6900", "1000", 100.0, "a"),
+            ("JE-2", "2024-09-02", "2024-09-02 11:00", "6900", "1000", 200.0, "b"),
+            ("JE-3", "2024-09-02", "2024-09-02 08:00", "6900", "1000", 300.0, "c")]
+    for order in (rows, rows[::-1]):
+        flags = jets.jet_dormant_account(_entries(order))
+        assert set(flags["entry_id"]) == {"JE-3"}
+        assert flags["reason"].str.contains("no activity for 244 days").all()
+    same_time = [row[:2] + ("2024-09-02 08:00",) + row[3:] if row[0] != "JE-1" else row
+                 for row in rows]
+    for order in (same_time, same_time[::-1]):
+        assert set(jets.jet_dormant_account(_entries(order))["entry_id"]) == {"JE-2"}
+    # the posting date still decides first: JE-5, posted before JE-4 though keyed after
+    # it, is the entry that wakes the account
+    backdated = [rows[0],
+                 ("JE-5", "2024-09-02", "2024-09-05 09:00", "6900", "1000", 200.0, "b"),
+                 ("JE-4", "2024-09-04", "2024-09-03 09:00", "6900", "1000", 300.0, "c")]
+    flags = jets.jet_dormant_account(_entries(backdated))
+    assert set(flags["entry_id"]) == {"JE-5"}
+    assert flags["reason"].str.contains("no activity for 244 days").all()

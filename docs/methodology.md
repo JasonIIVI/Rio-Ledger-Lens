@@ -78,6 +78,29 @@ README rather than buried, because the alternative — quoting an unqualified 0.
 The archetypes where detection is *not* definitional (Benford drift, rare account
 pairs) score 0.75 and 0.86 respectively, and are the honest measure of the rule layer.
 
+## The QuickBooks connector
+
+A pull is not a second pipeline. `pull-qbo` maps a period of a QuickBooks Online company into
+the same column contract a CSV has and hands it to `ingest.prepare`, so every test, both tiers,
+the review store and the workpaper read it exactly as they read the synthetic ledger.
+
+Two sources are used because neither is enough alone. Manual journal entries come from the
+`JournalEntry` entity, whose lines are complete; every other transaction (an invoice, a bill,
+a payment) is rebuilt from the General Ledger report, which lists each posting under the
+account it hits, so grouping its rows by transaction gives the entry back whole and balanced.
+The report also supplies what the entity lacks: who created each entry.
+
+The keying time matters to three tests (weekend, after-hours, holiday), so it is taken from
+QuickBooks' own creation stamp rather than from the posting date. Where QuickBooks gives only
+a date, or a stamp that cannot be read, the time is set to noon, which fires no after-hours
+flag of its own, and the line is marked `entered_at_estimated` so the estimate is visible
+rather than silent. In the recorded sandbox quarter no line needed it.
+
+What a pull does not have is ground truth. Nothing about a sandbox company is labelled, the
+thresholds are the ones tuned on the generator, and a quarter of a small company is far too
+few entries for the model tier or Benford analysis. Its flags show the tool running on a
+second source; they measure nothing.
+
 ## References
 
 - AU-C 240, *Consideration of Fraud in a Financial Statement Audit* — journal entry

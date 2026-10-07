@@ -161,3 +161,99 @@ def test_summary_names_the_ledger_and_counts_other_ledgers(ledger, labels, tmp_p
 def _summary_cells(path):
     wb = openpyxl.load_workbook(path)
     return {row[0].value: row[1].value for row in wb["Summary"].iter_rows() if row[0].value}
+
+
+def test_the_summary_sheet_puts_the_circularity_caveat_beside_precision_and_recall(
+        ledger, labels, tmp_path):
+    path, flags = _workpaper(ledger, labels, tmp_path)
+    cells = [[c.value for c in row] for row in openpyxl.load_workbook(path)["Summary"].iter_rows()]
+    labels_in_column_a = [row[0] for row in cells]
+    assert ["Precision", "Recall"] == [v for v in labels_in_column_a if v in ("Precision", "Recall")]
+    caveat_row = labels_in_column_a.index("Read these as")
+    assert cells[caveat_row][1] == evaluate.DETECTION_CAVEAT
+    sheet = openpyxl.load_workbook(path)["Summary"]
+    caveat_cell = sheet.cell(row=caveat_row + 1, column=2)
+    assert caveat_cell.alignment.wrap_text is True  # a sentence, wrapped inside its column
+    assert not sheet.cell(row=caveat_row, column=2).alignment.wrap_text  # the numbers are left alone
+    assert 0 < caveat_row - labels_in_column_a.index("Recall") <= 3  # the same block, not a footnote
+
+    scored = jets.score_entries(ledger, flags)
+    bare = build_workpaper(scored, flags, tmp_path / "bare.xlsx")  # no labels: no number, no caveat
+    text = " ".join(str(c.value) for row in openpyxl.load_workbook(bare)["Summary"].iter_rows()
+                    for c in row if c.value)
+    assert "Precision" not in text and "nine of eleven" not in text
+    # the sentence is wrapped inside its column and does not widen it: the counts stay beside
+    # their labels, where a reader of the printed sheet looks for them
+    sheet = openpyxl.load_workbook(path)["Summary"]
+    caveat_cell = sheet.cell(row=caveat_row + 1, column=2)
+    assert caveat_cell.alignment.wrap_text is True
+    assert not sheet.cell(row=caveat_row, column=2).alignment.wrap_text  # the numbers are left alone
+    widths = sheet.column_dimensions["B"].width, openpyxl.load_workbook(bare)["Summary"].column_dimensions["B"].width
+    assert widths[0] == widths[1] < 30, widths
+    # the column is sized to its longest unwrapped value, not to nothing: "Prepared" gives 18
+    longest = max(len(str(row[1].value)) for row in sheet.iter_rows()
+                  if row[1].value is not None and not row[1].alignment.wrap_text)
+    assert widths[0] == longest + 2 == 18
+    assert sheet.column_dimensions["A"].width >= len("Population (entries)") + 2
+
+
+def test_an_identifier_in_the_summary_sheet_stays_on_one_line_and_widens_the_column(ledger, labels, tmp_path):
+    """Only a sentence is wrapped. The ledger's identity (68 characters, no space) is compared
+    character by character, so it stays whole and the column grows to the cap for it."""
+    from ledgerlens.review import Decision, ReviewStore
+
+    store = ReviewStore(tmp_path / "review.sqlite", "csv:" + "f" * 64)
+    store.record(Decision(ledger["entry_id"].iloc[0], "dismiss", "ana"))
+    path, _ = _workpaper(ledger, labels, tmp_path, store=store)
+    sheet = openpyxl.load_workbook(path)["Summary"]
+    identity = next(row[1] for row in sheet.iter_rows() if row[0].value == "Review rows for ledger")
+    assert identity.value == "csv:" + "f" * 64 and not identity.alignment.wrap_text
+    assert sheet.column_dimensions["B"].width == 60  # the cap
+    caveat = next(row[1] for row in sheet.iter_rows() if row[0].value == "Read these as")
+    assert caveat.alignment.wrap_text is True
+
+
+def test_a_ratio_over_nothing_flagged_is_written_as_undefined_too(ledger, labels, tmp_path):
+    flags = jets.run_all(ledger).iloc[0:0]
+    scored = jets.score_entries(ledger, flags).assign(risk_score=0.0)
+    metrics = evaluate.evaluate(flags, labels, ledger["entry_id"].unique())
+    assert metrics["flagged"] == 0
+    cells = _summary_cells(build_workpaper(scored, flags, tmp_path / "quiet.xlsx", metrics=metrics))
+    assert cells["Precision"] == "undefined (nothing was flagged)"
+    assert cells["Recall"] == 0  # 0 of 77 found: a figure
+
+
+def test_a_ratio_over_nothing_is_written_as_undefined_not_zero(ledger, labels, tmp_path):
+    """Labels that mark no anomaly gave "Recall 0" beside "False negatives 0"."""
+    path, _ = _workpaper(ledger, labels.assign(is_anomaly=False, anomaly_type=""), tmp_path)
+    cells = _summary_cells(path)
+    assert cells["Precision"] == 0  # something was flagged, every flag a false positive: a figure
+    assert cells["Recall"] == "undefined (the labels mark no anomaly)"
+    assert cells["False negatives"] == 0
+
+
+def test_ledger_text_is_written_as_text_never_as_a_formula(ledger, tmp_path):
+    """openpyxl stores a string that begins with "=" as a live formula, and one that reads like
+    an error code as an error. The Exceptions and All flags sheets carry ids, users and sources
+    as whoever wrote the ledger typed them, and the reasons quote them; a workpaper is handed
+    over to someone who opens it in Excel."""
+    hostile = '=HYPERLINK("https://example.invalid/x","open the support")'
+    tainted = ledger.copy()
+    first = tainted["entry_id"].iloc[0]
+    tainted.loc[tainted["entry_id"] == first, "created_by"] = hostile
+    tainted.loc[tainted["entry_id"] == first, "source"] = "#REF!"  # read as an error code
+    flags = jets.run_all(tainted)
+    scored = jets.score_entries(tainted, flags)
+    scored.loc[scored["entry_id"] == first, "risk_score"] = 99.0  # on the Exceptions sheet for sure
+    path = build_workpaper(scored, flags, tmp_path / "wp.xlsx")
+    wb = openpyxl.load_workbook(path)  # not data_only: a formula cell reads back with data_type "f"
+    typed = [(ws.title, c.coordinate, c.data_type) for ws in wb.worksheets
+             for row in ws.iter_rows() for c in row if c.data_type in ("f", "e")]
+    assert typed == []
+    ws = wb["Exceptions"]
+    header = [c.value for c in ws[1]]
+    rows = {r[header.index("entry_id")]: r for r in ws.iter_rows(min_row=2, values_only=True)}
+    assert rows[first][header.index("created_by")] == hostile  # the text is there, as text
+    assert rows[first][header.index("source")] == "#REF!"
+    source = header.index("source") + 1
+    assert next(c for c in ws[2:ws.max_row] for c in c if c.column == source and c.value == "#REF!").data_type == "s"

@@ -13,7 +13,7 @@ Audit analytics over general ledger data. Read this before changing anything.
 | Working folder | `~/Library/Mobile Documents/com~apple~CloudDocs/LedgerGen project` (iCloud) |
 | Virtualenvs | `~/.venvs/ledgerlens` (3.9) and `~/.venvs/ledgerlens312` (3.12) — **deliberately outside iCloud**, one set per machine |
 | Python here | system 3.9.6 plus python.org **3.12.0** at `/usr/local/bin/python3.12`. Code must stay 3.9-compatible; only `mcp_server.py` needs 3.10+ |
-| CI | GitHub Actions: pytest on 3.9 / 3.11 / 3.12 + a detection-quality gate + a `rule-1` job (no data or secret file tracked); `claude.yml` answers `@claude` |
+| CI | GitHub Actions: pytest on 3.9 / 3.11 / 3.12 + a detection-quality gate + a `rule-1` job (no data or secret file tracked); `claude.yml` answers `@claude`; `weekly.yml` regenerates the default ledger on Mondays and opens an Issue with `ledgerlens summary` |
 
 ```bash
 source ~/.venvs/ledgerlens/bin/activate && pytest -q && ruff check src tests app.py
@@ -25,8 +25,9 @@ and the MCP SDK, so the two together cover every code path CI will see.
 
 ## Current state
 
-- **v0.4.0** on `main` (PR #7, 2026-09-29; v0.3.1 was PR #5 on 2026-09-25; v0.3.0 was PR #2
-  on 2026-09-23). Weeks 1–3 complete:
+- **v1.0.0** is PR #9 (`week4/automation-and-readme`), tagged after its merge once the weekly
+  run has opened its first Issue. **v0.4.0** was PR #7 (2026-09-29; v0.3.1 was PR #5 on
+  2026-09-25; v0.3.0 was PR #2 on 2026-09-23). Weeks 1–4 complete; weeks 1–3 were:
   narratives, review loop, dashboard integration, MCP server, narrative eval, `@claude` workflow.
 - **Review follow-up on `main`** (PR #4, 2026-09-24) — the first `@claude` review's findings:
   narratives are versioned and each decision records the note it saw (`narrative_id`);
@@ -116,9 +117,89 @@ and the MCP SDK, so the two together cover every code path CI will see.
   fixed: the token directory is checked before any code or refresh is spent, redirects are
   never followed, the callback server is threaded and holds both loopback addresses, a
   recording is re-scrubbed and checked on every exit, and pulled books stay in `data/`.
-- **Next** — the weekly scheduled Action, the README final pass and v1.0.0 (due
-  2026-10-18). Week 5 breaks the circularity in the detection numbers.
-- 462 tests on 3.9 / 472 on 3.12, ruff clean.
+- **Automation and the README (PR #9 `week4/automation-and-readme`, version 1.0.0)** —
+  `ledgerlens summary` (`summary.py`): one page on a ledger as text, markdown or JSON. It
+  scores nothing itself (the counts are `LedgerContext`'s, the measured quality `evaluate`'s),
+  keeps the tiers in separate sections, and carries each caveat as a field of the payload:
+  the circularity caveat precedes any precision or recall, which appear only with labels,
+  headed "rule tier only", each archetype as caught-of-n with the two measured ones first, and
+  a ratio over nothing printed as "undefined". The markdown is posted in public by the weekly
+  workflow, on a repository whose `claude.yml` answers a mention in an Issue, so every string
+  that came from the ledger goes through `md_code` (one line, the characters a reader cannot
+  see removed by the ranges in `summary._UNSEEN_RANGES`, a code span whose fence outruns any
+  backticks, a pipe written as an entity, a zero-width space after every `@`); no format
+  carries note text, a reviewer's name or another ledger's identity, and a decision is named
+  only if it is one of the kinds this version records; `--out` inside a checkout lands only
+  under `out/`, the path expanded once so the one judged is the one written; `--format json`
+  prints one document and nothing else, with the caveats as fields and a `defined` flag per
+  ratio. `evaluate.check_labels` refuses labels that do not cover exactly the ledger's entry
+  ids, compared as the values `evaluate` joins on (`test`, `score`, `report` and `summary`
+  print `refused:`; the dashboard, whose sidebar offers `data/labels.csv` for every ledger,
+  sets them aside and shows the reason as text) and can show a mismatch, never that a file
+  belongs; `load_labels` reads `is_anomaly` strictly. `evaluate.DETECTION_CAVEAT` and
+  `MODEL_TIER_CAVEAT` are the one wording of the two caveats, printed by everything that
+  prints the numbers they qualify. `LedgerContext.summary()` lists every test and every tier
+  relation, zeros included, and keeps any key outside the two lists. `.github/workflows/weekly.yml` (Mondays 13:23 UTC, or
+  by hand; `contents: read` and `issues: write`; no repository secret; `github.token` the only
+  expression; credentials not persisted) opens an Issue labelled `weekly-run` from the
+  markdown and then closes the previous one. The generator is seeded, so the Issue is a
+  regression watch for the code and its dependencies, not new data.
+  `tests/test_workflows.py` reads the workflow files without a YAML parser and parses every
+  `ledgerlens` line in them with `build_parser()`. README final pass: a Mermaid diagram,
+  `docs/demo.gif` (recorded against a copy of the review database, no API call), a "how to
+  read it" column on the results and tier tables, and what the tests make of a QuickBooks
+  pull; `tests/test_readme.py` and a test on the recorded fixtures compute the README's
+  figures and look for them in its text. A review of the five feature commits before the
+  push (security, correctness and claims lenses, every finding judged by a skeptic) kept 33
+  findings, none high once judged, fixed in four commits: `--out=~/x` passed the guard and
+  was written to a directory named `~` inside the checkout; the review line counted every
+  decision as a part of the flagged entries, and named decision kinds straight from the
+  database file; the invisible-character list missed a bidi control and the whole tag block
+  (ASCII no reader sees); a refusal quoted ids raw into the dashboard's markdown and the
+  terminal; ids were compared as text but joined as values; `is_anomaly` was read with
+  `astype(bool)`, so a blank cell was an anomaly; the caveat was claimed to be shown wherever
+  a number is while `test`, `score`, the workpaper and CI's gate printed bare figures; three
+  statements about "every format" were false for JSON; the Issue step's shell had no test
+  that ran it (it now runs against a stand-in `gh`); the Mermaid diagram drew Benford into
+  the queue; the README said running the weekly workflow by hand re-enables it (it is
+  enabled from the Actions tab); and the first GIF carried the recorder's own labels. A
+  verification pass over those four commits (four verifiers, one per commit, and a critic
+  over the 33 findings) found 44 more, four of them medium: the Issue-step tests' stand-in
+  `gh` logged `"$*"`, so an unquoted `--title $title` passed; the workpaper stored a cell
+  beginning with `=` as a live formula; the dashboard still drew a flag's reason as markdown
+  (an image fetched on load from a `created_by`); and `detection.defined` was pinned by no
+  test with nothing flagged. All 44 fixed in eight commits (`--out ./~/x` kept literal; the
+  eval guard judging the path it writes, from any directory; every ledger load one `error:`
+  line; `ascii` for quoted ids; data rows not file lines; a clear message when the model
+  cannot be fitted; the dashboard's reasons and notes escaped and its cache keyed on what
+  the files are; the unseen list completed and the whitespace a removal leaves collapsed;
+  the workpaper's cells as text; a shell-faithful extractor and a stand-in that records
+  argv; the CI gate run rather than grepped; both ASCII diagrams redrawn; the README's
+  prose figures pinned), each with a test that failed first or a mutant it kills. A
+  verification of those eight (four verifiers, a critic) found 29 more, none medium, also
+  fixed: the ascii cut by escaped length, the model-fit message on every surface, the
+  sidecar in the dashboard's cache key, reasons drawn as code spans (escaped prose still
+  gets a bare URL linked and `->` redrawn: checked in a browser), table cells through
+  one_line, identifiers unwrapped in the workpaper, the extractor's target rule, the
+  stand-in's NUL-separated record, and tests that could not fail. The PR's first CI run
+  then failed on Linux, on the README's model-tier figures: the entry's account (what
+  `amount_z_in_account` is measured against) came from a one-key sort of its lines by
+  amount, nearly every entry the generator makes is two lines of equal amount, and a
+  one-key pandas sort is not stable, so which line came first differed between a Mac and
+  the x86-64 runners (most likely numpy's vectorised sort there: the runners' own 3.9 and
+  3.12 jobs disagreed as well). The account is now the first of the largest lines
+  (`line_no` breaks the tie), `model_lift` gives a tie at its cut to the lower entry id,
+  and the figures moved once (top-25 precision 0.60, 40x lift, read as re-ranking against
+  the same labels). A review of that fix found JET-07 and JET-09 leaving a same-day tie to
+  the sort (JET-07 could flag the original of a same-day re-post instead of the re-post);
+  on one day the entry keyed first now stands, then the lower id. `docs/demo.gif` predates
+  the fix: the model scores in its queue are the old ones.
+- **Next** — week 5 breaks the circularity in the detection numbers (archetypes no rule
+  describes, both tiers re-measured), and an approver list and approval limit that can be set
+  for JET-12 and JET-06. Also: a blank account code on a posting line makes `ledgerlens
+  test` raise a TypeError in `jets._entry_pairs`; it should be one `error:` line, like
+  any other ledger that cannot be read.
+- 641 tests on 3.9 / 651 on 3.12 (the ten MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
@@ -135,9 +216,10 @@ key needs `ANTHROPIC_WORKSPACE_ID` as well; a workspace-scoped key does not.
 
 ```
                         ┌──▶ 12 journal-entry tests ──┐
-ledger CSV ──▶ ingest ──┼──▶ Benford analysis ────────┼──▶ exception queue ──▶ Claude note ──▶ reviewer ──▶ Excel workpaper
-  or QuickBooks         └──▶ Isolation Forest ────────┘     (Streamlit)      (advisory JSON)  (append-only)
-                                                                  └───▶ MCP server (read-only) ───▶ Claude Desktop
+ledger CSV ──▶ ingest ──┼──▶ Isolation Forest ────────┴──▶ exception queue ──▶ Claude note ──▶ reviewer ──▶ Excel workpaper
+  or QuickBooks         │                                   (Streamlit)      (advisory JSON)  (append-only)
+                        │                                         └───▶ MCP server (read-only) ───▶ Claude Desktop
+                        └──▶ Benford analysis ──▶ reported beside the queue (its own dashboard tab, workpaper sheet, MCP tool)
 ```
 
 | Module | Role |
@@ -150,17 +232,18 @@ ledger CSV ──▶ ingest ──┼──▶ Benford analysis ─────�
 | `benford.py` | first-digit test, MAD (Nigrini bands) + chi-square |
 | `features.py` | 16 engineered per-entry features for the model tier |
 | `model.py` | Isolation Forest, rank-based flagging, tier comparison |
-| `evaluate.py` | precision/recall, by archetype, by test, tier comparison, model lift |
+| `evaluate.py` | precision/recall, by archetype, by test, tier comparison, model lift; `check_labels` (labels must cover exactly the ledger's entries) and the two caveat constants |
 | `report.py` | 5-tab Excel workpaper |
 | `review.py` | append-only SQLite store keyed by ledger (`ledger_id`; schema version 4 via `PRAGMA user_version`, numbered migrations from frozen DDL): decisions and versioned narratives, enforced by triggers; `read_only()` opener; `ledgers()` / `adopt_legacy()` |
 | `narrate.py` | Claude narratives: structured-output JSON contract, cacheable system prompt, usage accounting |
 | `narrative_eval.py` | case selection (the one label reader), rubric grader (the citation stripped before numbers are counted), `case_prompt` with per-case `overrides`, runner with case-file and ledger provenance, report with grader notes, case-set notes and baseline |
 | `ledger_context.py` | read-only query layer (summary, top exceptions, explain, search, Benford, review status); opens the review DB `mode=ro`, bound to the ledger's identity; 3.9-safe |
 | `mcp_server.py` | MCP registration over `ledger_context` (v2 SDK, stdio); needs 3.10+ |
+| `summary.py` | one page on a scored ledger (`collect`, `render` as text / markdown / JSON); scores nothing itself; `md_code` renders ledger text as inert markdown |
 | `env.py` | dependency-free `.env` loader |
 | `connectors/qbo.py` | QuickBooks Online: `QboConfig` (`QBO_*`), transports (urllib, `RecordedTransport` replay, sanitizing `Recorder`), OAuth (`QboAuth`, `CallbackServer`), `QboClient` (refresh, throttling, paging), and the mapping into the ledger contract (`pull`, `PullStats`, `write_identity`); stdlib |
 | `connectors/tokens.py` | QuickBooks token store: `~/.config/ledgerlens/qbo-<environment>-<realm>.json` (`$XDG_CONFIG_HOME/ledgerlens/` when set; `$LEDGERLENS_TOKEN_DIR` overrides both), mode 600, a record only for the realm its file names, refuses any path inside a git checkout; stdlib |
-| `cli.py` | `generate` / `test` / `score` / `benford` / `report` / `narrate` / `adopt-legacy` / `eval-narratives` / `qbo-auth` / `pull-qbo` |
+| `cli.py` | `generate` / `test` / `score` / `benford` / `report` / `summary` / `narrate` / `adopt-legacy` / `eval-narratives` / `qbo-auth` / `pull-qbo` |
 | `app.py` | Streamlit dashboard: queue, note, decision form, history |
 
 ## Rules that must not be broken
@@ -220,7 +303,7 @@ nine of eleven archetypes the generator injects the anomaly using the same defin
 looks for, so recall on those is near-tautological. The non-circular numbers are `benford_drift`
 (0.75) and `rare_account_pair` (0.86).
 
-Same pattern in the model tier: it is a strong re-ranker (top-25 precision 0.64, 42x lift over
+Same pattern in the model tier: it is a strong re-ranker (top-25 precision 0.60, 40x lift over
 random) but a weak independent detector — the "model only" segment sits at the base rate, because
 these anomalies were *defined* as rule violations.
 
@@ -238,6 +321,9 @@ unhelpful. Say so wherever the number is quoted.
 - Tests live beside the module they cover; the session-scoped `ledger` fixture is in
   `tests/conftest.py`.
 - Comments explain *why*, not *what*. Existing code sets the density — match it.
+- A sort that picks one row or cuts a top-N says how a tie breaks (a second key, or an
+  index sort and then a stable `kind`). A one-key pandas sort is not stable, and the order
+  it gave tied lines differed between a Mac and the x86-64 Linux runners.
 - Run `ruff check src tests app.py` and both venvs' test suites before every commit.
 - The Claude API is never called from a test: `tests/conftest.py` has the fake client
   (`llm` fixture) shaped like the real responses, thinking block included.
@@ -261,6 +347,23 @@ unhelpful. Say so wherever the number is quoted.
 - A review-schema change is a new numbered migration step in `review.py` built from frozen
   DDL literals, never from the live constants, so the step keeps doing what it did when it
   shipped; old-schema fixtures in the tests are DDL in code, never binary files.
+- `weekly.yml` and `claude.yml` run only from `main` (the weekly one on its schedule or by
+  hand; `ci.yml` also runs on a pull request), so a change to them is checked by
+  `tests/test_workflows.py` before it is pushed, and its commands are run by hand first. A
+  `ledgerlens` command added to a workflow is added to that file's `COMMANDS` table.
+- Text that came from a ledger is data. Where it leaves the machine it is made inert: the
+  summary's markdown through `summary.md_code`, a prompt through the data-not-instructions
+  rule, a refusal through `ascii` of the id it quotes, the workpaper's string cells written
+  as text (openpyxl would store one beginning with `=` as a formula), the CLI's own lines
+  through `summary.one_line`, and in the dashboard a flag's reason as a code span
+  (`summary.md_code`) and the note's prose with its markdown escaped (`app.md`: no construct
+  forms, though Streamlit still links a bare URL and redraws `->`); its tables are drawn as
+  text. `summary.py` and its tests stay ASCII
+  (pinned by a test), because their patterns name characters that could not be reviewed if
+  written raw.
+- A caveat has one wording (`evaluate.DETECTION_CAVEAT`, `evaluate.MODEL_TIER_CAVEAT`) and is
+  printed by everything that prints the number it qualifies: `test`, `score`, `summary`,
+  the dashboard, the workpaper and CI's detection gate.
 - `.env` holds configuration only (the API key, `QBO_*` client settings). QuickBooks tokens go
   through `connectors/tokens.py` to `~/.config/ledgerlens/` (`$XDG_CONFIG_HOME/ledgerlens/` when that is set; `$LEDGERLENS_TOKEN_DIR` overrides both), which refuses any path inside a
   git checkout.

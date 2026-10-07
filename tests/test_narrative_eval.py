@@ -851,6 +851,18 @@ def test_committed_paths_refuse_any_ledger_but_the_default_however_they_are_spel
     if (tmp_path / "PROBE").exists():  # a case-insensitive disk: spelling must not matter
         with pytest.raises(CommittedPathError):
             refuse_committed_path("EVALS/narratives/cases.json", other, "the case file")
+    # A leading "~" is the caller's to expand (the CLI does, once): judged here as the literal
+    # directory named "~", so the path judged is the path a writer given the same text writes.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    refuse_committed_path("~/evals/narratives/cases.json", other, "the case file")
+    # Inside a checkout the committed directories are the checkout's, from any current directory.
+    (tmp_path / ".git").mkdir()
+    monkeypatch.chdir(tmp_path / "evals")
+    with pytest.raises(CommittedPathError, match="committed"):
+        refuse_committed_path("mine/cases.json", other, "the case file")
+    with pytest.raises(CommittedPathError, match="committed"):
+        refuse_committed_path("./~/cases.json", other, "the case file")
+    refuse_committed_path("../out/cases.json", other, "the case file")
 
 
 def test_save_cases_and_run_eval_refuse_a_committed_destination_for_another_ledger(

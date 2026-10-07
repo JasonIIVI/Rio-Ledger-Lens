@@ -21,6 +21,106 @@ from __future__ import annotations
 
 import pandas as pd
 
+from .schema import AnomalyType
+
+#: The archetypes the generator does not inject by the very rule a test checks,
+#: so their recall is a measurement rather than the definition read back.
+NON_CIRCULAR_ARCHETYPES = (AnomalyType.BENFORD_DRIFT, AnomalyType.RARE_ACCOUNT_PAIR)
+
+#: Printed beside every rule-tier precision or recall the tool shows: `test`,
+#: `score` (whose segment table's "rules only" and "both" rows are the rule tier's
+#: flagged entries), `summary`, the dashboard, the workpaper and CI's detection
+#: gate. It carries no figure: the numbers beside it move with the ledger, the
+#: reason to distrust them does not.
+DETECTION_CAVEAT = (
+    "Read these sceptically. For nine of eleven archetypes the generator injects the anomaly "
+    "using the same definition the test looks for, so recall on those is close to "
+    "tautological. The honest figures are the archetypes where detection is not definitional: "
+    "benford_drift and rare_account_pair."
+)
+
+#: The same caveat for the model tier's segment and lift tables: `score` and the
+#: dashboard's tier tab, where it follows DETECTION_CAVEAT ("the same" points at it).
+MODEL_TIER_CAVEAT = (
+    "The same circularity applies to the model tier: these anomalies were defined as rule "
+    "violations, so almost every anomaly the model ranks highly, the rules had already caught. "
+    "Read the lift as re-ranking of the rule tier's queue, not as independent detection."
+)
+
+
+class LabelsMismatchError(ValueError):
+    """A label file that does not describe the ledger it was given with."""
+
+
+def _count(n: int, one: str, many: str) -> str:
+    return f"{n:,} {one if n == 1 else many}"
+
+
+def _example(value: object) -> str:
+    """An id as it is quoted in a refusal: ``ascii``, cut to a line's worth.
+
+    Whoever wrote the ledger chose this text, and the refusal is shown in a
+    terminal, a CI log and the dashboard. ``ascii`` escapes every character
+    outside ASCII, the control and invisible ones among them, so it shows what
+    the eye would miss: a stray space, a variation selector, an id read as a
+    number beside the same id read as text. ``repr`` would keep an invisible
+    character Python calls printable, and print a code point assigned after
+    this Python's Unicode tables one way and a newer Python's another.
+    """
+    text = ascii(value)
+    if isinstance(value, str) and (len(value) > 48 or len(text) > 60):
+        # Cut the id, then quote it: the quote closes, no escape is cut in half, and the
+        # length says that two ids alike this far are not being called the same. The cut
+        # is by what the escaped text takes up, not by a count of characters: ascii()
+        # writes a Latin-1 letter as four, a CJK character as six and an emoji as ten.
+        prefix = value[:48]
+        while prefix and len(ascii(prefix)) > 50:
+            prefix = prefix[:-1]
+        return f"{ascii(prefix)}... ({len(value)} characters)"
+    return text
+
+
+def check_labels(labels: pd.DataFrame, all_entry_ids) -> None:
+    """Refuse labels that do not cover exactly the ledger's entries.
+
+    A ledger entry with no label becomes a false positive the moment it is
+    flagged, and a label with no entry an anomaly nobody could have caught:
+    either way the precision and recall printed would describe a pairing that
+    does not exist. Ids are compared as the values ``evaluate`` joins on, not
+    as their text, so an id read as a number does not pass for the same id
+    read as text. This can show that a file does not match, never that it
+    belongs: generated ids are sequential, so two runs of the generator can
+    share every id, and a label file carries no digest of its ledger.
+    """
+    if "entry_id" not in labels.columns:
+        raise LabelsMismatchError("the label file has no entry_id column")
+    ids = labels["entry_id"]
+    blank = int(ids.isna().sum())
+    if blank:
+        raise LabelsMismatchError(
+            "the label file has {} with no entry id".format(_count(blank, "row", "rows")))
+    repeated = sorted(set(ids[ids.duplicated()]), key=repr)
+    if repeated:
+        # recall_by_archetype counts rows, so a repeated id is counted twice
+        raise LabelsMismatchError(
+            "the label file lists {} more than once (e.g. {})".format(
+                _count(len(repeated), "entry id", "entry ids"), _example(repeated[0])))
+    labelled, wanted = set(ids), set(all_entry_ids)
+    # key=repr: ids of two types cannot be ordered against each other
+    unlabelled = sorted(wanted - labelled, key=repr)
+    unknown = sorted(labelled - wanted, key=repr)
+    problems = []
+    if unlabelled:
+        problems.append("{} no label (e.g. {})".format(
+            _count(len(unlabelled), "ledger entry has", "ledger entries have"),
+            _example(unlabelled[0])))
+    if unknown:
+        problems.append("{} no ledger entry (e.g. {})".format(
+            _count(len(unknown), "label names", "labels name"), _example(unknown[0])))
+    if problems:
+        raise LabelsMismatchError(
+            "the labels do not cover exactly this ledger's entries: " + "; ".join(problems))
+
 
 def _safe_div(numerator: float, denominator: float) -> float:
     return float(numerator / denominator) if denominator else 0.0
@@ -164,10 +264,16 @@ def model_lift(
 
     Compared against the base rate, this is the clearest statement of whether
     the model is better than opening entries at random.
+
+    Ties at the cut go to the lower entry id, so a top-N depends neither on
+    the order the scores arrive in nor on how a sort orders a tie.
     """
     truth = set(labels.loc[labels["is_anomaly"], "entry_id"])
     base_rate = _safe_div(len(truth), len(model_scores))
-    ordered = model_scores.sort_values(ascending=False)
+    # Entries with identical features score identically, so a cut can fall
+    # inside a tie. The default sort is not stable; this one is, after an index
+    # sort, so such a tie goes to the lower entry id.
+    ordered = model_scores.sort_index().sort_values(ascending=False, kind="mergesort")
 
     rows = []
     for n in tops:
@@ -209,5 +315,8 @@ def score_by_archetype(model_scores: pd.Series, labels: pd.DataFrame) -> pd.Data
             "mean_model_score": round(mean_score, 4),
             "vs_normal": round(mean_score - float(baseline), 4),
         })
-    out = pd.DataFrame(rows).sort_values("mean_model_score", ascending=False)
+    # The columns are named so that labels marking no anomaly give an empty table, as
+    # recall_by_archetype does, and not a frame with nothing to sort by.
+    columns = ["anomaly_type", "n", "mean_model_score", "vs_normal"]
+    out = pd.DataFrame(rows, columns=columns).sort_values("mean_model_score", ascending=False)
     return out.reset_index(drop=True)

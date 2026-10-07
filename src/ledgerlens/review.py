@@ -510,7 +510,11 @@ class ReviewStore:
         current = self.current()
         if current.empty:
             return pd.DataFrame(columns=["decision", "entries"])
-        out = current.groupby("decision").size().reset_index(name="entries")
+        # Grouped as text: the column is constrained by this file's own DDL, and a file
+        # made by hand can hold a NULL or values of several types, which pandas cannot
+        # sort together. Readers name only the kinds this version records anyway.
+        kinds = current["decision"].map(lambda v: v if isinstance(v, str) else repr(v))
+        out = current.assign(decision=kinds).groupby("decision").size().reset_index(name="entries")
         return out.sort_values("entries", ascending=False).reset_index(drop=True)
 
     def outstanding(self, scored: pd.DataFrame) -> pd.DataFrame:

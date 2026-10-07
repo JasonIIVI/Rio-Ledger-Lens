@@ -157,10 +157,27 @@ def load_csv(path: str | Path) -> pd.DataFrame:
     return prepare(df)
 
 
+#: What a label's is_anomaly cell may hold. "1.0" and "0.0" are what pandas writes for a
+#: boolean column that once held a blank; anything else is refused rather than guessed.
+_TRUTH = {"true": True, "false": False, "1": True, "0": False, "1.0": True, "0.0": False}
+
+
 def load_labels(path: str | Path) -> pd.DataFrame:
     """Read the ground-truth label file produced by the generator."""
-    df = pd.read_csv(path)
-    df["is_anomaly"] = df["is_anomaly"].astype(bool)
+    # Ids as text, like load_csv: a numeric-looking id must not lose its zeros.
+    df = pd.read_csv(path, dtype={"entry_id": "string", "is_anomaly": "string"})
+    # Read strictly. astype(bool) made a blank cell, "no" and "false " all True, and
+    # every such row then counted as an injected anomaly.
+    truth = df["is_anomaly"].str.strip().str.lower().map(_TRUTH)
+    unread = truth.isna()
+    if unread.any():
+        # Counted in data rows, not file lines: pandas skips a blank line, and a quoted
+        # cell can span two, so a line number would send the reader to a line that is fine.
+        first = int(unread.to_numpy().argmax()) + 1
+        raise ValueError(
+            f"is_anomaly must be true/false or 1/0 on every row; {int(unread.sum())} row(s) are "
+            f"blank or something else, the first is data row {first}")
+    df["is_anomaly"] = truth.astype(bool)
     df["anomaly_type"] = df["anomaly_type"].fillna("").astype("string")
     return df
 

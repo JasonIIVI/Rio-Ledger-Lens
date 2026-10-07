@@ -162,6 +162,7 @@ class LedgerContext:
         c = self.combined
         flagged = c["risk_score"] > 0
         by_test = self.flags.groupby("test_id").size() if not self.flags.empty else pd.Series(dtype=int)
+        agreement = c["agreement"].value_counts()
         return {
             "entries": int(len(c)),
             "lines": int(len(self.lines)),
@@ -169,8 +170,21 @@ class LedgerContext:
             "flagged": int(flagged.sum()),
             "flag_rate": round(float(flagged.mean()), 4),
             "flags_raised": int(len(self.flags)),
-            "flags_by_test": {str(k): int(v) for k, v in by_test.items()},
-            "tier_agreement": {str(k): int(v) for k, v in c["agreement"].value_counts().items()},
+            # Every test and every way the tiers can relate, zeros included and in a
+            # fixed order: a reader comparing two runs has to be able to tell "did not
+            # fire" from "was not run". Both count rows of their own kind: flags_by_test
+            # counts flags (one entry can raise several), tier_agreement counts entries.
+            # A key neither list names is kept, after the fixed ones, so a later test or
+            # tier relation counts toward the total above it whatever it is called (a
+            # missing key would not: groupby and value_counts drop it before this sees it).
+            "flags_by_test": {
+                **{test_id: int(by_test.get(test_id, 0)) for test_id in jets.REGISTRY},
+                **{str(k): int(v) for k, v in by_test.items() if k not in jets.REGISTRY},
+            },
+            "tier_agreement": {
+                **{name: int(agreement.get(name, 0)) for name in AGREEMENTS},
+                **{str(k): int(v) for k, v in agreement.items() if k not in AGREEMENTS},
+            },
             "model": self.model_report.describe(),
             "review": self.review_status(),
             "caveat": CAVEAT,

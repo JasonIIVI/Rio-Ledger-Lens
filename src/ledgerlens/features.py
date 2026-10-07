@@ -109,7 +109,17 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
         )
         .groupby("account_code")["dev"].median()
     )
-    per_entry_account = df.sort_values("abs_amount", ascending=False).groupby("entry_id").first()
+    # The entry's account is its largest line's. A balanced two-line entry has
+    # two largest lines (nearly every entry the generator makes is one), and the
+    # tie goes to the entry's first line. The sort has to say so: a one-key sort
+    # is not stable, and which line it put first differed between a Mac and the
+    # x86-64 Linux runners, which moved the model-tier figures between a
+    # developer's machine and CI.
+    per_entry_account = (
+        df.sort_values(["abs_amount", "line_no"], ascending=[False, True])
+        .groupby("entry_id")
+        .first()
+    )
     entry_account = per_entry_account["account_code"]
     entry_log_amount = np.log10(entries.set_index("entry_id")["entry_amount"].clip(lower=0.01))
 

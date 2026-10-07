@@ -30,6 +30,14 @@ def test_constant_features_are_dropped(ledger):
     assert "n_lines" in model.report_.dropped_constant
 
 
+def test_a_population_with_no_varying_feature_is_refused_in_plain_words(ledger):
+    """One entry: every feature is constant and there is nothing to rank. sklearn said
+    "0 feature(s) ... StandardScaler", which reads as a fault in the file."""
+    X = build_features(ledger[ledger["entry_id"] == ledger["entry_id"].iloc[0]])
+    with pytest.raises(ValueError, match=r"cannot be fitted on 1 entry: every one of the \d+ features is constant"):
+        AnomalyModel().fit(X)
+
+
 def test_must_fit_before_scoring(ledger):
     X = build_features(ledger)
     with pytest.raises(RuntimeError):

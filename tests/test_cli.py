@@ -898,3 +898,642 @@ def test_a_pull_without_tokens_creates_no_token_directory(qbo_env, capsys):
     assert main(["pull-qbo", "--start", "2025-10-01", "--end", "2025-12-31"]) == 2
     assert "run `ledgerlens qbo-auth` first" in capsys.readouterr().out
     assert not qbo_env.tokens.exists()
+
+
+# --- labels are checked against the ledger before any number is printed ------
+
+
+@pytest.fixture(scope="module")
+def two_ledgers(tmp_path_factory):
+    """Two generated ledgers of different lengths: neither one's labels describe the other."""
+    root = tmp_path_factory.mktemp("pairs")
+    main(["generate", "--start", "2024-01-01", "--end", "2024-03-31", "--out-dir", str(root / "a")])
+    main(["generate", "--start", "2024-01-01", "--end", "2024-02-29", "--out-dir", str(root / "b")])
+    return root
+
+
+@pytest.mark.parametrize("command", [
+    ["test"], ["score"], ["report", "--no-model"],
+])
+def test_labels_from_another_ledger_are_refused_before_anything_is_scored(
+        two_ledgers, tmp_path, capsys, command):
+    out = tmp_path / ("wp.xlsx" if command[0] == "report" else "scored.csv")
+    capsys.readouterr()
+    code = main([*command, str(two_ledgers / "a" / "ledger.csv"),
+                 "--labels", str(two_ledgers / "b" / "labels.csv"), "--out", str(out)])
+    printed = capsys.readouterr().out
+    assert code == 2, printed
+    assert printed.startswith("refused: ") and "have no label" in printed
+    assert "Precision" not in printed and "precision" not in printed
+    assert not out.exists()
+    # the ledger's own labels still pass
+    assert main([*command, str(two_ledgers / "a" / "ledger.csv"),
+                 "--labels", str(two_ledgers / "a" / "labels.csv"), "--out", str(out)]) == 0
+
+
+def test_an_unreadable_label_file_is_a_message_not_a_traceback(two_ledgers, tmp_path, capsys):
+    ledger = str(two_ledgers / "a" / "ledger.csv")
+    capsys.readouterr()
+    assert main(["test", ledger, "--labels", str(tmp_path / "missing.csv")]) == 2
+    assert capsys.readouterr().out.startswith("error: cannot read labels from")
+    columnless = tmp_path / "columnless.csv"
+    columnless.write_text("entry_id,anomaly_type\nJE-2024-000001,\n")
+    assert main(["test", ledger, "--labels", str(columnless)]) == 2
+    assert "missing column 'is_anomaly'" in capsys.readouterr().out
+    empty = tmp_path / "empty.csv"
+    empty.write_text("")
+    assert main(["test", ledger, "--labels", str(empty)]) == 2
+    assert capsys.readouterr().out.startswith("error: cannot read labels from")
+    guessed = tmp_path / "guessed.csv"
+    guessed.write_text("entry_id,is_anomaly,anomaly_type\nJE-2024-000001,,\n")
+    assert main(["test", ledger, "--labels", str(guessed)]) == 2
+    assert "is_anomaly must be true/false or 1/0" in capsys.readouterr().out
+
+
+def test_labels_that_mark_no_anomaly_are_scored_by_every_command(two_ledgers, tmp_path, capsys):
+    """`score` raised KeyError('mean_model_score') on them while `test` and `summary` ran."""
+    ledger, labels = _pair(two_ledgers)
+    none = tmp_path / "none.csv"
+    none.write_text(re.sub(r"(?m)^([^,\n]+),True,[^\n]*$", r"\1,False,", Path(labels).read_text()))
+    assert "True" not in none.read_text()
+    for command in (["test"], ["score"], ["summary"]):
+        capsys.readouterr()
+        assert main([*command, ledger, "--labels", str(none)]) == 0, command
+    page = capsys.readouterr().out
+    assert "undefined (the labels mark no anomaly)" in page
+    assert "Recall by archetype: the labels mark no anomaly" in page
+    assert main(["summary", ledger, "--labels", str(none), "--format", "markdown"]) == 0
+    markdown = capsys.readouterr().out
+    assert "there is no recall by archetype" in markdown and "| Archetype |" not in markdown
+
+
+# --- summary -----------------------------------------------------------------
+
+
+def _pair(two_ledgers, name="a"):
+    return str(two_ledgers / name / "ledger.csv"), str(two_ledgers / name / "labels.csv")
+
+
+def test_summary_prints_one_page_whose_numbers_are_the_test_commands(two_ledgers, capsys):
+    ledger, labels = _pair(two_ledgers)
+    capsys.readouterr()
+    assert main(["test", ledger, "--labels", labels]) == 0
+    tested = capsys.readouterr().out
+    assert main(["summary", ledger, "--labels", labels]) == 0
+    page = capsys.readouterr().out
+    for label in ("Precision", "Recall", "F1"):
+        value = re.search(rf"^{label}\s+(\d\.\d{{3}})$", tested, re.M).group(1)
+        assert re.search(rf"^  {label}\s+{re.escape(value)}$", page, re.M), label
+    flagged = re.search(r"on ([\d,]+) entrie\(s\)", tested).group(1)
+    assert f"  {flagged} of " in page
+    for heading in ("Rule tier", "Model tier", "never blended with the rule tier",
+                    "Tier agreement", "not a measure of quality",
+                    "Detection against the labels (rule tier only)", "Top 10 by rule score", "Notes"):
+        assert heading in page
+    assert "a question, not a finding" in page and "nine of eleven" in page
+    assert page.index("nine of eleven") < page.index("Precision")
+
+
+@pytest.mark.parametrize("extra", [[], ["--db", "no-such-review.sqlite"]])
+def test_summary_json_is_one_document_and_nothing_else_is_printed(
+        two_ledgers, tmp_path, monkeypatch, capsys, extra):
+    monkeypatch.chdir(tmp_path)
+    ledger, labels = _pair(two_ledgers)
+    capsys.readouterr()
+    assert main(["summary", ledger, "--labels", labels, "--format", "json", "--top", "3", *extra]) == 0
+    payload = json.loads(capsys.readouterr().out)  # anything else on stdout would not parse
+    assert payload["ledger"] == ledger and len(payload["top_exceptions"]) == 3
+    assert payload["detection"]["metrics"]["population"] == payload["entries"]
+    assert ("review" in payload) == bool(extra)
+    assert not (tmp_path / "no-such-review.sqlite").exists()  # a summary never creates one
+    if extra:
+        assert payload["review"]["exists"] is False
+        assert any("does not exist" in note for note in payload["notes"])
+
+
+def test_summary_writes_the_rendering_to_out_and_says_so_in_one_line(two_ledgers, tmp_path, capsys):
+    ledger, labels = _pair(two_ledgers)
+    target = tmp_path / "new" / "dir" / "summary.md"
+    capsys.readouterr()
+    assert main(["summary", ledger, "--labels", labels, "--format", "markdown",
+                 "--out", str(target)]) == 0
+    assert capsys.readouterr().out == f"Summary (markdown) written to {target}\n"
+    written = target.read_text(encoding="utf-8")
+    assert written.startswith("## LedgerLens summary, ") and written.endswith("\n")
+    assert "> A flag is a question, not a finding." in written
+    assert "### Detection against the labels (rule tier only)" in written
+    assert "@" not in written
+
+
+def test_a_summary_is_only_written_where_git_cannot_pick_it_up(two_ledgers, tmp_path, capsys):
+    from ledgerlens.connectors.tokens import repository_root
+
+    if repository_root(tmp_path) is not None:
+        pytest.skip(f"{tmp_path} is inside a git repository")
+    ledger, _ = _pair(two_ledgers)
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "docs").mkdir()
+    (repo / "linked-out").symlink_to(repo / "docs")
+    refused = [repo / "summary.md", repo / "docs" / "summary.md", repo / "out",
+               repo / "linked-out" / "summary.md", repo / "new" / "out" / "summary.md",
+               repo / "out" / ".." / "summary.md"]
+    for target in refused:
+        capsys.readouterr()
+        assert main(["summary", ledger, "--out", str(target)]) == 2, target
+        printed = capsys.readouterr().out
+        assert printed.startswith("refused: ") and "not under its out/ directory" in printed
+    assert sorted(p.name for p in repo.iterdir()) == [".git", "docs", "linked-out"]  # nothing made
+    assert list((repo / "docs").iterdir()) == []
+
+    # an out/ that is itself a link to a tracked directory is that directory
+    (repo / "out").symlink_to(repo / "docs")
+    assert main(["summary", ledger, "--out", str(repo / "out" / "summary.md")]) == 2
+    (repo / "out").unlink()
+
+    assert main(["summary", ledger, "--out", str(repo / "out" / "weekly" / "summary.json"),
+                 "--format", "json"]) == 0
+    assert json.loads((repo / "out" / "weekly" / "summary.json").read_text())["entries"] > 0
+    assert main(["summary", ledger, "--out", str(tmp_path / "elsewhere" / "s.txt")]) == 0  # no checkout
+
+
+def test_summary_refuses_labels_for_another_ledger_and_writes_nothing(
+        two_ledgers, tmp_path, capsys, monkeypatch):
+    from ledgerlens import cli
+
+    ledger, _ = _pair(two_ledgers, "a")
+    _, other_labels = _pair(two_ledgers, "b")
+    target = tmp_path / "s.md"
+    scored = []
+    real = cli.LedgerContext.load
+    monkeypatch.setattr(cli.LedgerContext, "load", lambda self: scored.append(1) or real(self))
+    capsys.readouterr()
+    assert main(["summary", ledger, "--labels", other_labels, "--out", str(target)]) == 2
+    printed = capsys.readouterr().out
+    assert printed.startswith("refused: ") and "Precision" not in printed
+    assert not target.exists()
+    assert scored == []  # refused before either tier ran, as test, score and report refuse
+
+
+@pytest.mark.parametrize("bad", [
+    ["--top", "0"], ["--top", "-3"], ["--format", "xml"], ["--out", ""], ["--out", "  "],
+])
+def test_summary_rejects_arguments_that_name_nothing(two_ledgers, bad):
+    ledger, _ = _pair(two_ledgers)
+    with pytest.raises(SystemExit) as stopped:
+        main(["summary", ledger, *bad])
+    assert stopped.value.code == 2
+
+
+@pytest.mark.filterwarnings("ignore:Could not infer format")
+def test_summary_turns_what_it_cannot_read_into_a_message(two_ledgers, tmp_path, capsys):
+    import shutil
+
+    ledger, _ = _pair(two_ledgers)
+    capsys.readouterr()
+    assert main(["summary", str(tmp_path / "missing.csv")]) == 2
+    assert capsys.readouterr().out.startswith("error: cannot summarise the ledger")
+
+    not_a_ledger = tmp_path / "notes.csv"
+    not_a_ledger.write_text("a,b\n1,2\n")
+    assert main(["summary", str(not_a_ledger)]) == 2
+    assert capsys.readouterr().out.startswith("error: cannot summarise the ledger")
+
+    # the reason pandas gives quotes the cell it could not read: one line, no control bytes
+    text = Path(ledger).read_text()
+    first_date = re.search(r"\d{4}-\d{2}-\d{2}", text).group(0)
+    (tmp_path / "bad-date.csv").write_text(text.replace(first_date, "\x1b[31mnot-a-date\x07", 1))
+    assert main(["summary", str(tmp_path / "bad-date.csv")]) == 2
+    printed = capsys.readouterr().out
+    assert "not-a-date" in printed and "\x1b" not in printed and "\x07" not in printed
+    assert printed.count("\n") == 1
+
+    shutil.copy(ledger, tmp_path / "ledger.csv")
+    (tmp_path / "ledger.identity.json").write_text('{"ledger_id": "qbo 123"}')
+    assert main(["summary", str(tmp_path / "ledger.csv")]) == 2
+    assert "ledger.identity.json" in capsys.readouterr().out
+
+    damaged = tmp_path / "review.sqlite"
+    damaged.write_bytes(b"not a database at all")
+    assert main(["summary", ledger, "--db", str(damaged)]) == 2
+    assert capsys.readouterr().out.startswith("error: ")
+    assert damaged.read_bytes() == b"not a database at all"
+
+
+def test_summary_of_a_quickbooks_pull_measures_nothing_and_says_why(qbo_env, capsys):
+    out = qbo_env.root / "data" / "qbo-ledger.csv"
+    assert main(["pull-qbo", *QBO_PERIOD, "--fixtures", str(QBO_FIXTURES / "pull"), "--out", str(out)]) == 0
+    for fmt in ("text", "markdown", "json"):
+        capsys.readouterr()
+        assert main(["summary", str(out), "--format", fmt]) == 0
+        page = capsys.readouterr().out
+        assert "qbo:sandbox-fixtures" in page
+        assert "Precision" not in page and "nine of eleven" not in page
+        assert "Detection against" not in page and '"detection"' not in page
+        assert "No labels were given, so detection quality was not measured" in " ".join(page.split())
+        assert "not the generator's default ledger" in " ".join(page.split())
+    payload = json.loads(page)
+    assert payload["entries"] == 116 and payload["lines"] == 297
+    assert payload["default_ledger"] is False and "detection" not in payload
+
+
+def test_what_the_readme_says_the_tests_make_of_the_recorded_quarter(qbo_env, capsys):
+    """The README's paragraph on a pull's flags quotes these figures. They move only with the
+    recording or with a test's definition, and then the README has to move with them."""
+    import inspect
+
+    import pandas as pd
+
+    from ledgerlens import jets
+
+    out = qbo_env.root / "data" / "qbo-ledger.csv"
+    assert _replay_to(out) == 0
+    capsys.readouterr()
+    assert main(["summary", str(out), "--format", "json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    fired = {test_id: count for test_id, count in payload["flags_by_test"].items() if count}
+    assert fired == {"JET-01": 4, "JET-07": 3, "JET-08": 79, "JET-12": 3}
+    assert (payload["flagged"], payload["entries"]) == (81, 116)
+    assert payload["model_tier"]["flagged"] == 2  # the 2% budget of 116 entries, not a detection
+    assert payload["model_tier"]["dropped_constant"] == ["user_freq"]  # the sandbox has one user
+
+    from ledgerlens.ingest import load_csv
+
+    lines = load_csv(out)
+    by_jet08 = jets.run_all(lines).query("test_id == 'JET-08'")["entry_id"]
+    assert by_jet08.nunique() == len(by_jet08) == 79  # 79 entries, not 79 flags on fewer
+    assert int(pd.read_csv(out)["entered_at_estimated"].sum()) == 0  # no keying time was estimated
+    per_entry = pd.read_csv(out).groupby("entry_id")
+    # JET-12 fires only on manual entries: three flags over three journal entries is all of them
+    assert int((per_entry["source"].first() == "Manual").sum()) == 3
+    assert int((per_entry.size() > 2).sum()) == 25  # multi-line entries; the generator writes none
+    # the definitions the paragraph explains those figures by
+    assert (jets.APPROVAL_THRESHOLD, jets.MANUAL_JE_APPROVERS) == (10_000.0, ("controller", "mchen"))
+    assert inspect.signature(jets.jet_rare_account_pair).parameters["max_occurrences"].default == 3
+    assert inspect.signature(jets.jet_dormant_account).parameters["dormant_days"].default == 120
+
+    # and the sentences themselves, as the README prints them
+    from ledgerlens.connectors.qbo import SMALL_LEDGER
+
+    readme = " ".join((Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8").split())
+    multi = int((per_entry.size() > 2).sum())
+    words = ("zero", "one", "two", "three", "four", "five")
+    for said in (
+        f"({payload['entries']} entries in the recorded quarter)",
+        f"pull warns below {SMALL_LEDGER} entries",
+        f"{payload['flagged']} of the {payload['entries']} entries are flagged, {fired['JET-08']} of them by JET-08",
+        f"All {words[fired['JET-12']]} journal entries fire JET-12",
+        f"the synthetic company's {words[len(jets.MANUAL_JE_APPROVERS)]} users",
+        "JET-09 looks for an account quiet for more than 120 days",
+        f"The model tier's {words[payload['model_tier']['flagged']]} flagged entries are its 2% budget of "
+        f"{payload['entries']}, not a detection",
+        f"more than two lines ({multi} of the {payload['entries']})",
+        "an account pairing seen three times or fewer",
+        "the generator's $10,000 approval limit",
+    ):
+        assert said in readme, said
+
+
+def test_summary_out_is_judged_and_written_as_one_path_tilde_included(
+        two_ledgers, tmp_path, monkeypatch, capsys):
+    """A shell passes `--out=~/s.md` on as typed. The guard used to judge the home directory
+    while the file went to a directory named "~" inside the checkout."""
+    from ledgerlens.connectors.tokens import repository_root
+
+    if repository_root(tmp_path) is not None:
+        pytest.skip(f"{tmp_path} is inside a git repository")
+    ledger, _ = _pair(two_ledgers)
+    repo, home = tmp_path / "repo", tmp_path / "home"
+    (repo / ".git").mkdir(parents=True)
+    home.mkdir()
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("HOME", str(home))
+    capsys.readouterr()
+    assert main(["summary", ledger, "--out=~/s.md"]) == 0
+    printed = capsys.readouterr().out
+    assert str(home / "s.md") in printed and "~" not in printed  # it says where the file is
+    assert (home / "s.md").exists()
+    # "./~/s2.md" is the directory called "~" here, as every shell reads it: refused inside
+    # the checkout, and nothing lands in the home directory for it
+    assert main(["summary", ledger, "--out=./~/s2.md"]) == 2
+    assert capsys.readouterr().out.startswith("refused: ")
+    assert not (home / "s2.md").exists()
+    assert sorted(p.name for p in repo.iterdir()) == [".git"]  # no directory named "~"
+    outside = tmp_path / "outside"
+    (outside / "~").mkdir(parents=True)
+    (home / "notes.md").write_text("keep\n")
+    monkeypatch.chdir(outside)
+    assert main(["summary", ledger, "--out", "./~/notes.md"]) == 0  # outside a checkout: as typed
+    assert capsys.readouterr().out == "Summary (text) written to ~/notes.md\n"
+    assert (outside / "~" / "notes.md").exists() and (home / "notes.md").read_text() == "keep\n"
+    monkeypatch.chdir(repo)
+
+    monkeypatch.setenv("HOME", str(repo))  # a home that is itself the checkout
+    assert main(["summary", ledger, "--out=~/s.md"]) == 2
+    assert capsys.readouterr().out.startswith("refused: ")
+    assert sorted(p.name for p in repo.iterdir()) == [".git"]
+    assert main(["summary", ledger, "--out=~/out/s.md"]) == 0
+    assert (repo / "out" / "s.md").exists()
+    assert main(["summary", ledger, "--out=~no-such-user-7731/s.md"]) == 2
+    assert capsys.readouterr().out.splitlines()[-1].startswith("error: cannot write the summary to")
+
+
+def test_summary_that_cannot_be_written_is_a_message_before_or_after_scoring(
+        two_ledgers, tmp_path, monkeypatch, capsys):
+    import os
+
+    from ledgerlens import cli
+
+    ledger, _ = _pair(two_ledgers)
+    (tmp_path / "a-directory").mkdir()
+    (tmp_path / "a-file").write_text("x")
+    scored = []
+    real = cli.LedgerContext.load
+    monkeypatch.setattr(cli.LedgerContext, "load", lambda self: scored.append(1) or real(self))
+    capsys.readouterr()
+    loop = tmp_path / "loop.md"
+    loop.symlink_to(loop)  # a link to itself: resolving it is a RuntimeError, not an OSError
+    checkout = tmp_path / "checkout"
+    (checkout / ".git").mkdir(parents=True)
+    (checkout / "out").mkdir()
+    before = [  # each caught by a stat the check or the guard needs, before any scoring
+        (tmp_path / "a-directory", "it is a directory"),
+        (checkout / "out", "it is a directory"),  # the out/ directory itself, not "not under out/"
+        (loop, "error: cannot write the summary to"),
+        (tmp_path / ("a" * 300 + ".md"), "error: cannot write the summary to"),  # a name too long
+    ]
+    if os.geteuid() != 0:  # root searches and writes anywhere
+        sealed = tmp_path / "sealed"
+        sealed.mkdir()
+        sealed.chmod(0o000)
+        before.append((sealed / "s.md", "error: cannot write the summary to"))  # a parent nobody may search
+    try:
+        for out, said in before:
+            assert main(["summary", ledger, "--out", str(out)]) == 2, out
+            printed = capsys.readouterr().out
+            assert said in printed and printed.count("\n") == 1, (out, printed)
+        assert scored == []
+    finally:
+        if os.geteuid() != 0:
+            sealed.chmod(0o755)
+    # and after scoring, when the write itself is what fails
+    assert main(["summary", ledger, "--out", str(tmp_path / "a-file" / "s.md")]) == 2
+    assert capsys.readouterr().out.startswith("error: cannot write the summary to")
+    if os.geteuid() != 0:
+        locked = tmp_path / "locked"
+        locked.mkdir()
+        locked.chmod(0o555)
+        try:
+            assert main(["summary", ledger, "--out", str(locked / "s.md")]) == 2
+            assert capsys.readouterr().out.startswith("error: cannot write the summary to")
+        finally:
+            locked.chmod(0o755)
+    assert scored  # those the guard could not see coming
+
+
+def test_test_and_score_print_the_caveat_ahead_of_the_numbers_it_qualifies(two_ledgers, capsys):
+    """`test`'s output is a public CI log on every push; both commands' every Monday."""
+    from ledgerlens import evaluate
+
+    ledger, labels = _pair(two_ledgers)
+    capsys.readouterr()
+    assert main(["test", ledger, "--labels", labels]) == 0
+    printed = " ".join(capsys.readouterr().out.split())
+    assert evaluate.DETECTION_CAVEAT in printed
+    assert printed.index(evaluate.DETECTION_CAVEAT) < printed.index("Precision")
+    assert main(["score", ledger, "--labels", labels]) == 0
+    printed = " ".join(capsys.readouterr().out.split())
+    # the segment table's "rules only" and "both" rows are the rule tier's precision and
+    # recall, so its caveat leads, and "the same circularity" has something to point at
+    assert evaluate.DETECTION_CAVEAT in printed and evaluate.MODEL_TIER_CAVEAT in printed
+    assert (printed.index(evaluate.DETECTION_CAVEAT) < printed.index(evaluate.MODEL_TIER_CAVEAT)
+            < printed.index("share_of_all_anomalies"))
+    # without labels there is no measured number, and so no caveat to print
+    assert main(["test", ledger]) == 0 and main(["score", ledger]) == 0
+    unlabelled = capsys.readouterr().out
+    assert "nine of eleven" not in unlabelled and "same circularity" not in unlabelled
+
+
+def test_eval_narratives_judges_and_writes_one_path_tilde_included(tmp_path, monkeypatch, capsys):
+    """`--cases=~/../evals/x.json` from the checkout's root was judged in the home directory and
+    written into the checkout's evals/; `~/c.json` from inside evals/ was judged in the home
+    directory and written to evals/~/c.json. Rule 1 says "however the path is spelled"."""
+    from ledgerlens.connectors.tokens import repository_root
+
+    if repository_root(tmp_path) is not None:
+        pytest.skip(f"{tmp_path} is inside a git repository")
+    repo, home = tmp_path / "repo", tmp_path / "home"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "evals").mkdir()
+    home.mkdir()
+    main(["generate", "--start", "2024-01-01", "--end", "2024-03-31", "--out-dir", str(tmp_path / "books")])
+    ledger, labels = str(tmp_path / "books" / "ledger.csv"), str(tmp_path / "books" / "labels.csv")
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("HOME", str(home))
+    capsys.readouterr()
+    select = ["eval-narratives", ledger, "--select", "--labels", labels, "--cases"]
+    assert main(select + ["~/../evals/x.json"]) == 0  # the shell's reading: beside home, outside the checkout
+    assert "Wrote" in capsys.readouterr().out
+    assert (tmp_path / "evals" / "x.json").exists()
+    assert list((repo / "evals").iterdir()) == [] and not (repo / "~").exists()
+    monkeypatch.chdir(repo / "evals")
+    assert main(select + ["./~/c.json"]) == 2  # a directory named "~" inside evals/
+    assert capsys.readouterr().out.startswith("refused: ")
+    assert list((repo / "evals").iterdir()) == []
+    assert main(select + ["~/c.json"]) == 0  # the home directory, wherever the shell stands
+    assert (home / "c.json").exists() and list((repo / "evals").iterdir()) == []
+    assert main(select + ["~no-such-user-7731/c.json"]) == 2
+    assert capsys.readouterr().out.splitlines()[-1].startswith("error: ")
+
+
+def test_eval_narratives_select_turns_a_label_file_it_cannot_use_into_a_message(tmp_path, capsys):
+    """A blank or odd is_anomaly cell was an uncaught ValueError here alone, and another ledger's
+    labels were never checked (select_cases reads anomaly_type and entry_id only)."""
+    main(["generate", "--start", "2024-01-01", "--end", "2024-03-31", "--out-dir", str(tmp_path)])
+    ledger = str(tmp_path / "ledger.csv")
+    odd = tmp_path / "odd.csv"
+    odd.write_text((tmp_path / "labels.csv").read_text().replace("False", "maybe", 1))
+    cases = tmp_path / "c.json"
+    capsys.readouterr()
+    assert main(["eval-narratives", ledger, "--select", "--labels", str(odd), "--cases", str(cases)]) == 2
+    assert capsys.readouterr().out.startswith("error: cannot read labels from")
+    other = tmp_path / "other"
+    main(["generate", "--start", "2024-01-01", "--end", "2024-02-29", "--out-dir", str(other)])
+    capsys.readouterr()
+    assert main(["eval-narratives", ledger, "--select", "--labels", str(other / "labels.csv"),
+                 "--cases", str(cases)]) == 2
+    assert capsys.readouterr().out.startswith("refused: ")
+    assert not cases.exists()
+
+
+@pytest.mark.filterwarnings("ignore:Could not infer format")
+def test_every_command_turns_a_ledger_it_cannot_read_into_one_line(two_ledgers, tmp_path, capsys):
+    """test, score, benford, report, narrate, adopt-legacy and eval-narratives were tracebacks on
+    a ledger summary reports in one line, the cell's escape bytes in the exception's text."""
+    ledger, _ = _pair(two_ledgers)
+    text = Path(ledger).read_text()
+    first_date = re.search(r"\d{4}-\d{2}-\d{2}", text).group(0)
+    bad = tmp_path / "bad-date.csv"
+    bad.write_text(text.replace(first_date, "\x1b[31mnot-a-date\x07", 1))
+    (tmp_path / "r.sqlite").write_bytes(b"")
+    for argv in (
+        ["test", str(bad)], ["score", str(bad)], ["benford", str(bad)],
+        ["report", str(bad), "--out", str(tmp_path / "wp.xlsx")],
+        ["narrate", str(bad), "--db", str(tmp_path / "r.sqlite")],
+        ["adopt-legacy", str(bad), "--db", str(tmp_path / "r.sqlite")],
+        ["eval-narratives", str(bad), "--cases", str(tmp_path / "c.json")],
+        ["test", str(tmp_path / "missing.csv")],
+    ):
+        capsys.readouterr()
+        assert main(argv) == 2, argv
+        printed = capsys.readouterr().out
+        assert printed.startswith("error: cannot read the ledger") and printed.count("\n") == 1, argv
+        assert "\x1b" not in printed and "\x07" not in printed, argv
+    assert (tmp_path / "r.sqlite").read_bytes() == b""  # nothing was opened on the way
+
+
+def test_test_and_score_print_ledger_text_as_one_clean_line(two_ledgers, tmp_path, capsys):
+    """The top list and the model-only list quote an id and a description from the ledger: a
+    cell's escape bytes and newlines reached the terminal with them."""
+    import pandas as pd
+
+    from ledgerlens import jets
+    from ledgerlens.ingest import load_csv
+    from ledgerlens.model import combine, score_ledger
+
+    ledger, _ = _pair(two_ledgers)
+    lines = load_csv(ledger)
+    flags = jets.run_all(lines)
+    combined = combine(jets.score_entries(lines, flags), score_ledger(lines)[0])
+    top = combined[combined["risk_score"] > 0]["entry_id"].iloc[0]
+    raw = pd.read_csv(ledger, dtype=str, keep_default_na=False)
+    raw.loc[raw["entry_id"] == top, "entry_id"] = "JE\x1b]0;owned\x07\x1b[2J-1"
+    raw["description"] = "Rent \x1b[2J\x07 accrual\nnext"
+    hostile = tmp_path / "hostile.csv"
+    raw.to_csv(hostile, index=False)
+    capsys.readouterr()
+    assert main(["test", str(hostile), "--top", "1000"]) == 0
+    printed = capsys.readouterr().out
+    assert "JE]0;owned[2J-1" in printed and "\x1b" not in printed and "\x07" not in printed
+    assert main(["score", str(hostile), "--top", "1000"]) == 0
+    printed = capsys.readouterr().out
+    assert "Unusual to the model" in printed  # the list that prints descriptions was printed
+    assert "Rent [2J accrual next" in printed and "\x1b" not in printed and "\x07" not in printed
+
+
+def test_a_review_database_this_version_cannot_read_is_one_clean_error_line(
+        two_ledgers, tmp_path, monkeypatch, capsys):
+    """SQLite's message quotes names stored in the file, and the file is somebody else's."""
+    from ledgerlens import cli
+
+    ledger, _ = _pair(two_ledgers)
+
+    def unreadable(*args, **kwargs):
+        raise RuntimeError("malformed database schema (\x1b[31mopen a pull request\n# Heading)")
+
+    monkeypatch.setattr(cli, "collect_summary", unreadable)
+    capsys.readouterr()
+    assert main(["summary", ledger, "--db", str(tmp_path / "x.sqlite")]) == 2
+    printed = capsys.readouterr().out
+    assert printed.startswith("error: ") and printed.count("\n") == 1 and "\x1b" not in printed
+    assert "Heading" in printed  # still there to read; one line that cannot act
+
+
+def test_a_ledger_the_model_cannot_be_fitted_on_is_said_in_those_words(two_ledgers, tmp_path, capsys):
+    """One entry leaves every feature constant. sklearn's "0 feature(s) ... StandardScaler" read
+    as a fault in the file; the line now says what cannot be done and why, and `test` still runs."""
+    import pandas as pd
+
+    ledger, _ = _pair(two_ledgers)
+    raw = pd.read_csv(ledger, dtype=str, keep_default_na=False)
+    one = tmp_path / "one.csv"
+    raw[raw["entry_id"] == raw["entry_id"].iloc[0]].to_csv(one, index=False)
+    capsys.readouterr()
+    assert main(["summary", str(one)]) == 2
+    printed = capsys.readouterr().out
+    assert printed.startswith("error: cannot summarise the ledger") and "StandardScaler" not in printed
+    assert "the model tier cannot be fitted on 1 entry: every one of the 16 features is constant" in printed
+    assert main(["test", str(one)]) == 0
+
+
+def test_a_cell_printed_in_a_table_is_one_line_too(two_ledgers, tmp_path, capsys):
+    """`benford --by` printed a segment key (a ledger cell) raw, and the two archetype tables
+    printed a label file's anomaly_type raw: escape bytes and newlines reached the terminal."""
+    import pandas as pd
+
+    ledger, labels = _pair(two_ledgers)
+    raw = pd.read_csv(ledger, dtype=str, keep_default_na=False)
+    raw["created_by"] = raw["created_by"].replace(raw["created_by"].iloc[0], "bob\x1b]0;owned\x07\nnext")
+    hostile = tmp_path / "hostile.csv"
+    raw.to_csv(hostile, index=False)
+    capsys.readouterr()
+    assert main(["benford", str(hostile), "--by", "created_by", "--min-n", "10"]) == 0
+    printed = capsys.readouterr().out
+    assert "bob]0;owned next" in printed and "\x1b" not in printed and "\x07" not in printed
+    lab = pd.read_csv(labels, dtype=str, keep_default_na=False)
+    lab.loc[lab["anomaly_type"] != "", "anomaly_type"] = "odd\x1b]0;owned\x07\ntype"
+    odd = tmp_path / "odd-labels.csv"
+    lab.to_csv(odd, index=False)
+    for command in ("test", "score"):
+        assert main([command, ledger, "--labels", str(odd)]) == 0, command
+        printed = capsys.readouterr().out
+        assert "odd]0;owned type" in printed and "\x1b" not in printed and "\x07" not in printed, command
+
+
+def test_eval_narratives_select_turns_an_unwritable_case_file_into_a_message(tmp_path, capsys):
+    """`summary --out` was one `error:` line for a parent that is a file; `--select --cases` was
+    a traceback after the labels were read and both tiers scored."""
+    main(["generate", "--start", "2024-01-01", "--end", "2024-03-31", "--out-dir", str(tmp_path / "books")])
+    ledger, labels = str(tmp_path / "books" / "ledger.csv"), str(tmp_path / "books" / "labels.csv")
+    (tmp_path / "afile").write_text("x")
+    capsys.readouterr()
+    assert main(["eval-narratives", ledger, "--select", "--labels", labels,
+                 "--cases", str(tmp_path / "afile" / "c.json")]) == 2
+    printed = capsys.readouterr().out
+    assert printed.startswith("error: cannot write the case file to") and printed.count("\n") == 1
+
+
+def test_score_report_and_narrate_say_when_the_model_cannot_be_fitted(two_ledgers, tmp_path, capsys):
+    """`summary` said it in plain words; these three were still the traceback, and the last two
+    can run the rule tier alone, which the line now says."""
+    import pandas as pd
+
+    ledger, _ = _pair(two_ledgers)
+    raw = pd.read_csv(ledger, dtype=str, keep_default_na=False)
+    one = tmp_path / "one.csv"
+    raw[raw["entry_id"] == raw["entry_id"].iloc[0]].to_csv(one, index=False)
+    one_labels = tmp_path / "one-labels.csv"
+    one_labels.write_text(f"entry_id,is_anomaly,anomaly_type\n{raw['entry_id'].iloc[0]},False,\n")
+    for argv in (["score", str(one)], ["report", str(one), "--out", str(tmp_path / "wp.xlsx")],
+                 ["narrate", str(one), "--db", str(tmp_path / "r.sqlite")],
+                 ["eval-narratives", str(one), "--select", "--labels", str(one_labels),
+                  "--cases", str(tmp_path / "c.json")]):
+        capsys.readouterr()
+        assert main(argv) == 2, argv
+        printed = capsys.readouterr().out
+        assert printed.startswith("error: the model tier cannot be fitted on 1 entry"), argv
+        assert printed.count("\n") == 1, argv
+        assert ("--no-model" in printed) == (argv[0] in ("report", "narrate")), argv
+    for leftover in ("wp.xlsx", "r.sqlite", "c.json"):
+        assert not (tmp_path / leftover).exists(), leftover
+
+
+def test_eval_narratives_turns_an_unwritable_report_into_a_message(tmp_path, capsys, monkeypatch, llm):
+    """The rows are written first; a report whose parent is a file was a traceback after them,
+    and the line says where the rows are so a --regrade can rebuild the report for free."""
+    from ledgerlens import cli
+    from ledgerlens.narrate import Narrator
+
+    monkeypatch.chdir(tmp_path)
+    main(["generate", "--start", "2024-01-01", "--end", "2024-06-30", "--out-dir", str(tmp_path)])
+    ledger, labels = str(tmp_path / "ledger.csv"), str(tmp_path / "labels.csv")
+    cases = tmp_path / "cases.json"
+    main(["eval-narratives", ledger, "--select", "--labels", labels, "--cases", str(cases)])
+    monkeypatch.setattr(cli, "Narrator", lambda **kw: Narrator(client=llm.client(), **kw))
+    (tmp_path / "afile").write_text("x")
+    capsys.readouterr()
+    assert main(["eval-narratives", ledger, "--cases", str(cases), "--runs-dir", str(tmp_path / "runs"),
+                 "--out", str(tmp_path / "afile" / "r.md"), "--limit", "1"]) == 2
+    printed = capsys.readouterr().out
+    assert printed.startswith("error: cannot write the report to") and printed.count("\n") == 1
+    assert str(tmp_path / "runs") in printed and (tmp_path / "runs" / "results.jsonl").exists()

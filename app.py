@@ -11,6 +11,7 @@ reviewer's name. Run with:
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -19,10 +20,11 @@ import streamlit as st
 from ledgerlens import evaluate, jets
 from ledgerlens.benford import benford_test
 from ledgerlens.env import load_dotenv
-from ledgerlens.ingest import IdentityError, ledger_identity, load_csv, load_labels
+from ledgerlens.ingest import identity_path, ledger_identity, load_csv, load_labels
 from ledgerlens.model import combine, score_ledger
 from ledgerlens.narrate import NarrativeError, Narrator, build_prompt, entry_context
 from ledgerlens.review import DECISIONS, LEGACY_LEDGER_ID, Decision, ReviewStore
+from ledgerlens.summary import code_span
 
 load_dotenv()
 st.set_page_config(page_title="LedgerLens", layout="wide")
@@ -30,8 +32,24 @@ st.set_page_config(page_title="LedgerLens", layout="wide")
 DATA = Path("data")
 
 
+def _stamp(path: str) -> tuple | None:
+    """What a file is, beside where it is: its size and modification time, or None.
+
+    ``load`` is cached by its arguments. Keyed by path alone, a label file corrected
+    on disk kept showing the problem the first read found, and a regenerated ledger
+    kept its old numbers, until the server was restarted. The key covers the three
+    files ``load`` reads: the ledger, the labels and the ledger's identity sidecar.
+    """
+    try:
+        status = os.stat(path)
+    except (OSError, ValueError):  # no such file, or a name the filesystem rejects: load says so
+        return None
+    return (status.st_mtime_ns, status.st_size)
+
+
 @st.cache_data(show_spinner=False)
-def load(ledger_path: str, labels_path: str):
+def load(ledger_path: str, labels_path: str, stamps: tuple):
+    """``stamps`` is part of the cache key and nothing else: see ``_stamp``."""
     df = load_csv(ledger_path)
     # Computed here so it is cached with the frame it describes: the store is
     # bound to the ledger on screen, never to a stale one.
@@ -40,13 +58,46 @@ def load(ledger_path: str, labels_path: str):
     scored = jets.score_entries(df, flags)
     scores, report = score_ledger(df)
     combined = combine(scored, scores)
-    labels = load_labels(labels_path) if Path(labels_path).exists() else None
-    return df, flags, combined, scores, report, labels, ledger_id
+    # Labels are scored only when they cover exactly this ledger's entries: the
+    # sidebar's default file sits beside every ledger in data/, a QuickBooks pull
+    # included, and numbers from a pairing that does not exist are worse than none.
+    labels, labels_problem = None, None
+    if labels_path:  # the field is optional: blank is none
+        try:
+            # The stat is inside the handler: a name the filesystem rejects (too long) is
+            # a reason shown in the sidebar, as an unreadable file is; a directory is none.
+            if Path(labels_path).is_file():
+                labels = load_labels(labels_path)
+                evaluate.check_labels(labels, df["entry_id"].unique())
+        except KeyError as exc:
+            labels, labels_problem = None, f"missing column {exc}"
+        except (OSError, ValueError) as exc:  # unreadable, not a label file, or a mismatch
+            labels, labels_problem = None, str(exc)
+    return df, flags, combined, scores, report, labels, ledger_id, labels_problem
+
+
+_MARKUP = re.compile(r"([!-/:-@\[-`{-~])")  # every ASCII punctuation character
 
 
 def md(text: str) -> str:
-    """Escape dollar signs: Streamlit renders ``$7,428.45 ... $7,284.88`` as LaTeX otherwise."""
-    return str(text).replace("$", r"\$")
+    """``text`` as markdown that forms no construct of its own.
+
+    The note is written from ledger cells and rendered as prose through
+    ``st.markdown``. A backslash before each ASCII punctuation character keeps a
+    heading, a list, an image, a link under chosen words, HTML and LaTeX
+    (``$7,428.45 ... $7,284.88``) from forming. Two things Streamlit does to prose
+    after the escapes are resolved remain: a bare URL or address is drawn as a
+    link to itself, and ``->`` or ``--`` as an arrow or a dash (one version draws
+    ``:smile:`` as an emoji). A flag's reason, which quotes ledger cells verbatim,
+    is drawn as a code span instead (``summary.code_span``), where nothing acts and
+    nothing is redrawn; checked in a browser on both Streamlit versions.
+    """
+    return _MARKUP.sub(r"\\\1", str(text))
+
+
+def _ratio(value: float, defined: bool) -> str:
+    """A ratio over nothing is not a figure, as ``summary`` says too."""
+    return f"{value:.3f}" if defined else "undefined"
 
 
 def render_narrative(narrative: dict) -> None:
@@ -58,8 +109,8 @@ def render_narrative(narrative: dict) -> None:
     st.caption(
         "Control: {control} · Confidence: {confidence} · Written by {model} at {when} · "
         "note #{note_id}".format(
-            control=narrative["suggested_control"], confidence=narrative["confidence"],
-            model=narrative.get("model") or "unknown model",
+            control=md(narrative["suggested_control"]), confidence=md(narrative["confidence"]),
+            model=md(narrative.get("model") or "unknown model"),
             when=narrative.get("generated_at", ""),
             note_id=narrative.get("id", "?"),
         )
@@ -71,7 +122,7 @@ st.caption("Journal entry testing and exception review. A flag is a question, no
 
 ledger_path = st.sidebar.text_input("Ledger CSV", str(DATA / "ledger.csv"), key="ledger_path")
 labels_path = st.sidebar.text_input("Labels CSV (optional)", str(DATA / "labels.csv"),
-                                    key="labels_path")
+                                    key="labels_path").strip()  # a pasted trailing space is not "no labels"
 db_path = st.sidebar.text_input("Review database", str(DATA / "review.sqlite"), key="db_path")
 reviewer = st.sidebar.text_input(
     "Reviewer", key="reviewer", help="Every decision is recorded under this name.",
@@ -82,10 +133,18 @@ if not Path(ledger_path).exists():
     st.stop()
 
 try:
-    df, flags, combined, scores, report, labels, ledger_id = load(ledger_path, labels_path)
-except IdentityError as exc:  # a sidecar that names no ledger: never guess which one it is
+    df, flags, combined, scores, report, labels, ledger_id, labels_problem = load(
+        ledger_path, labels_path,
+        (_stamp(ledger_path), _stamp(labels_path), _stamp(str(identity_path(ledger_path)))))
+except ValueError as exc:
+    # A sidecar that names no ledger (never guess which one it is), a file that is not a
+    # ledger, or a population the model cannot be fitted on: a message, not an exception page.
     st.error(str(exc))
     st.stop()
+if labels_problem:
+    st.sidebar.warning("Labels set aside; detection quality is not shown.")
+    # As text, never markdown: the reason can quote an id from the ledger or the label file.
+    st.sidebar.text(labels_problem)
 
 # The store is cheap to open and its reads are deliberately never cached: a
 # decision recorded a second ago has to show on the very next rerun. It is
@@ -193,7 +252,9 @@ with tab_queue:
 
         st.markdown("**Why it was flagged**")
         for f in flags[flags["entry_id"] == picked].itertuples():
-            st.markdown(f"- `{f.test_id}` **{f.test_name}** ({f.severity}) - {md(f.reason)}")
+            # the reason quotes ledger cells: a code span, where a URL is not a link and
+            # nothing is redrawn (md() leaves both to Streamlit, see its docstring)
+            st.markdown(f"- `{f.test_id}` **{f.test_name}** ({f.severity}) - {code_span(f.reason)}")
 
         st.markdown("**Journal entry lines**")
         st.dataframe(
@@ -309,11 +370,15 @@ with tab_tiers:
         "separate. The useful signal is where they disagree."
     )
     if labels is not None:
+        # The segment table carries the rule tier's figures too ("rules only" and "both"
+        # are its flagged entries): its caveat first, the model tier's after the lift.
+        st.caption(evaluate.DETECTION_CAVEAT)
         st.dataframe(evaluate.compare_tiers(combined, labels),
                      width="stretch", hide_index=True)
         st.markdown("**Model lift over random selection**")
         st.dataframe(evaluate.model_lift(scores, labels),
                      width="stretch", hide_index=True)
+        st.caption(evaluate.MODEL_TIER_CAVEAT)
         st.markdown("**Which anomaly types the model can perceive**")
         st.dataframe(evaluate.score_by_archetype(scores, labels),
                      width="stretch", hide_index=True)
@@ -351,15 +416,11 @@ with tab_quality:
     else:
         metrics = evaluate.evaluate(flags, labels, df["entry_id"].unique())
         a, b, c = st.columns(3)
-        a.metric("Precision", "{:.3f}".format(metrics["precision"]))
-        b.metric("Recall", "{:.3f}".format(metrics["recall"]))
-        c.metric("F1", "{:.3f}".format(metrics["f1"]))
-        st.warning(
-            "Read these sceptically. For nine of eleven archetypes the generator injects the "
-            "anomaly using the same definition the test looks for, so recall on those is close "
-            "to tautological. The honest figures are the archetypes where detection is not "
-            "definitional - see the table below."
-        )
+        flagged, truth = metrics["flagged"] > 0, metrics["true_anomalies"] > 0
+        a.metric("Precision", _ratio(metrics["precision"], flagged))
+        b.metric("Recall", _ratio(metrics["recall"], truth))
+        c.metric("F1", _ratio(metrics["f1"], flagged and truth))
+        st.warning(evaluate.DETECTION_CAVEAT)
         st.markdown("**Recall by archetype**")
         st.dataframe(evaluate.recall_by_archetype(flags, labels),
                      width="stretch", hide_index=True)

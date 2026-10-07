@@ -5,7 +5,11 @@ Streamlit; it is to catch the class of breakage week 2 hit, where a deprecated
 argument silently collapsed every table, and to prove the review loop is wired.
 """
 
+import os
+import re
+import shutil
 import sqlite3
+import string
 from pathlib import Path
 
 import pytest
@@ -338,3 +342,224 @@ def test_the_sidebar_names_a_qbo_ledger_by_its_realm(data_dir, tmp_path):
     note_id = ReviewStore(db, "qbo:4620816365").save_narrative(picked, note, model="m")
     at = _run(pulled, db, reviewer="ana")
     assert any(f"note #{note_id}" in c.value for c in at.caption)
+
+
+def test_every_measured_number_sits_beside_its_caveat(data_dir, tmp_path):
+    """The quality tab and the tier tab both quote numbers measured against the labels."""
+    from ledgerlens import evaluate
+
+    at = _run(data_dir, tmp_path / "review.sqlite")
+    assert "Precision" in [m.label for m in at.metric]
+    assert any(w.value == evaluate.DETECTION_CAVEAT for w in at.warning)
+    # the tier tab's segment table is the rule tier's figures too: its caveat leads there
+    captions = [c.value for c in at.caption]
+    assert captions.index(evaluate.DETECTION_CAVEAT) < captions.index(evaluate.MODEL_TIER_CAVEAT)
+
+
+def test_a_ratio_over_nothing_reads_undefined_on_the_quality_tab(data_dir, tmp_path):
+    """Labels that mark no anomaly gave Recall 0.000 and F1 0.000: figures that are not figures."""
+    folder = tmp_path / "ledger"
+    folder.mkdir()
+    shutil.copy(data_dir / "ledger.csv", folder / "ledger.csv")
+    (folder / "labels.csv").write_text(re.sub(
+        r"(?m)^([^,\n]+),True,[^\n]*$", r"\1,False,", (data_dir / "labels.csv").read_text()))
+    at = _run(folder, tmp_path / "review.sqlite")
+    shown = {m.label: m.value for m in at.metric}
+    assert re.fullmatch(r"0\.\d{3}", shown["Precision"])  # something was flagged: a figure
+    assert (shown["Recall"], shown["F1"]) == ("undefined", "undefined")
+
+
+def test_labels_written_for_another_ledger_are_set_aside_not_scored(data_dir, tmp_path):
+    other = tmp_path / "other"
+    main(["generate", "--start", "2024-01-01", "--end", "2024-02-29", "--out-dir", str(other)])
+    (other / "labels.csv").write_text((data_dir / "labels.csv").read_text())  # four months' labels
+    at = _run(other, tmp_path / "review.sqlite")
+    assert any("Labels set aside" in w.value for w in at.warning)
+    assert any("name no ledger entry" in t.value for t in at.text)
+    assert "Precision" not in [m.label for m in at.metric]
+    assert any("Provide a labels CSV" in i.value for i in at.info)
+
+
+def test_the_reason_labels_were_set_aside_is_shown_as_text_never_as_markdown(data_dir, tmp_path):
+    """The reason quotes an id, and whoever wrote the ledger chose the id: as markdown it was an
+    image the browser fetched on load and a link under any words they liked."""
+    client = tmp_path / "client"
+    client.mkdir()
+    ledger = (data_dir / "ledger.csv").read_text()
+    first_id = re.search(r"JE-\d{4}-\d{6}", ledger).group(0)
+    hostile = "![](http://127.0.0.1:9/beacon.png)[Review complete](http://127.0.0.1:9/login)"
+    (client / "ledger.csv").write_text(ledger.replace(first_id, hostile))
+    (client / "labels.csv").write_text((data_dir / "labels.csv").read_text())
+    at = _run(client, tmp_path / "review.sqlite")
+    assert any("Labels set aside" in w.value for w in at.warning)
+    assert not any("![](" in w.value for w in at.warning)
+    assert any("![](http://127.0.0.1:9/beacon.png)" in t.value for t in at.text)
+
+
+@pytest.mark.parametrize("labels_text, said", [
+    ("entry_id,anomaly_type\nJE-2024-000001,\n", "missing column 'is_anomaly'"),
+    ("", "No columns to parse"),
+    ("entry_id,is_anomaly,anomaly_type\nJE-2024-000001,maybe,\n", "is_anomaly must be true/false"),
+])
+def test_a_label_file_that_cannot_be_used_is_set_aside_with_its_reason(
+        data_dir, tmp_path, labels_text, said):
+    import shutil
+
+    folder = tmp_path / "ledger"
+    folder.mkdir()
+    shutil.copy(data_dir / "ledger.csv", folder / "ledger.csv")
+    (folder / "labels.csv").write_text(labels_text)
+    at = _run(folder, tmp_path / "review.sqlite")  # _run asserts nothing was raised
+    assert any("Labels set aside" in w.value for w in at.warning)
+    assert any(said in t.value for t in at.text)
+    assert "Precision" not in [m.label for m in at.metric]
+
+
+def test_flag_reasons_render_ledger_text_as_text_never_as_markdown(data_dir, tmp_path):
+    """Reasons quote who keyed an entry, an account's name, another entry's id, and whoever wrote
+    the ledger chose them. As markdown, a created_by was an image the browser fetched when the
+    entry was shown and a link under any words they liked. A reason is now a code span, where
+    nothing acts or is redrawn; the note beside it is prose built from the same cells, escaped
+    so that no construct forms (Streamlit still links a bare URL in prose: app.md says so)."""
+    import pandas as pd
+
+    from ledgerlens import jets
+    from ledgerlens.ingest import load_csv
+
+    client = tmp_path / "client"
+    client.mkdir()
+    hostile = ("![](http://127.0.0.1:9/beacon.png)[Review complete](http://127.0.0.1:9/login) "
+               "# not a heading ana@corp.example")
+    raw = pd.read_csv(data_dir / "ledger.csv", dtype=str, keep_default_na=False)
+    raw["created_by"] = hostile
+    raw.to_csv(client / "ledger.csv", index=False)
+    (client / "labels.csv").write_text((data_dir / "labels.csv").read_text())
+    flags = jets.run_all(load_csv(client / "ledger.csv"))
+    picked = flags[flags["reason"].str.contains("beacon.png", regex=False)]["entry_id"].iloc[0]
+    db = tmp_path / "review.sqlite"
+    ReviewStore(db, _identity(client)).save_narrative(picked, {
+        "summary": f"Keyed by {hostile}. Debits $7,428.45 and credits $7,284.88; {string.punctuation}",
+        "why_flagged": "w", "evidence_to_request": ["e"], "suggested_control": "c",
+        "confidence": "low"}, model="m")
+    at = _run(client, db)
+    at.selectbox(key="picked").select(picked).run()
+    assert not at.exception, at.exception
+    shown = [m.value for m in at.markdown if "beacon" in m.value]
+    reasons = [v for v in shown if v.startswith("- `JET-")]
+    notes = [v for v in shown if v not in reasons]
+    assert reasons and notes
+    for value in reasons:  # one code span, as the summary's markdown writes every ledger string
+        reason = value.split(") - ", 1)[1]
+        assert hostile in reason and reason.startswith("`") and reason.endswith("`")
+        assert "`" not in hostile  # so the span above is the only fence on the line's right half
+        assert chr(0x200B) not in reason  # the GitHub-body measure of md_code is not planted here
+    for value in notes:  # escaped prose: every ASCII punctuation character, "$" among them
+        assert "![](" not in value and "](http" not in value
+        assert r"\!\[\]\(http" in value and r"\# not a heading" in value
+        assert r"\$7\,428\.45" in value and "".join("\\" + c for c in string.punctuation) in value
+
+
+def test_a_ledger_the_model_cannot_be_fitted_on_is_a_message_not_an_exception_page(data_dir, tmp_path):
+    import pandas as pd
+
+    folder = tmp_path / "one"
+    folder.mkdir()
+    raw = pd.read_csv(data_dir / "ledger.csv", dtype=str, keep_default_na=False)
+    raw[raw["entry_id"] == raw["entry_id"].iloc[0]].to_csv(folder / "ledger.csv", index=False)
+    at = AppTest.from_file(str(APP), default_timeout=300)
+    at.session_state["ledger_path"] = str(folder / "ledger.csv")
+    at.session_state["labels_path"] = ""
+    at.session_state["db_path"] = str(tmp_path / "review.sqlite")
+    at.session_state["reviewer"] = ""
+    at.run()
+    assert not at.exception, at.exception
+    assert any("cannot be fitted on 1 entry" in e.value for e in at.error)
+    assert "Entries" not in [m.label for m in at.metric]
+
+
+def test_a_sidecar_written_after_the_first_load_is_read_on_the_next_run(data_dir, tmp_path):
+    """load() reads three files; the cache key named two. A QuickBooks pull's sidecar landing
+    a moment after its CSV, or one corrected by hand, left the page keyed to the old identity."""
+    side = tmp_path / "side"
+    side.mkdir()
+    shutil.copy(data_dir / "ledger.csv", side / "ledger.csv")
+    at = _run(side, tmp_path / "review.sqlite")
+    assert any("keyed by `csv:" in c.value for c in at.caption)
+    (side / "ledger.identity.json").write_text('{"ledger_id": "qbo:9130350000"}')
+    at.run()
+    assert not at.exception, at.exception
+    assert any("keyed by `qbo:9130350000`" in c.value for c in at.caption)
+
+
+def _identity(folder):
+    from ledgerlens.ingest import ledger_identity, load_csv
+
+    return ledger_identity(load_csv(folder / "ledger.csv"), folder / "ledger.csv")
+
+
+def test_a_label_file_corrected_on_disk_is_read_again(data_dir, tmp_path):
+    """load() is cached by path: a mismatch it caught stayed on screen after the file was fixed,
+    and an unreadable file's reason would have too. The key says what the file is as well."""
+    folder = tmp_path / "ledger"
+    folder.mkdir()
+    shutil.copy(data_dir / "ledger.csv", folder / "ledger.csv")
+    good = (data_dir / "labels.csv").read_text()
+    (folder / "labels.csv").write_text("".join(good.splitlines(keepends=True)[:-1]))  # one unlabelled
+    at = _run(folder, tmp_path / "review.sqlite")
+    assert any("Labels set aside" in w.value for w in at.warning)
+    (folder / "labels.csv").write_text(good)
+    at.run()
+    assert not at.exception, at.exception
+    assert not any("Labels set aside" in w.value for w in at.warning)
+    assert "Precision" in [m.label for m in at.metric]
+
+
+def test_an_unreadable_label_file_is_set_aside_with_its_reason(data_dir, tmp_path):
+    """The OSError half of the handler: a file that is there and cannot be read."""
+    if os.geteuid() == 0:
+        pytest.skip("root reads anything")
+    folder = tmp_path / "ledger"
+    folder.mkdir()
+    shutil.copy(data_dir / "ledger.csv", folder / "ledger.csv")
+    shutil.copy(data_dir / "labels.csv", folder / "labels.csv")
+    (folder / "labels.csv").chmod(0o000)
+    try:
+        at = _run(folder, tmp_path / "review.sqlite")
+    finally:
+        (folder / "labels.csv").chmod(0o644)
+    assert any("Labels set aside" in w.value for w in at.warning)
+    assert any("Permission denied" in t.value for t in at.text)
+    assert "Precision" not in [m.label for m in at.metric]
+
+
+def test_a_labels_path_the_filesystem_rejects_is_set_aside_and_a_pasted_space_is_forgiven(
+        data_dir, tmp_path):
+    """A name too long raised from the is_file() outside the handler and took the page down; a
+    path pasted with a trailing space was silently "no labels"."""
+    at = AppTest.from_file(str(APP), default_timeout=300)
+    at.session_state["ledger_path"] = str(data_dir / "ledger.csv")
+    at.session_state["labels_path"] = str(tmp_path / ("x" * 300))
+    at.session_state["db_path"] = str(tmp_path / "review.sqlite")
+    at.session_state["reviewer"] = ""
+    at.run()
+    assert not at.exception, at.exception
+    assert any("Labels set aside" in w.value for w in at.warning)
+    assert any("too long" in t.value for t in at.text)
+    at.text_input(key="labels_path").set_value(str(data_dir / "labels.csv") + "  ").run()
+    assert not at.exception, at.exception
+    assert not any("Labels set aside" in w.value for w in at.warning)
+    assert "Precision" in [m.label for m in at.metric]
+
+
+@pytest.mark.parametrize("labels_path", ["", "   ", "a-directory"])
+def test_the_labels_field_is_optional_blank_or_a_directory_is_no_labels(data_dir, tmp_path, labels_path):
+    (tmp_path / "a-directory").mkdir()
+    at = AppTest.from_file(str(APP), default_timeout=300)
+    at.session_state["ledger_path"] = str(data_dir / "ledger.csv")
+    at.session_state["labels_path"] = str(tmp_path / labels_path) if labels_path.strip() else labels_path
+    at.session_state["db_path"] = str(tmp_path / "review.sqlite")
+    at.session_state["reviewer"] = ""
+    at.run()
+    assert not at.exception, at.exception
+    assert "Entries" in [m.label for m in at.metric]
+    assert not any("Labels set aside" in w.value for w in at.warning)

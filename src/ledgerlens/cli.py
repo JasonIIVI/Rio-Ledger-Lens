@@ -5,6 +5,7 @@
     ledgerlens benford   - run digit analysis, optionally segmented
     ledgerlens score     - run both tiers and compare them
     ledgerlens report    - write the Excel workpaper
+    ledgerlens summary   - one page on a ledger, as text, markdown or JSON
     ledgerlens narrate   - write Claude narratives for the riskiest entries
     ledgerlens eval-narratives - grade the narrative layer against the case set
     ledgerlens adopt-legacy - file review rows from before ledgers were keyed under a ledger
@@ -17,6 +18,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import textwrap
 import webbrowser
 from datetime import date, datetime
 from pathlib import Path
@@ -36,10 +38,15 @@ from .connectors.tokens import (
 from .env import load_dotenv
 from .generate import generate_ledger
 from .ingest import IdentityError, ledger_identity, load_csv, load_labels
+from .ledger_context import LedgerContext
 from .model import combine, score_ledger
 from .narrate import DEFAULT_EFFORT, DEFAULT_MAX_TOKENS, DEFAULT_MODEL, NarrativeError, Narrator
 from .report import build_workpaper
 from .review import LEGACY_LEDGER_ID, ReviewStore
+from .summary import FORMATS as SUMMARY_FORMATS
+from .summary import collect as collect_summary
+from .summary import one_line
+from .summary import render as render_summary
 
 
 def _parse_date(text: str) -> date:
@@ -74,8 +81,70 @@ def cmd_generate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _load_labels(path: str, df: pd.DataFrame) -> tuple[pd.DataFrame | None, str | None]:
+    """``(labels, None)``, or ``(None, the line to print)`` when they cannot be used for ``df``.
+
+    Rule 2 keeps the join inside ``evaluate``. This only turns away a file whose ids
+    are not this ledger's, before any number is computed from the pairing.
+    """
+    try:
+        labels = load_labels(path)
+        evaluate.check_labels(labels, df["entry_id"].unique())
+    except evaluate.LabelsMismatchError as exc:
+        return None, f"refused: {path}: {exc}"
+    except KeyError as exc:
+        return None, f"error: cannot read labels from {path}: missing column {exc}"
+    except (OSError, ValueError) as exc:
+        return None, f"error: cannot read labels from {path}: {exc}"
+    return labels, None
+
+
+def _load_ledger(path: str) -> tuple[pd.DataFrame | None, str | None]:
+    """``(lines, None)``, or ``(None, the line to print)`` when ``path`` is not a ledger.
+
+    No such file, not a ledger, a cell that will not parse. The reason can quote a
+    cell of the file: one line, no controls, like every error line that quotes ledger
+    text.
+    """
+    try:
+        return load_csv(path), None
+    except (OSError, ValueError) as exc:
+        return None, f"error: cannot read the ledger {path}: {one_line(exc)}"
+
+
+def _inert(table: pd.DataFrame, column: str) -> pd.DataFrame:
+    """``table`` with one text column made one line each.
+
+    A label file's archetype names and a ledger's segment keys are printed in the
+    archetype and Benford tables as they were typed, control bytes and newlines
+    included, otherwise; the ids and descriptions the other lists print already
+    go through ``one_line``.
+    """
+    return table.assign(**{column: table[column].map(one_line)})
+
+
+def _expand_home(text: str) -> Path:
+    """``text`` as a path, ``~`` expanded only when it is the first character.
+
+    A shell passes ``--out=~/x.md`` on as typed, so the tool expands it. But
+    ``Path("./~/x.md").expanduser()`` would go to the home directory too, the ``./``
+    being gone before expanduser looks, and every shell reads that spelling as the
+    directory called ``~`` here. Raises RuntimeError for ``~name`` with no such user.
+    """
+    return Path(text).expanduser() if text.startswith("~") else Path(text)
+
+
 def cmd_test(args: argparse.Namespace) -> int:
-    df = load_csv(args.ledger)
+    df, problem = _load_ledger(args.ledger)
+    if problem:
+        print(problem)
+        return 2
+    labels = None
+    if args.labels:
+        labels, problem = _load_labels(args.labels, df)
+        if problem:
+            print(problem)
+            return 2
     only: list[str] | None = args.only.split(",") if args.only else None
     flags = jets.run_all(df, only=only)
 
@@ -98,29 +167,34 @@ def cmd_test(args: argparse.Namespace) -> int:
     if not top.empty:
         print(f"\nTop {len(top)} by risk score:")
         for r in top.itertuples():
-            print(f"  {r.entry_id}  score {r.risk_score:>4.1f}  {r.tests_fired}  ${r.entry_amount:,.2f}")
+            print(f"  {one_line(r.entry_id)}  score {r.risk_score:>4.1f}  {r.tests_fired}  "
+                  f"${r.entry_amount:,.2f}")
 
-    if args.labels:
-        labels = load_labels(args.labels)
+    if labels is not None:
         metrics = evaluate.evaluate(flags, labels, df["entry_id"].unique())
         print("\n--- evaluation against ground truth ---")
+        # ahead of the numbers it qualifies; a hyphenated word is not split across lines
+        print(textwrap.fill(evaluate.DETECTION_CAVEAT, 96, break_on_hyphens=False))
         print(evaluate.format_report(metrics))
         print("\nRecall by archetype:")
-        print(evaluate.recall_by_archetype(flags, labels).to_string(index=False))
+        print(_inert(evaluate.recall_by_archetype(flags, labels), "anomaly_type").to_string(index=False))
         print("\nPrecision by test:")
         print(evaluate.precision_by_test(flags, labels).to_string(index=False))
     return 0
 
 
 def cmd_benford(args: argparse.Namespace) -> int:
-    df = load_csv(args.ledger)
+    df, problem = _load_ledger(args.ledger)
+    if problem:
+        print(problem)
+        return 2
     if args.by:
         result = segmented_benford(df, by=args.by, min_n=args.min_n)
         if result.empty:
             print(f"No segment of '{args.by}' had at least {args.min_n} entries.")
             return 0
         print(f"Benford first-digit test, segmented by {args.by} (>= {args.min_n} rows):\n")
-        print(result.to_string(index=False))
+        print(_inert(result, "label").to_string(index=False))
     else:
         r = benford_test(df["abs_amount"], label="ALL")
         print("Benford first-digit test over {:,} amounts".format(r["n"]))
@@ -141,10 +215,23 @@ def cmd_benford(args: argparse.Namespace) -> int:
 
 def cmd_score(args: argparse.Namespace) -> int:
     """Run both tiers and show how they agree."""
-    df = load_csv(args.ledger)
+    df, problem = _load_ledger(args.ledger)
+    if problem:
+        print(problem)
+        return 2
+    labels = None
+    if args.labels:
+        labels, problem = _load_labels(args.labels, df)
+        if problem:
+            print(problem)
+            return 2
     flags = jets.run_all(df)
     scored = jets.score_entries(df, flags)
-    model_scores, report = score_ledger(df, contamination=args.contamination)
+    try:
+        model_scores, report = score_ledger(df, contamination=args.contamination)
+    except ValueError as exc:  # a population the model cannot be fitted on: said, not raised
+        print(f"error: {one_line(exc)}")
+        return 2
     combined = combine(scored, model_scores, model_top_pct=args.model_top_pct)
 
     print(report.describe())
@@ -161,34 +248,52 @@ def cmd_score(args: argparse.Namespace) -> int:
     if not interesting.empty:
         print(f"\nUnusual to the model but matching no rule (top {len(interesting)}):")
         for r in interesting.itertuples():
-            print(f"  {r.entry_id}  model {r.model_score:.3f}  ${r.entry_amount:,.2f}  {r.description}")
+            print(f"  {one_line(r.entry_id)}  model {r.model_score:.3f}  ${r.entry_amount:,.2f}  "
+                  f"{one_line(r.description)}")
 
-    if args.labels:
-        labels = load_labels(args.labels)
+    if labels is not None:
         print("\n--- tier comparison ---")
+        # The segment table carries the rule tier's figures too ("rules only" and "both"
+        # are its flagged entries), so its caveat leads and the model tier's follows it.
+        print(textwrap.fill(evaluate.DETECTION_CAVEAT, 96, break_on_hyphens=False))
+        print(textwrap.fill(evaluate.MODEL_TIER_CAVEAT, 96, break_on_hyphens=False))
         print(evaluate.compare_tiers(combined, labels).to_string(index=False))
         print("\n--- model lift over random selection ---")
         print(evaluate.model_lift(model_scores, labels).to_string(index=False))
         print("\n--- which archetypes the model can perceive ---")
-        print(evaluate.score_by_archetype(model_scores, labels).to_string(index=False))
+        print(_inert(evaluate.score_by_archetype(model_scores, labels), "anomaly_type")
+              .to_string(index=False))
     return 0
 
 
 def cmd_report(args: argparse.Namespace) -> int:
     """Write the Excel workpaper."""
-    df = load_csv(args.ledger)
+    df, problem = _load_ledger(args.ledger)
+    if problem:
+        print(problem)
+        return 2
+    labels = None
+    if args.labels:
+        labels, problem = _load_labels(args.labels, df)
+        if problem:
+            print(problem)
+            return 2
     flags = jets.run_all(df)
     scored = jets.score_entries(df, flags)
 
     model_report = None
     if not args.no_model:
-        model_scores, report = score_ledger(df)
+        try:
+            model_scores, report = score_ledger(df)
+        except ValueError as exc:  # a population the model cannot be fitted on
+            print(f"error: {one_line(exc)} (--no-model writes the rule tier alone)")
+            return 2
         scored = combine(scored, model_scores)
         model_report = report.describe()
 
     metrics = None
-    if args.labels:
-        metrics = evaluate.evaluate(flags, load_labels(args.labels), df["entry_id"].unique())
+    if labels is not None:
+        metrics = evaluate.evaluate(flags, labels, df["entry_id"].unique())
 
     # Only an existing store is attached, and read-only: a report must never
     # create an empty review database, or migrate one, as a side effect.
@@ -213,13 +318,103 @@ def cmd_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def _refuse_summary_out(out: Path) -> str | None:
+    """Why a summary may not be written to ``out``, or None.
+
+    A summary of real books carries descriptions, users and amounts, and CI's rule-1
+    check goes by file name: it would not notice a tracked ``.md`` or ``.json``. So
+    inside a git checkout a summary goes under ``out/``, which git ignores, and
+    nowhere else; outside one, anywhere. Links are followed first, so the answer is
+    about where the bytes would land: an ``out`` that links to ``docs/`` is ``docs/``.
+    ``out`` is the path that will be written, ``~`` already expanded by the caller:
+    judging one spelling and writing another is how a guard gets walked around.
+    What this cannot see: a shell redirect of the printed summary, and a checkout
+    whose own ``.gitignore`` does not ignore ``out/``.
+    """
+    target = out.absolute().resolve()
+    root = repository_root(target.parent)  # walks ancestors, existing or not
+    if root is None or (root / "out") in target.parents:
+        return None
+    return (f"{out} is inside the git checkout at {root} but not under its out/ directory, "
+            "which git ignores; a summary is never written where it could be committed")
+
+
+def cmd_summary(args: argparse.Namespace) -> int:
+    """One page on the ledger, for a terminal, a script, or the weekly workflow's Issue."""
+    out = None
+    if args.out:
+        try:
+            # Expanded once, here, from a leading "~" only: a shell leaves `--out=~/x.md` as
+            # typed, and the path the guard judges has to be the path the summary is written
+            # to. The directory check comes first (said now, not after both tiers have run),
+            # before the guard would call the out/ directory itself "not under out/".
+            out = _expand_home(args.out)
+            is_dir = out.is_dir()
+            refusal = None if is_dir else _refuse_summary_out(out)
+        except (OSError, RuntimeError) as exc:
+            # ~name with no such user, a link to itself, a parent nobody may search, a name
+            # too long: the check and the guard each need a stat, and a stat can fail
+            print(f"error: cannot write the summary to {args.out}: {exc}")
+            return 2
+        if is_dir:
+            print(f"error: cannot write the summary to {out}: it is a directory")
+            return 2
+        if refusal:
+            print(f"refused: {refusal}")
+            return 2
+    context = None
+    try:
+        df = load_csv(args.ledger)
+        ledger_id = ledger_identity(df, args.ledger)
+        labels = None
+        if args.labels:  # checked before either tier runs, as test, score and report do
+            labels, problem = _load_labels(args.labels, df)
+            if problem:
+                print(problem)
+                return 2
+        context = LedgerContext(df, review_db=args.db, ledger_id=ledger_id).load()
+    except (OSError, ValueError) as exc:
+        # No such file, not a ledger, a sidecar naming none, or a population the model
+        # cannot be fitted on. The reason can quote a cell of the file: one line, no controls.
+        print(f"error: cannot summarise the ledger {args.ledger}: {one_line(exc)}")
+        return 2
+    try:
+        payload = collect_summary(context, labels=labels, top=args.top, ledger=args.ledger)
+    except RuntimeError as exc:
+        # A review database this version cannot read. SQLite's message quotes names
+        # stored in the file, and the file is somebody else's: one line, no controls.
+        print(f"error: {one_line(exc)}")
+        return 2
+    # Nothing but the rendering is printed: `--format json` has to stay one JSON
+    # document, so anything worth saying about the run is a note inside it.
+    text = render_summary(payload, args.format)
+    if out is None:
+        print(text)
+        return 0
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(text + "\n", encoding="utf-8")
+    except OSError as exc:  # a parent that is a file, a directory nobody may write to
+        print(f"error: cannot write the summary to {out}: {exc}")
+        return 2
+    print(f"Summary ({args.format}) written to {out}")
+    return 0
+
+
 def cmd_narrate(args: argparse.Namespace) -> int:
     """Write Claude narratives for the riskiest entries and cache them in the review store."""
-    df = load_csv(args.ledger)
+    df, problem = _load_ledger(args.ledger)
+    if problem:
+        print(problem)
+        return 2
     flags = jets.run_all(df)
     scored = jets.score_entries(df, flags)
     if not args.no_model:
-        model_scores, _ = score_ledger(df)
+        try:
+            model_scores, _ = score_ledger(df)
+        except ValueError as exc:  # a population the model cannot be fitted on
+            print(f"error: {one_line(exc)} (--no-model ranks by the rule tier alone)")
+            return 2
         scored = combine(scored, model_scores)
 
     try:
@@ -270,7 +465,10 @@ def cmd_adopt_legacy(args: argparse.Namespace) -> int:
     if not Path(args.db).exists():
         print(f"error: no review database at {args.db}")
         return 2
-    df = load_csv(args.ledger)
+    df, problem = _load_ledger(args.ledger)
+    if problem:
+        print(problem)
+        return 2
     try:
         ledger_id = ledger_identity(df, args.ledger)
         store = ReviewStore(args.db, ledger_id)  # migrates a schema-3 file on the way
@@ -543,46 +741,68 @@ def cmd_eval_narratives(args: argparse.Namespace) -> int:
     if args.select and not args.labels:
         print("--select needs --labels: the label file decides which entries to test")
         return 2
-    df = load_csv(args.ledger)
+    df, problem = _load_ledger(args.ledger)
+    if problem:
+        print(problem)
+        return 2
     # Rule 1 at the point of writing, before anything is scored: the committed
     # case file, runs directory and report are for the generator's default
-    # output and nothing else, however a path is spelled.
+    # output and nothing else, however a path is spelled. Each path is expanded
+    # once, here, from a leading "~" only; from here on the path judged is the
+    # path written (narrative_eval judges the literal path it is given).
     ledger_sha256 = narrative_eval.ledger_digest(df)
     default_ledger = ledger_sha256 == narrative_eval.DEFAULT_LEDGER_SHA256
     try:
+        cases_path, out_path = _expand_home(args.cases), _expand_home(args.out)
         if args.select:
-            narrative_eval.refuse_committed_path(args.cases, ledger_sha256, "the case file")
+            narrative_eval.refuse_committed_path(cases_path, ledger_sha256, "the case file")
         else:
-            runs_dir = (Path(args.runs_dir) if args.runs_dir is not None
+            runs_dir = (_expand_home(args.runs_dir) if args.runs_dir is not None
                         else narrative_eval.default_runs_dir(args.model, regrade=args.regrade))
             narrative_eval.refuse_committed_path(runs_dir, ledger_sha256, "the runs directory")
-            narrative_eval.refuse_committed_path(args.out, ledger_sha256, "the report")
+            narrative_eval.refuse_committed_path(out_path, ledger_sha256, "the report")
     except narrative_eval.CommittedPathError as exc:
         print(f"refused: {exc}")
         return 2
-    except FileNotFoundError as exc:
+    except (OSError, RuntimeError) as exc:
+        # no newest run to re-grade, a parent nobody may search, ~name with no such user
         print(f"error: {exc}")
         return 2
 
+    labels = None
+    if args.select:  # the label file decides which entries to test: read before anything is scored
+        labels, problem = _load_labels(args.labels, df)
+        if problem:
+            print(problem)
+            return 2
+
     flags = jets.run_all(df)
     scored = jets.score_entries(df, flags)
-    model_scores, _ = score_ledger(df)
+    try:
+        model_scores, _ = score_ledger(df)
+    except ValueError as exc:  # a population the model cannot be fitted on
+        print(f"error: {one_line(exc)}")
+        return 2
     scored = combine(scored, model_scores)
 
     if args.select:
-        if Path(args.cases).exists() and not args.overwrite:
+        if cases_path.exists() and not args.overwrite:
             print(f"{args.cases} exists; --overwrite replaces it (hand-written expectations "
                   "would be lost)")
             return 2
-        cases = narrative_eval.select_cases(scored, flags, load_labels(args.labels))
-        path = narrative_eval.save_cases(cases, args.cases, generator={"ledger": args.ledger},
-                                         ledger_sha256=ledger_sha256)
+        cases = narrative_eval.select_cases(scored, flags, labels)
+        try:
+            path = narrative_eval.save_cases(cases, cases_path, generator={"ledger": args.ledger},
+                                             ledger_sha256=ledger_sha256)
+        except OSError as exc:  # a parent that is a file, a directory nobody may write to
+            print(f"error: cannot write the case file to {cases_path}: {exc}")
+            return 2
         print(f"Wrote {len(cases)} case skeleton(s) to {path}. Add must_mention and "
               "expected_confidence by hand before running.")
         return 0
 
     try:
-        cases = narrative_eval.load_cases(args.cases)
+        cases = narrative_eval.load_cases(cases_path)
     except FileNotFoundError:
         print(f"error: case file not found: {args.cases} (run from the repository root, or pass "
               "--cases PATH)")
@@ -601,7 +821,7 @@ def cmd_eval_narratives(args: argparse.Namespace) -> int:
         return 2
     if args.limit is not None:
         cases = cases[:args.limit]
-    cases_sha256 = narrative_eval.cases_digest(args.cases)
+    cases_sha256 = narrative_eval.cases_digest(cases_path)
 
     narrator = Narrator(model=args.model, max_tokens=args.max_tokens, effort=args.effort)
     try:
@@ -623,12 +843,17 @@ def cmd_eval_narratives(args: argparse.Namespace) -> int:
         return 1
 
     summary = narrative_eval.aggregate(rows)
-    out = Path(args.out)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(
-        narrative_eval.render_markdown(rows, summary, runs_dir=runs_dir, cases=cases),
-        encoding="utf-8",
-    )
+    out = out_path
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(
+            narrative_eval.render_markdown(rows, summary, runs_dir=runs_dir, cases=cases),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        # The rows are safe in runs_dir; a --regrade rebuilds the report without the API.
+        print(f"error: cannot write the report to {out}: {exc} (the rows are in {runs_dir})")
+        return 2
 
     print("Graded {graded}/{cases} cases ({invalid} invalid, {errors} errors kept out of the "
           "score)".format(**summary))
@@ -691,6 +916,18 @@ def build_parser() -> argparse.ArgumentParser:
     rp.add_argument("--no-model", action="store_true", help="rule tier only")
     rp.add_argument("--db", help="review database; adds narrative and decision columns")
     rp.set_defaults(func=cmd_report)
+
+    sm = sub.add_parser("summary", help="one page on a ledger, as text, markdown or JSON")
+    sm.add_argument("ledger", help="path to a GL csv")
+    sm.add_argument("--labels", help="ground-truth csv, adds measured quality with its caveat")
+    sm.add_argument("--db", help="review database; adds review progress (counts, and each "
+                                 "listed entry's latest decision; never a note or a name)")
+    sm.add_argument("--top", type=_positive_int, default=10, help="exceptions to list")
+    sm.add_argument("--format", choices=SUMMARY_FORMATS, default="text")
+    sm.add_argument("--out", type=_path_arg,
+                    help="write the summary here instead of printing it; inside a git "
+                         "checkout only under out/")
+    sm.set_defaults(func=cmd_summary)
 
     n = sub.add_parser("narrate", help="write Claude narratives for the riskiest entries")
     n.add_argument("ledger", help="path to a GL csv")

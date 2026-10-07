@@ -1,0 +1,82 @@
+# Weekly synthetic run: regenerate the default ledger, run both tiers over it,
+# and open an Issue holding the one-page summary.
+#
+# What this is, and is not:
+#   - A regression watch. The generator is seeded, so the numbers in the Issue
+#     move only when the code on main or one of its dependencies changes. It
+#     is not new data, and the detection figures carry the README's caveat:
+#     they are partly circular, and the Issue says so above them.
+#   - Synthetic only. No QuickBooks credential is ever given to CI (a refresh
+#     token rotates on each use, so a second holder would lock out the first),
+#     and this file reads no repository secret: its one expression is the
+#     run's own token.
+#   - Quiet. The Issue is opened with the run's own token, and an event made
+#     with that token starts no other workflow. The summary also writes every
+#     string that came from the ledger as inert code, so the body mentions
+#     nobody, whoever is assigned the Issue later.
+#   - Not a promise of "every week". GitHub starts scheduled runs late under
+#     load, and disables a scheduled workflow in a public repository after 60
+#     days without repository activity; it is then enabled again from the
+#     Actions tab (or `gh workflow enable weekly.yml`).
+name: Weekly synthetic run
+
+on:
+  schedule:
+    - cron: "23 13 * * 1"  # Mondays 13:23 UTC: off the hour, where scheduled runs queue
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+# A run started by hand must not interleave with the scheduled one: each closes
+# the Issue before it.
+concurrency:
+  group: weekly-run
+  cancel-in-progress: false
+
+jobs:
+  weekly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false  # code installed from PyPI below never sees a token
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Generate, test, score, summarise
+        run: |
+          ledgerlens generate --out-dir data
+          ledgerlens test data/ledger.csv --labels data/labels.csv
+          ledgerlens score data/ledger.csv --labels data/labels.csv
+          ledgerlens summary data/ledger.csv --labels data/labels.csv --format markdown --out out/summary.md
+          ledgerlens summary data/ledger.csv --labels data/labels.csv --format json --out out/summary.json
+
+      - name: Open the Issue
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          export GH_REPO="$GITHUB_REPOSITORY"
+          title=$(jq -r '"Weekly synthetic run \(.run_date): \(.flagged) of \(.entries) entries flagged by the rule tier"' out/summary.json)
+          printf '\nRun: %s/%s/actions/runs/%s at commit %s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$GITHUB_SHA" >> out/summary.md
+          gh label create weekly-run --description "Opened by the weekly synthetic run" --color 0E8A16 --force
+          previous=$(gh issue list --label weekly-run --state open --limit 100 --json number --jq '.[].number')
+          url=$(gh issue create --title "$title" --label weekly-run --body-file out/summary.md)
+          echo "Opened $url"
+          # Only once the new Issue exists: the latest run is the one open Issue, the
+          # closed ones are the history.
+          for number in $previous; do
+            gh issue close "$number" --comment "Superseded by $url. Closing is not a review of these numbers."
+          done
