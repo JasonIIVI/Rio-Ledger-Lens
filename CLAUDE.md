@@ -181,11 +181,18 @@ and the MCP SDK, so the two together cover every code path CI will see.
   sidecar in the dashboard's cache key, reasons drawn as code spans (escaped prose still
   gets a bare URL linked and `->` redrawn: checked in a browser), table cells through
   one_line, identifiers unwrapped in the workpaper, the extractor's target rule, the
-  stand-in's NUL-separated record, and tests that could not fail.
+  stand-in's NUL-separated record, and tests that could not fail. The PR's first CI run
+  then failed on Linux, on the README's model-tier figures: the entry's account (what
+  `amount_z_in_account` is measured against) came from a one-key sort of its lines by
+  amount, nearly every entry is two lines of equal amount, and a one-key pandas sort is not
+  stable, so which line came first differed between macOS and the x86-64 runners (whose
+  numpy sorts with vector code). The account is now the first of the largest lines
+  (`line_no` breaks the tie), `model_lift` gives a tie at its cut to the lower entry id,
+  and the figures moved once (top-25 precision 0.60, 40x).
 - **Next** — week 5 breaks the circularity in the detection numbers (archetypes no rule
   describes, both tiers re-measured), and an approver list and approval limit that can be set
   for JET-12 and JET-06.
-- 637 tests on 3.9 / 647 on 3.12 (the ten MCP tests need 3.10+), ruff clean.
+- 639 tests on 3.9 / 649 on 3.12 (the ten MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
@@ -289,7 +296,7 @@ nine of eleven archetypes the generator injects the anomaly using the same defin
 looks for, so recall on those is near-tautological. The non-circular numbers are `benford_drift`
 (0.75) and `rare_account_pair` (0.86).
 
-Same pattern in the model tier: it is a strong re-ranker (top-25 precision 0.64, 42x lift over
+Same pattern in the model tier: it is a strong re-ranker (top-25 precision 0.60, 40x lift over
 random) but a weak independent detector — the "model only" segment sits at the base rate, because
 these anomalies were *defined* as rule violations.
 
@@ -307,6 +314,9 @@ unhelpful. Say so wherever the number is quoted.
 - Tests live beside the module they cover; the session-scoped `ledger` fixture is in
   `tests/conftest.py`.
 - Comments explain *why*, not *what*. Existing code sets the density — match it.
+- A sort that picks one row or cuts a top-N says how a tie breaks (a second key, or an
+  index sort and then a stable `kind`). A one-key pandas sort is not stable, and the order
+  it gave a tie differed between macOS and the Linux runners.
 - Run `ruff check src tests app.py` and both venvs' test suites before every commit.
 - The Claude API is never called from a test: `tests/conftest.py` has the fake client
   (`llm` fixture) shaped like the real responses, thinking block included.

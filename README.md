@@ -183,19 +183,19 @@ Putting both tiers side by side on the default ledger:
 
 | Segment | Entries | Truly anomalous | Precision | How to read it |
 |---|---:|---:|---:|---|
-| **both tiers agree** | 30 | 29 | **0.967** | The model re-ranking what the rules had already caught |
-| rules only | 59 | 46 | 0.780 | Known patterns the model finds ordinary |
-| model only | 72 | 1 | 0.014 | The base rate (77 of 5,085 is 0.015): no independent detection |
-| neither | 4,924 | 1 | 0.000 | The one anomaly neither tier saw |
+| **both tiers agree** | 29 | 28 | **0.966** | The model re-ranking what the rules had already caught |
+| rules only | 60 | 47 | 0.783 | Known patterns the model finds ordinary |
+| model only | 73 | 1 | 0.014 | The base rate (77 of 5,085 is 0.015): no independent detection |
+| neither | 4,923 | 1 | 0.000 | The one anomaly neither tier saw |
 
 **The model is a strong re-ranker and a weak independent detector** - and that is worth saying
 plainly rather than hiding behind a combined number. By rank it is far better than chance:
 
 | Top N by model score | Anomalies found | Precision | Lift vs random |
 |---:|---:|---:|---:|
-| 25 | 16 | 0.64 | **42x** |
-| 50 | 22 | 0.44 | 29x |
-| 100 | 30 | 0.30 | 20x |
+| 25 | 15 | 0.60 | **40x** |
+| 50 | 20 | 0.40 | 26x |
+| 100 | 29 | 0.29 | 19x |
 
 *Read the lift as re-ranking, not as detection: it is measured against the same labels, with
 the same circularity.* Almost everything the model ranks highly, the rules had already caught.
@@ -210,11 +210,11 @@ What the model *can* perceive is visible per archetype:
 
 | Archetype | Mean model score | vs normal baseline |
 |---|---:|---:|
-| round_amount | 0.915 | +0.63 |
-| unbalanced_entry | 0.765 | +0.48 |
-| benford_drift | 0.724 | +0.44 |
-| weekend_entry | 0.364 | +0.08 |
-| duplicate_entry | 0.330 | +0.04 |
+| round_amount | 0.924 | +0.63 |
+| unbalanced_entry | 0.809 | +0.51 |
+| benford_drift | 0.711 | +0.41 |
+| weekend_entry | 0.387 | +0.09 |
+| duplicate_entry | 0.339 | +0.04 |
 
 Duplicates are near-invisible, correctly: a duplicate only exists by comparison with another
 entry, and these are per-entry features. That is a design consequence, not a failure, and there

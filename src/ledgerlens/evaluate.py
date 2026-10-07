@@ -264,10 +264,16 @@ def model_lift(
 
     Compared against the base rate, this is the clearest statement of whether
     the model is better than opening entries at random.
+
+    Ties at the cut go to the lower entry id, so a top-N is the same set on
+    every platform.
     """
     truth = set(labels.loc[labels["is_anomaly"], "entry_id"])
     base_rate = _safe_div(len(truth), len(model_scores))
-    ordered = model_scores.sort_values(ascending=False)
+    # Entries with identical features score identically, so a cut can fall
+    # inside a tie. The default sort is not stable; this one is, after an index
+    # sort, so such a tie goes to the lower entry id.
+    ordered = model_scores.sort_index().sort_values(ascending=False, kind="mergesort")
 
     rows = []
     for n in tops:
