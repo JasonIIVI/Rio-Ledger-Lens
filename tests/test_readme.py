@@ -70,6 +70,12 @@ def test_the_tier_and_lift_tables_are_what_the_default_ledger_measures(measured)
                  rf"\| \**{row.lift_vs_random:.0f}x\** \|")
         assert re.search(cells, README), top_n
     assert "Read the lift as re-ranking, not as detection" in README
+    # "almost every anomaly the model ranks highly" holds of anomalies, not of entries:
+    # most of the entries the model flags, the rules did not
+    both, alone = measured["tiers"].loc["both"], measured["tiers"].loc["model only"]
+    assert both.true_anomalies / (both.true_anomalies + alone.true_anomalies) > 0.9
+    assert both.entries < alone.entries
+    assert "Almost every anomaly the model ranks highly, the rules had already caught." in README
 
 
 def test_the_archetype_table_and_the_benford_example_are_what_the_default_ledger_measures(

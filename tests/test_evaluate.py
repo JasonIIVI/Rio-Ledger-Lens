@@ -278,15 +278,18 @@ def test_score_by_archetype_of_labels_that_mark_no_anomaly_is_an_empty_table(led
 
 def test_model_lift_breaks_a_tie_at_the_cut_by_entry_id():
     """Entries with identical features score identically, so a cut can fall inside a tie.
-    The tie goes to the lower entry id, whatever order the scores arrive in: the default sort
-    is not stable, and the order it gives a tie differs between macOS and Linux."""
+    The scores decide first, and a tie goes to the lower entry ids, whatever order the scores
+    arrive in: the default sort is not stable, so left to it the order of a tie is the sort's."""
     ids = [f"JE-{i:03d}" for i in range(60)]
-    scores = pd.Series(1.0, index=ids)
+    # Ten entries score above a fifty-way tie, so the cut at 25 takes them and the tie's 15
+    # lowest ids. The anomalies are those ten and the first ten ids: 20 at the cut.
+    scores = pd.Series([2.0 if i >= 50 else 1.0 for i in range(60)], index=ids)
+    anomalous = [i < 10 or i >= 50 for i in range(60)]
     labels = pd.DataFrame({
         "entry_id": ids,
-        "is_anomaly": [i < 25 for i in range(60)],
-        "anomaly_type": ["round_amount" if i < 25 else "" for i in range(60)],
+        "is_anomaly": anomalous,
+        "anomaly_type": ["round_amount" if a else "" for a in anomalous],
     })
     for order in (scores, scores.iloc[::-1], scores.sample(frac=1, random_state=1)):
         table = evaluate.model_lift(order, labels, tops=(25,)).set_index("top_n")
-        assert int(table.loc[25, "true_anomalies"]) == 25
+        assert int(table.loc[25, "true_anomalies"]) == 20

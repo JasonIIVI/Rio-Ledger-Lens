@@ -184,14 +184,16 @@ and the MCP SDK, so the two together cover every code path CI will see.
   stand-in's NUL-separated record, and tests that could not fail. The PR's first CI run
   then failed on Linux, on the README's model-tier figures: the entry's account (what
   `amount_z_in_account` is measured against) came from a one-key sort of its lines by
-  amount, nearly every entry is two lines of equal amount, and a one-key pandas sort is not
-  stable, so which line came first differed between macOS and the x86-64 runners (whose
-  numpy sorts with vector code). The account is now the first of the largest lines
+  amount, nearly every entry the generator makes is two lines of equal amount, and a
+  one-key pandas sort is not stable, so which line came first differed between a Mac and
+  the x86-64 runners (most likely numpy's vectorised sort there: the runners' own 3.9 and
+  3.12 jobs disagreed as well). The account is now the first of the largest lines
   (`line_no` breaks the tie), `model_lift` gives a tie at its cut to the lower entry id,
-  and the figures moved once (top-25 precision 0.60, 40x). A review of that fix found
-  JET-07 and JET-09 leaving a same-day tie to the sort (JET-07 could flag the original
-  of a same-day re-post instead of the re-post); on one day the entry keyed first now
-  stands, then the lower id.
+  and the figures moved once (top-25 precision 0.60, 40x lift, read as re-ranking against
+  the same labels). A review of that fix found JET-07 and JET-09 leaving a same-day tie to
+  the sort (JET-07 could flag the original of a same-day re-post instead of the re-post);
+  on one day the entry keyed first now stands, then the lower id. `docs/demo.gif` predates
+  the fix: the model scores in its queue are the old ones.
 - **Next** — week 5 breaks the circularity in the detection numbers (archetypes no rule
   describes, both tiers re-measured), and an approver list and approval limit that can be set
   for JET-12 and JET-06.
@@ -319,7 +321,7 @@ unhelpful. Say so wherever the number is quoted.
 - Comments explain *why*, not *what*. Existing code sets the density — match it.
 - A sort that picks one row or cuts a top-N says how a tie breaks (a second key, or an
   index sort and then a stable `kind`). A one-key pandas sort is not stable, and the order
-  it gave a tie differed between macOS and the Linux runners.
+  it gave tied lines differed between a Mac and the x86-64 Linux runners.
 - Run `ruff check src tests app.py` and both venvs' test suites before every commit.
 - The Claude API is never called from a test: `tests/conftest.py` has the fake client
   (`llm` fixture) shaped like the real responses, thinking block included.

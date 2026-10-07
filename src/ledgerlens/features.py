@@ -111,9 +111,10 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     )
     # The entry's account is its largest line's. A balanced two-line entry has
     # two largest lines (nearly every entry the generator makes is one), and the
-    # tie goes to the entry's first line. The sort has to say so: a one-key sort is not
-    # stable, and which line it put first differed between macOS and Linux,
-    # which moved the model-tier figures between a developer's machine and CI.
+    # tie goes to the entry's first line. The sort has to say so: a one-key sort
+    # is not stable, and which line it put first differed between a Mac and the
+    # x86-64 Linux runners, which moved the model-tier figures between a
+    # developer's machine and CI.
     per_entry_account = (
         df.sort_values(["abs_amount", "line_no"], ascending=[False, True])
         .groupby("entry_id")

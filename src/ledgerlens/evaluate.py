@@ -43,7 +43,7 @@ DETECTION_CAVEAT = (
 #: dashboard's tier tab, where it follows DETECTION_CAVEAT ("the same" points at it).
 MODEL_TIER_CAVEAT = (
     "The same circularity applies to the model tier: these anomalies were defined as rule "
-    "violations, so almost everything the model ranks highly the rules had already caught. "
+    "violations, so almost every anomaly the model ranks highly, the rules had already caught. "
     "Read the lift as re-ranking of the rule tier's queue, not as independent detection."
 )
 
@@ -265,8 +265,8 @@ def model_lift(
     Compared against the base rate, this is the clearest statement of whether
     the model is better than opening entries at random.
 
-    Ties at the cut go to the lower entry id, so a top-N is the same set on
-    every platform.
+    Ties at the cut go to the lower entry id, so a top-N depends neither on
+    the order the scores arrive in nor on how a sort orders a tie.
     """
     truth = set(labels.loc[labels["is_anomaly"], "entry_id"])
     base_rate = _safe_div(len(truth), len(model_scores))

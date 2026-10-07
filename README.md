@@ -198,7 +198,7 @@ plainly rather than hiding behind a combined number. By rank it is far better th
 | 100 | 29 | 0.29 | 19x |
 
 *Read the lift as re-ranking, not as detection: it is measured against the same labels, with
-the same circularity.* Almost everything the model ranks highly, the rules had already caught.
+the same circularity.* Almost every anomaly the model ranks highly, the rules had already caught.
 The "model only" segment is essentially the base rate.
 
 The reason is the same circularity described above: these anomalies were *defined* as rule
@@ -222,7 +222,7 @@ is a test asserting it stays true.
 
 One honest false-positive pattern: the model repeatedly flags system-posted depreciation entries,
 because `system` is a rare `created_by` value. Structurally unusual, operationally boring - the
-kind of flag a reviewer dismisses in seconds, and the reason `precision_by_test` exists.
+kind of flag a reviewer dismisses in seconds.
 
 ## The narrative layer and the human loop
 
