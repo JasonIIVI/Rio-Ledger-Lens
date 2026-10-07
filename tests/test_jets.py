@@ -157,6 +157,14 @@ def test_a_same_day_duplicate_is_the_one_keyed_later():
     same_time = [row[:2] + ("2024-03-15 09:00",) + row[3:] for row in rows]
     for order in (same_time, same_time[::-1]):
         assert list(jets.jet_duplicate_entries(_entries(order))["entry_id"]) == ["JE-2"]
+    # the posting date still decides first: JE-3, keyed after JE-4 but posted the day
+    # before it, is the original
+    backdated = [
+        ("JE-3", "2024-03-10", "2024-03-12 09:00", "6000", "1000", 500.0, "Invoice 43"),
+        ("JE-4", "2024-03-11", "2024-03-11 09:00", "6000", "1000", 500.0, "Invoice 43")]
+    flags = jets.jet_duplicate_entries(_entries(backdated))
+    assert list(flags["entry_id"]) == ["JE-4"]
+    assert "as JE-3 posted 1 day(s) earlier" in flags["reason"].iloc[0]
 
 
 def test_a_dormant_account_is_woken_by_the_entry_keyed_first():
@@ -174,3 +182,11 @@ def test_a_dormant_account_is_woken_by_the_entry_keyed_first():
                  for row in rows]
     for order in (same_time, same_time[::-1]):
         assert set(jets.jet_dormant_account(_entries(order))["entry_id"]) == {"JE-2"}
+    # the posting date still decides first: JE-5, posted before JE-4 though keyed after
+    # it, is the entry that wakes the account
+    backdated = [rows[0],
+                 ("JE-5", "2024-09-02", "2024-09-05 09:00", "6900", "1000", 200.0, "b"),
+                 ("JE-4", "2024-09-04", "2024-09-03 09:00", "6900", "1000", 300.0, "c")]
+    flags = jets.jet_dormant_account(_entries(backdated))
+    assert set(flags["entry_id"]) == {"JE-5"}
+    assert flags["reason"].str.contains("no activity for 244 days").all()

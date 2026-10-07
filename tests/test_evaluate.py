@@ -177,6 +177,8 @@ def test_the_detection_caveat_counts_the_archetypes_it_names():
     for text in (evaluate.DETECTION_CAVEAT, evaluate.MODEL_TIER_CAVEAT):
         assert not any(ch.isdigit() for ch in text)
     assert "re-ranking" in evaluate.MODEL_TIER_CAVEAT
+    # of anomalies, not of entries: most of the entries the model flags, no rule did
+    assert "almost every anomaly the model ranks highly" in evaluate.MODEL_TIER_CAVEAT
 
 
 def test_check_labels_accepts_the_generators_own_pair(ledger, labels):

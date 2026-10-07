@@ -196,7 +196,9 @@ and the MCP SDK, so the two together cover every code path CI will see.
   the fix: the model scores in its queue are the old ones.
 - **Next** — week 5 breaks the circularity in the detection numbers (archetypes no rule
   describes, both tiers re-measured), and an approver list and approval limit that can be set
-  for JET-12 and JET-06.
+  for JET-12 and JET-06. Also: a blank account code on a posting line makes `ledgerlens
+  test` raise a TypeError in `jets._entry_pairs`; it should be one `error:` line, like
+  any other ledger that cannot be read.
 - 641 tests on 3.9 / 651 on 3.12 (the ten MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
