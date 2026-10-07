@@ -198,14 +198,16 @@ def jet_duplicate_entries(df: pd.DataFrame, days: int = 7) -> pd.DataFrame:
     double-posted invoice.
     """
     e = entry_level(df).merge(_entry_pairs(df), on="entry_id", how="left")
-    e = e.sort_values("posting_date")
 
     rows = []
     key = ["entry_amount", "pair", "description"]
     for _, group in e.groupby(key, dropna=False):
         if len(group) < 2:
             continue
-        ordered = group.sort_values("posting_date")
+        # Two postings of one invoice on one day tie on the date. The one keyed
+        # first stands as the original (then the lower id), so which of them is
+        # flagged is not left to how a sort orders a tie.
+        ordered = group.sort_values(["posting_date", "entered_at", "entry_id"])
         first = ordered.iloc[0]
         for r in ordered.iloc[1:].itertuples():
             gap = (r.posting_date - first["posting_date"]).days
@@ -251,7 +253,9 @@ def jet_dormant_account(df: pd.DataFrame, dormant_days: int = 120) -> pd.DataFra
     """Activity in an account that had been quiet for a long stretch."""
     rows = []
     for account, chunk in df.groupby("account_code", observed=True):
-        ordered = chunk.sort_values("posting_date")
+        # Entries on the day an account wakes tie on the date; the gap goes to
+        # the one keyed first (then the lower id), not to how a sort orders a tie.
+        ordered = chunk.sort_values(["posting_date", "entered_at", "entry_id"])
         gaps = ordered["posting_date"].diff().dt.days
         woken = ordered[gaps > dormant_days]
         for r in woken.itertuples():

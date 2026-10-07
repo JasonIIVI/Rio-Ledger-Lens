@@ -188,11 +188,14 @@ and the MCP SDK, so the two together cover every code path CI will see.
   stable, so which line came first differed between macOS and the x86-64 runners (whose
   numpy sorts with vector code). The account is now the first of the largest lines
   (`line_no` breaks the tie), `model_lift` gives a tie at its cut to the lower entry id,
-  and the figures moved once (top-25 precision 0.60, 40x).
+  and the figures moved once (top-25 precision 0.60, 40x). A review of that fix found
+  JET-07 and JET-09 leaving a same-day tie to the sort (JET-07 could flag the original
+  of a same-day re-post instead of the re-post); on one day the entry keyed first now
+  stands, then the lower id.
 - **Next** — week 5 breaks the circularity in the detection numbers (archetypes no rule
   describes, both tiers re-measured), and an approver list and approval limit that can be set
   for JET-12 and JET-06.
-- 639 tests on 3.9 / 649 on 3.12 (the ten MCP tests need 3.10+), ruff clean.
+- 641 tests on 3.9 / 651 on 3.12 (the ten MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
