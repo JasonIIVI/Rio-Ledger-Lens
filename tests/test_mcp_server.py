@@ -188,3 +188,26 @@ async def test_a_malformed_identity_sidecar_is_a_tool_error_the_client_can_read(
             result = await c.call_tool(name, {})
             assert result.is_error, name
             assert "ledger.identity.json" in result.content[0].text, name
+
+
+@pytest.mark.anyio
+async def test_a_ledger_with_a_cell_it_cannot_read_is_a_tool_error_the_client_can_read(tmp_path):
+    """A blank account code was a TypeError inside the rules, and _call let it through as an
+    unexpected exception the SDK reports without its message."""
+    import csv
+
+    from ledgerlens.cli import main
+
+    main(["generate", "--start", "2024-01-01", "--end", "2024-02-29", "--out-dir", str(tmp_path)])
+    path = tmp_path / "ledger.csv"
+    with path.open(newline="", encoding="utf-8") as fh:
+        rows = list(csv.reader(fh))
+    rows[2][rows[0].index("account_code")] = ""
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        csv.writer(fh).writerows(rows)
+    mcp_server.use_context(LedgerContext(path))
+    async with Client(mcp_server.mcp, raise_exceptions=True) as c:
+        for name in ("ledgerlens_benford", "ledgerlens_summary"):
+            result = await c.call_tool(name, {})
+            assert result.is_error, name
+            assert "account_code is blank on 1 row" in result.content[0].text, name

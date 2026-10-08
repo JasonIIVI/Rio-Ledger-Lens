@@ -13,6 +13,7 @@ import json
 import re
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from .schema import DERIVED_COLUMNS, REQUIRED_COLUMNS, is_us_holiday
@@ -26,6 +27,15 @@ _QBO_ID = re.compile(r"^qbo:[A-Za-z0-9][A-Za-z0-9_.-]*$")
 _AMOUNT_COLUMNS = ("debit", "credit")
 _DATE_COLUMNS = ("posting_date", "entered_at")
 _INT_COLUMNS = ("line_no", "fiscal_year", "period")
+#: Text a test keys on. A blank here was never an error: a blank account code was a
+#: TypeError in the rules, a blank entry id dropped its line from the entry, and a blank
+#: account type, source or user quietly took an entry out of JET-05 or JET-12. Account
+#: names and descriptions are only shown, so they may be blank, and a blank amount is 0.
+_KEYED_TEXT = ("entry_id", "account_code", "account_type", "source", "created_by")
+#: A time of day followed by an offset ("Z", "+05:30", "-0700"). Every time here is
+#: naive, the company's own clock; one with an offset cannot be put on that clock without
+#: knowing the company's zone, and mixed with naive ones it was a TypeError in the load.
+_OFFSET = re.compile(r"\d:\d\d(?::\d\d(?:\.\d+)?)?\s*(?:Z|[+-]\d\d:?\d\d)$", re.IGNORECASE)
 
 
 class SchemaError(ValueError):
@@ -34,6 +44,34 @@ class SchemaError(ValueError):
 
 class IdentityError(ValueError):
     """An identity sidecar exists but cannot be trusted."""
+
+
+def plural(n: int, one: str, many: str) -> str:
+    return f"{n:,} {one if n == 1 else many}"
+
+
+def quote(value: object) -> str:
+    """A value from a file as a message quotes it: ``ascii``, cut to a line's worth.
+
+    Whoever wrote the file chose this text, and the message is shown in a terminal,
+    a CI log and the dashboard. ``ascii`` escapes every character outside ASCII, the
+    control and invisible ones among them, so it shows what the eye would miss: a
+    stray space, a variation selector, an id read as a number beside the same id read
+    as text. ``repr`` would keep an invisible character Python calls printable, and
+    print a code point assigned after this Python's Unicode tables one way and a newer
+    Python's another.
+    """
+    text = ascii(value)
+    if isinstance(value, str) and (len(value) > 48 or len(text) > 60):
+        # Cut the text, then quote it: the quote closes, no escape is cut in half, and the
+        # length says that two values alike this far are not being called the same. The cut
+        # is by what the escaped text takes up, not by a count of characters: ascii()
+        # writes a Latin-1 letter as four, a CJK character as six and an emoji as ten.
+        prefix = value[:48]
+        while prefix and len(ascii(prefix)) > 50:
+            prefix = prefix[:-1]
+        return f"{ascii(prefix)}... ({len(value)} characters)"
+    return text
 
 
 def _canonical(column: str, value):
@@ -115,17 +153,86 @@ def validate(df: pd.DataFrame) -> None:
         )
 
 
+def _blank(raw: pd.Series) -> np.ndarray:
+    """Missing, or text that is only whitespace."""
+    spaces = raw.astype("string").str.strip().eq("").fillna(False)
+    return (raw.isna() | spaces).to_numpy(dtype=bool)
+
+
+def _rows(column: str, what: str, mask: np.ndarray, raw: pd.Series | None = None) -> str:
+    """One problem, in data rows rather than file lines: pandas skips a blank line and a
+    quoted cell can span two, so a line number would send the reader to a line that is fine."""
+    first = int(mask.argmax())
+    text = "{} {} on {}, the first is data row {}".format(
+        column, what, plural(int(mask.sum()), "row", "rows"), first + 1)
+    # Quoted as text whatever it was read as: pandas reads "inf" and "1.5" as floats.
+    return text if raw is None else f"{text} ({quote(str(raw.iloc[first]))})"
+
+
+def _read_cells(df: pd.DataFrame) -> dict[str, pd.Series]:
+    """Each date, whole-number and amount column parsed, or a SchemaError naming every
+    column that holds a cell no test could use, with its count and first row.
+
+    The parse is the one :func:`prepare` always made, with failures turned into NaT and
+    NaN so they can be counted rather than raised one at a time (or, for an amount,
+    quietly made 0.00), so a ledger with nothing wrong parses exactly as before.
+    """
+    parsed: dict[str, pd.Series] = {}
+    problems: list[str] = []
+    for column in REQUIRED_COLUMNS:  # schema order, so the message reads like the file
+        raw = df[column]
+        blank = _blank(raw)
+        if column in _DATE_COLUMNS:
+            offset = np.zeros(len(raw), dtype=bool)
+            if not pd.api.types.is_datetime64_any_dtype(raw):
+                offset = raw.map(lambda v: isinstance(v, str) and bool(_OFFSET.search(v.strip())))
+                offset = offset.to_numpy(dtype=bool)
+            values = pd.to_datetime(raw.mask(blank | offset), errors="coerce")
+            if not pd.api.types.is_datetime64_dtype(values):  # aware, or a mix of zones
+                offset = ~blank
+                values = pd.Series(pd.NaT, index=raw.index, dtype="datetime64[ns]")
+            unreadable = values.isna().to_numpy() & ~blank & ~offset
+            if blank.any():
+                problems.append(_rows(column, "is blank", blank))
+            if offset.any():
+                problems.append(_rows(column, "carries a time zone offset", offset, raw))
+            if unreadable.any():
+                problems.append(_rows(column, "is not a readable date", unreadable, raw))
+            parsed[column] = values
+        elif column in _INT_COLUMNS or column in _AMOUNT_COLUMNS:
+            values = pd.to_numeric(raw.mask(blank), errors="coerce")
+            number = values.to_numpy(dtype=float, na_value=np.nan)
+            readable = np.isfinite(number)
+            if column in _INT_COLUMNS:
+                whole = readable & (np.where(readable, number, 0.0) % 1 == 0)
+                if blank.any():
+                    problems.append(_rows(column, "is blank", blank))
+                if (~blank & ~whole).any():
+                    problems.append(_rows(column, "is not a whole number", ~blank & ~whole, raw))
+                parsed[column] = values
+            else:  # a blank amount is a zero; "abc", "1,234.00" and "inf" are not
+                if (~blank & ~readable).any():
+                    problems.append(_rows(column, "is not a number", ~blank & ~readable, raw))
+                parsed[column] = values.fillna(0.0)
+        elif column in _KEYED_TEXT and blank.any():
+            problems.append(_rows(column, "is blank", blank))
+    if problems:
+        raise SchemaError("cells no test can read: " + "; ".join(problems))
+    return parsed
+
+
 def prepare(df: pd.DataFrame) -> pd.DataFrame:
     """Validate, coerce dtypes, and add the derived columns tests rely on."""
     validate(df)
+    parsed = _read_cells(df)
     out = df.copy()
 
-    out["posting_date"] = pd.to_datetime(out["posting_date"])
-    out["entered_at"] = pd.to_datetime(out["entered_at"])
+    out["posting_date"] = parsed["posting_date"]
+    out["entered_at"] = parsed["entered_at"]
     for col in ("debit", "credit"):
-        out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0.0)
+        out[col] = parsed[col]
     for col in ("line_no", "fiscal_year", "period"):
-        out[col] = pd.to_numeric(out[col], errors="coerce").astype("int64")
+        out[col] = parsed[col].astype("int64")
     for col in ("entry_id", "account_code", "account_name", "account_type",
                 "description", "source", "created_by"):
         out[col] = out[col].astype("string")

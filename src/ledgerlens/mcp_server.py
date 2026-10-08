@@ -28,7 +28,6 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from .env import load_dotenv
-from .ingest import IdentityError
 from .ledger_context import (
     DEFAULT_LEDGER,
     DEFAULT_REVIEW_DB,
@@ -83,12 +82,13 @@ def _ctx() -> LedgerContext:
 
 def _call(method: str, **kwargs: Any) -> dict[str, Any]:
     """Run one context method; a review database the store refuses (a file from a newer
-    version, or not a review database at all), or an identity sidecar that names no ledger,
+    version, or not a review database at all), an identity sidecar that names no ledger, a
+    ledger with a cell no test can read, or a population the model cannot be fitted on,
     becomes a tool error whose text reaches the client, rather than an unexpected exception
     the SDK reports without its message."""
     try:
         return getattr(_ctx(), method)(**kwargs)
-    except (RuntimeError, IdentityError) as exc:
+    except (RuntimeError, ValueError) as exc:  # IdentityError and SchemaError are ValueErrors
         raise ToolError(str(exc)) from exc
 
 

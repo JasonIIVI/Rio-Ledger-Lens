@@ -317,8 +317,41 @@ def test_a_malformed_identity_sidecar_is_an_error_not_a_traceback(data_dir, tmp_
     shutil.copy(data_dir / "ledger.csv", bad / "ledger.csv")
     (bad / "ledger.identity.json").write_text('{"ledger_id": "qbo 123"}')
     at = _run(bad, tmp_path / "review.sqlite", reviewer="ana")  # _run asserts nothing was raised
-    assert any("ledger.identity.json" in e.value for e in at.error)
+    assert at.error and any("ledger.identity.json" in t.value for t in at.text)
     assert not (tmp_path / "review.sqlite").exists()  # stopped before any store was opened
+
+
+def _with_cell(data_dir, tmp_path, column, value):
+    import csv
+
+    bad = tmp_path / "bad"
+    bad.mkdir()
+    with (data_dir / "ledger.csv").open(newline="", encoding="utf-8") as fh:
+        rows = list(csv.reader(fh))
+    rows[2][rows[0].index(column)] = value
+    with (bad / "ledger.csv").open("w", newline="", encoding="utf-8") as fh:
+        csv.writer(fh).writerows(rows)
+    return bad
+
+
+def test_a_blank_account_code_is_a_message_not_an_exception_page(data_dir, tmp_path):
+    """The rules raised a TypeError over a blank account code: the dashboard showed Streamlit's
+    exception page. The load now refuses the cell, and the page says which one."""
+    bad = _with_cell(data_dir, tmp_path, "account_code", "")
+    at = _run(bad, tmp_path / "review.sqlite", reviewer="ana")  # _run asserts nothing was raised
+    assert at.error
+    assert any("account_code is blank on 1 row, the first is data row 2" in t.value for t in at.text)
+    assert not (tmp_path / "review.sqlite").exists()
+
+
+def test_a_cell_quoted_in_the_message_is_drawn_as_text(data_dir, tmp_path):
+    """The message now quotes the cell it could not read: as markdown, an image in it would
+    be fetched the moment the page loaded."""
+    bad = _with_cell(data_dir, tmp_path, "debit", "![x](http://example.invalid/x.png)")
+    at = _run(bad, tmp_path / "review.sqlite", reviewer="ana")
+    assert any("example.invalid" in t.value for t in at.text)
+    rendered = [e.value for e in at.error] + [m.value for m in at.markdown] + [c.value for c in at.caption]
+    assert not any("example.invalid" in value for value in rendered), rendered
 
 
 def test_the_sidebar_names_a_qbo_ledger_by_its_realm(data_dir, tmp_path):
@@ -473,7 +506,7 @@ def test_a_ledger_the_model_cannot_be_fitted_on_is_a_message_not_an_exception_pa
     at.session_state["reviewer"] = ""
     at.run()
     assert not at.exception, at.exception
-    assert any("cannot be fitted on 1 entry" in e.value for e in at.error)
+    assert at.error and any("cannot be fitted on 1 entry" in t.value for t in at.text)
     assert "Entries" not in [m.label for m in at.metric]
 
 
