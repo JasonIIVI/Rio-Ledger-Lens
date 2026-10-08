@@ -248,3 +248,163 @@ def test_a_frame_built_in_memory_is_held_to_the_same_rule(small_ledger):
     assert "account_code is blank on 1 row, the first is data row 4" in message
     # quoted as text, the way it is shown for a CSV, whatever type it arrived as
     assert "debit is not a number on 1 row, the first is data row 7 ('inf')" in message
+
+
+# --- the review of the first commit -------------------------------------------------
+
+
+@pytest.mark.parametrize("token", ["NA", "N/A", "null", "None", "nan"])
+def test_a_word_pandas_would_read_as_missing_stays_as_written_in_a_text_cell(tmp_path, token):
+    """read_csv's default list made "NA" (a user's initials, or "N/A" on system postings)
+    missing, and the check then called a visibly filled cell blank."""
+    from ledgerlens.ingest import load_csv
+
+    lines = load_csv(_damage(_small_csv(tmp_path), {(2, "created_by"): token, (3, "account_code"): token}))
+    assert (lines.loc[1, "created_by"], lines.loc[2, "account_code"]) == (token, token)
+
+
+@pytest.mark.parametrize("token", ["#N/A", "NA", "null", "nan", "NaN"])
+def test_a_word_pandas_would_read_as_missing_is_not_a_zero_amount(tmp_path, token):
+    """The same list made Excel's #N/A in an amount 0.00 without a word."""
+    from ledgerlens.ingest import load_csv
+
+    with pytest.raises(SchemaError) as excinfo:
+        load_csv(_damage(_small_csv(tmp_path), {(3, "debit"): token}))
+    assert f"debit is not a number on 1 row, the first is data row 3 ({ascii(token)})" in str(excinfo.value)
+
+
+def _rewrite_column(path, column, change):
+    import csv
+
+    with path.open(newline="", encoding="utf-8") as fh:
+        rows = list(csv.reader(fh))
+    i = rows[0].index(column)
+    for row in rows[1:]:
+        row[i] = change(row[i])
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        csv.writer(fh).writerows(rows)
+    return path
+
+
+def test_an_all_digit_date_is_the_date_it_spells_not_nanoseconds_since_1970(tmp_path):
+    """read_csv read 20240101 as a number, and to_datetime took a number for nanoseconds."""
+    from ledgerlens.ingest import load_csv
+
+    plain = load_csv(_small_csv(tmp_path))
+    path = _rewrite_column(tmp_path / "ledger.csv", "posting_date", lambda v: v.replace("-", ""))
+    path = _rewrite_column(path, "entered_at", lambda v: v.replace("-", "").replace(" ", "").replace(":", ""))
+    digits = load_csv(path)
+    pd.testing.assert_series_equal(digits["posting_date"], plain["posting_date"])
+    pd.testing.assert_series_equal(digits["entered_at"], plain["entered_at"])
+
+
+def test_an_all_digit_date_built_in_memory_is_read_the_same_way(small_ledger):
+    from ledgerlens.schema import REQUIRED_COLUMNS
+
+    raw = small_ledger[0][list(REQUIRED_COLUMNS)].copy()
+    expected = raw["posting_date"].copy()
+    raw["posting_date"] = raw["posting_date"].dt.strftime("%Y%m%d").astype("int64")
+    # values, not the unit: pandas 3 parses text at a finer unit than the generator's dates
+    assert prepare(raw)["posting_date"].tolist() == expected.tolist()
+
+
+@pytest.mark.parametrize("value", ["45292", "today", "now", " Today "])
+def test_a_serial_number_or_a_word_for_the_clock_is_not_a_date(tmp_path, value):
+    """pandas read "today" and "now" as the time the ledger was loaded."""
+    from ledgerlens.ingest import load_csv
+
+    with pytest.raises(SchemaError) as excinfo:
+        load_csv(_damage(_small_csv(tmp_path), {(3, "posting_date"): value}))
+    assert f"posting_date is not a readable date on 1 row, the first is data row 3 ({ascii(value)})" in str(
+        excinfo.value)
+
+
+def test_a_date_in_another_format_is_named_against_the_row_that_set_the_format(tmp_path):
+    """pandas takes a column's format from its first cell, so one fraction of a second in row 1
+    (Python's isoformat writes one only when it is not zero) made every other row unreadable,
+    and the message quoted a correct cell and never named row 1."""
+    from ledgerlens.ingest import load_csv
+
+    path = _rewrite_column(_small_csv(tmp_path), "entered_at", lambda v: v.replace(" ", "T"))
+    first = "2024-01-01T11:17:28.500000"
+    _damage(path, {(1, "entered_at"): first})
+    with pytest.raises(SchemaError) as excinfo:
+        load_csv(path)
+    message = str(excinfo.value)
+    assert f"entered_at is in a different date format from data row 1 ({ascii(first)}) on " in message, message
+    assert "rows, the first is data row 2 (" in message and "not a readable date" not in message
+
+
+def test_an_odd_date_further_down_is_named_and_a_bad_one_beside_it_is_told_apart(tmp_path):
+    from ledgerlens.ingest import load_csv
+
+    with pytest.raises(SchemaError) as excinfo:
+        load_csv(_damage(_small_csv(tmp_path), {(4, "posting_date"): "01/02/2024", (6, "posting_date"): "2024-02-30"}))
+    message = str(excinfo.value)
+    assert "posting_date is in a different date format from data row 1 (" in message
+    assert "on 1 row, the first is data row 4 ('01/02/2024')" in message
+    assert "posting_date is not a readable date on 1 row, the first is data row 6 ('2024-02-30')" in message
+
+
+@pytest.mark.parametrize("value", ["2024-01-02 09:15:00-08", "2024-01-02 09:15:00 UTC", "2024-01-02T09:15:00+00",
+                                   "2024-01-02 09:15:00 GMT"])
+def test_an_hour_only_offset_or_a_named_zone_is_an_offset(tmp_path, value):
+    from ledgerlens.ingest import load_csv
+
+    with pytest.raises(SchemaError) as excinfo:
+        load_csv(_damage(_small_csv(tmp_path), {(3, "entered_at"): value}))
+    assert f"entered_at carries a time zone offset on 1 row, the first is data row 3 ({ascii(value)})" in str(
+        excinfo.value)
+
+
+def test_offsets_that_change_across_daylight_saving_are_named_with_everything_else(tmp_path):
+    """On pandas 3, -08 beside -07 raised pandas' own "Mixed timezones detected" from inside the
+    check: no column named, and every other problem in the file dropped."""
+    from ledgerlens.ingest import load_csv
+
+    path = _rewrite_column(_small_csv(tmp_path), "entered_at", lambda v: v + "-08")
+    _damage(path, {(4, "entered_at"): "2024-01-02 09:15:00-07", (2, "account_code"): ""})
+    with pytest.raises(SchemaError) as excinfo:
+        load_csv(path)
+    message = str(excinfo.value)
+    assert "entered_at carries a time zone offset on " in message
+    assert "account_code is blank on 1 row" in message
+
+
+def test_a_zoned_datetime_built_in_memory_is_found_before_pandas_coerces_its_neighbours(small_ledger):
+    """pandas coerced a column of naive datetimes with one zoned value into NaT for hundreds of
+    rows, and the check then called them unreadable."""
+    import datetime as dt
+
+    from ledgerlens.schema import REQUIRED_COLUMNS
+
+    raw = small_ledger[0][list(REQUIRED_COLUMNS)].copy()
+    values = [stamp.to_pydatetime() for stamp in raw["entered_at"]]
+    values[2] = values[2].replace(tzinfo=dt.timezone(dt.timedelta(hours=-8)))
+    raw["entered_at"] = pd.Series(values, index=raw.index, dtype=object)
+    with pytest.raises(SchemaError) as excinfo:
+        prepare(raw)
+    message = str(excinfo.value)
+    assert "entered_at carries a time zone offset on 1 row, the first is data row 3 (" in message, message
+    assert "not a readable date" not in message and "different date format" not in message
+
+
+def test_zones_pandas_reads_that_the_checks_do_not_see_are_one_problem_not_a_count(small_ledger, monkeypatch):
+    """A zone named some other way (EST) gives objects on pandas 2 and an error on pandas 3:
+    either is one problem naming the first cell, never pandas' own message."""
+    from ledgerlens import ingest
+    from ledgerlens.schema import REQUIRED_COLUMNS
+
+    raw = small_ledger[0][list(REQUIRED_COLUMNS)].copy()
+    real = pd.to_datetime
+
+    def mixed_zones(cells, **how):
+        if cells.name == "entered_at":
+            raise ValueError("Mixed timezones detected")
+        return real(cells, **how)
+
+    monkeypatch.setattr(ingest.pd, "to_datetime", mixed_zones)
+    with pytest.raises(SchemaError) as excinfo:
+        prepare(raw)
+    assert ("entered_at mixes times with and without a time zone, or in several zones; the first is data "
+            "row 1 (") in str(excinfo.value)

@@ -169,17 +169,19 @@ def precision_by_test(flags: pd.DataFrame, labels: pd.DataFrame) -> pd.DataFrame
     is which before they spend an afternoon on a queue.
     """
     if flags.empty:
-        return pd.DataFrame(columns=["test_id", "test_name", "flags", "true_positives",
+        return pd.DataFrame(columns=["test_id", "test_name", "entries_flagged", "true_positives",
                                      "precision"])
     truth = set(labels.loc[labels["is_anomaly"], "entry_id"])
     work = flags.drop_duplicates(subset=["test_id", "entry_id"]).copy()
     work["hit"] = work["entry_id"].isin(truth)
 
+    # Entries, not flags: a test that flags two lines of one entry (JET-09, JET-11) counts the
+    # entry once here, while `ledgerlens test` prints the flags it raised beside this table.
     out = work.groupby(["test_id", "test_name"]).agg(
-        flags=("entry_id", "count"),
+        entries_flagged=("entry_id", "count"),
         true_positives=("hit", "sum"),
     ).reset_index()
-    out["precision"] = (out["true_positives"] / out["flags"]).round(4)
+    out["precision"] = (out["true_positives"] / out["entries_flagged"]).round(4)
     return out.sort_values("precision", ascending=False).reset_index(drop=True)
 
 

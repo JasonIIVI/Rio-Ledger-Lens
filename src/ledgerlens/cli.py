@@ -137,7 +137,8 @@ def _expand_home(text: str) -> Path:
 def cmd_test(args: argparse.Namespace) -> int:
     only: list[str] | None = None
     if args.only is not None:  # checked before the ledger is read: run_all raised a KeyError
-        only = [part.strip() for part in args.only.split(",")]
+        # once each: a repeated id ran its test twice, doubling every flag and score
+        only = list(dict.fromkeys(part.strip() for part in args.only.split(",")))
         unknown = [part for part in only if part not in jets.REGISTRY]
         if unknown:
             known = list(jets.REGISTRY)

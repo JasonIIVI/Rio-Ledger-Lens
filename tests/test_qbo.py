@@ -1229,3 +1229,22 @@ def test_names_are_found_in_any_case_and_spacing_and_colliding_keys_are_refused(
     assert qbo.leftovers("paid by JANE\u00a0 dev", "", users) == ["a user name (qbo-user-1)"]
     with pytest.raises(ValueError, match="two keys scrub to 'REALM'"):
         qbo.scrub_known({"4620816365": "a", "REALM": "b"}, "4620816365", {})
+
+
+def test_a_user_cell_holding_only_spaces_is_an_unknown_user_not_a_refused_pull():
+    """`create_by or UNKNOWN_USER` let "   " through, and the load now refuses a blank user,
+    so one such cell would have stopped the whole pull instead of being counted."""
+    stats = qbo.PullStats()
+    entry = {"Id": "9", "TxnDate": "2025-10-01", "Line": [
+        {"Amount": 25.0, "DetailType": "JournalEntryLineDetail",
+         "JournalEntryLineDetail": {"PostingType": "Debit", "AccountRef": {"value": "35", "name": "Checking"}}},
+        {"Amount": 25.0, "DetailType": "JournalEntryLineDetail",
+         "JournalEntryLineDetail": {"PostingType": "Credit", "AccountRef": {"value": "56", "name": "Fuel"}}}]}
+    lines = qbo.journal_entries_to_lines([entry], {}, {("JournalEntry", "9"): {"create_by": "   "}}, None, stats)
+    assert {line["created_by"] for line in lines} == {"qbo-unknown"} and stats.unknown_users == 1
+
+    report = gl_report("2026-09-02", first_row_user="  ")
+    report["Rows"]["Row"][1]["Rows"]["Row"][0]["ColData"][3]["value"] = " "
+    gl_stats = qbo.PullStats()
+    rows = qbo.general_ledger_to_lines(report, {}, None, gl_stats)
+    assert {line["created_by"] for line in rows} == {"qbo-unknown"} and gl_stats.unknown_users == 1

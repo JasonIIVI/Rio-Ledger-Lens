@@ -209,9 +209,20 @@ and the MCP SDK, so the two together cover every code path CI will see.
   time a TypeError inside the load; a blank entry id dropped its line, so the entry looked
   unbalanced; `abc` or `1,234.00` in an amount became 0.00 and `inf` was taken as one; a
   line number of 1.5 became 1. A blank account name, description or amount (0.00) is still
-  allowed. The dashboard shows the reason as text (it quotes a cell), the MCP server turns
-  any `ValueError` into a tool error, and `test --only` refuses an id it does not know in
-  one line. The workpaper, the methodology and the README now say the rule score sums the
+  allowed. Only an empty field is missing (`load_csv` reads with `keep_default_na=False`):
+  pandas' default list had made a user called `NA` blank and Excel's `#N/A` in an amount
+  0.00. An all-digit date (`20240101`) is the date it spells, not nanoseconds since 1970;
+  `today` and `now` are refused, not read as the clock; a cell in another date format than
+  the column's first is named as such against that row (pandas takes a column's format
+  from its first cell); a zone is found on text (`Z`, `UTC`, `GMT`, `+05:30`, `-0700`, an
+  hour alone) and on datetime objects before the parse, and any zone pandas reads that
+  neither sees is one "mixes times" problem. A QuickBooks pull goes through the same check
+  (a user of spaces is counted as `qbo-unknown`, not a refused pull). The dashboard shows
+  the reason as text (it quotes a cell) and catches an unreadable path too; the MCP server
+  turns any `OSError` or `ValueError` into a tool error and logs its traceback first;
+  `test --only` refuses an id it does not know in one line and runs a repeated one once.
+  `evaluate.precision_by_test` heads its count `entries_flagged` (it counts entries, beside
+  `test`'s count of flags). The workpaper, the methodology and the README now say the rule score sums the
   flags (JET-09 and JET-11 judge lines, so one entry of the default ledger scores 4.0 for a
   single JET-11), and that `--contamination` does not move the 0-1 score (the min-max
   rescale cancels sklearn's offset); the JET-11 tuning table is per entry. The narration
@@ -221,7 +232,7 @@ and the MCP SDK, so the two together cover every code path CI will see.
   archetypes no rule describes, generated once after the code is frozen), and an approver
   list and approval limit that can be set for JET-12 and JET-06 (a controls file beside the
   ledger).
-- 686 tests on 3.9 (1 skipped) / 697 on 3.12 (the eleven MCP tests need 3.10+), ruff clean.
+- 715 tests on 3.9 (1 skipped) / 727 on 3.12 (the twelve MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth

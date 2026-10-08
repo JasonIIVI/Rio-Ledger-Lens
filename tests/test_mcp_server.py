@@ -211,3 +211,16 @@ async def test_a_ledger_with_a_cell_it_cannot_read_is_a_tool_error_the_client_ca
             result = await c.call_tool(name, {})
             assert result.is_error, name
             assert "account_code is blank on 1 row" in result.content[0].text, name
+
+
+@pytest.mark.anyio
+async def test_a_ledger_that_cannot_be_opened_is_a_tool_error_and_the_server_logs_why(tmp_path, caplog):
+    """A directory as the ledger raised an OSError _call let through; and a ValueError turned into
+    a tool error keeps its traceback in the server's own log."""
+    (tmp_path / "ledger.csv").mkdir()
+    mcp_server.use_context(LedgerContext(tmp_path / "ledger.csv"))
+    with caplog.at_level("ERROR", logger="ledgerlens.mcp_server"):
+        async with Client(mcp_server.mcp, raise_exceptions=True) as c:
+            result = await c.call_tool("ledgerlens_summary", {})
+    assert result.is_error and "ledger.csv" in result.content[0].text
+    assert any(r.exc_info and "ledgerlens_summary" in r.getMessage() for r in caplog.records)

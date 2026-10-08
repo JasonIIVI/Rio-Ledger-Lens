@@ -1589,3 +1589,13 @@ def test_test_only_takes_ids_with_spaces_around_the_commas(two_ledgers, capsys):
     capsys.readouterr()
     assert main(["test", ledger, "--only", "JET-02, JET-12"]) == 0
     assert "Ran 2 test(s)" in capsys.readouterr().out
+
+
+def test_test_only_runs_a_repeated_id_once(two_ledgers, capsys):
+    """A repeated id ran its test twice: every flag doubled, and so did each entry's score."""
+    ledger, _ = _pair(two_ledgers)
+    capsys.readouterr()
+    assert main(["test", ledger, "--only", "JET-02"]) == 0
+    once = capsys.readouterr().out
+    assert main(["test", ledger, "--only", "JET-02,JET-02, JET-02"]) == 0
+    assert capsys.readouterr().out == once and "Ran 1 test(s)" in once

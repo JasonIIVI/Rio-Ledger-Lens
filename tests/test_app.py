@@ -596,3 +596,12 @@ def test_the_labels_field_is_optional_blank_or_a_directory_is_no_labels(data_dir
     assert not at.exception, at.exception
     assert "Entries" in [m.label for m in at.metric]
     assert not any("Labels set aside" in w.value for w in at.warning)
+
+
+def test_a_ledger_path_that_cannot_be_read_is_a_message_not_an_exception_page(tmp_path):
+    """A directory exists, so it passed the "no ledger found" check, and reading it raised an
+    OSError the page did not catch."""
+    folder = tmp_path / "folder"
+    (folder / "ledger.csv").mkdir(parents=True)
+    at = _run(folder, tmp_path / "review.sqlite", reviewer="ana")
+    assert at.error and any("ledger.csv" in t.value for t in at.text)

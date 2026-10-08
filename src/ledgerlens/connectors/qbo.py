@@ -1280,7 +1280,8 @@ def journal_entries_to_lines(entries: list[Mapping[str, Any]], accounts: Mapping
         # never a traceback halfway through a pull
         stamp = read_report_stamp((entry.get("MetaData") or {}).get("CreateTime") or "", posting, zone)
         entered_at, estimated = stamp.when, stamp.estimated
-        user = (headers.get(("JournalEntry", txn_id)) or {}).get("create_by") or UNKNOWN_USER
+        # stripped first: a cell of spaces is no user, and the load refuses a blank one
+        user = ((headers.get(("JournalEntry", txn_id)) or {}).get("create_by") or "").strip() or UNKNOWN_USER
         fallback = entry.get("PrivateNote") or f"Journal entry {entry.get('DocNumber') or txn_id}"
         entry_lines: list[dict[str, Any]] = []
         for line in entry.get("Line") or []:
@@ -1353,7 +1354,8 @@ def general_ledger_to_lines(report: Mapping[str, Any], accounts: Mapping[str, Ac
         stamp, keyed = min(((read_report_stamp(values.get("create_date", ""), posting, zone), values)
                             for values, _ in rows), key=lambda s: s[0].order)
         estimated, entered_at = stamp.estimated, stamp.when
-        user = (keyed.get("create_by") or next((v.get("create_by") for v, _ in rows if v.get("create_by")), "")
+        user = ((keyed.get("create_by") or "").strip()
+                or next((v["create_by"].strip() for v, _ in rows if (v.get("create_by") or "").strip()), "")
                 or UNKNOWN_USER)
         entry: list[dict[str, Any]] = []
         for values, account_cell in rows:
