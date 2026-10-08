@@ -16,6 +16,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from pandas.tseries.api import guess_datetime_format
 
 from .schema import DERIVED_COLUMNS, REQUIRED_COLUMNS, is_us_holiday
 
@@ -35,14 +36,21 @@ _INT_COLUMNS = ("line_no", "fiscal_year", "period")
 #: blank description is a value JET-07 matches like any other, so both may be blank; a
 #: blank amount is 0.
 _KEYED_TEXT = ("entry_id", "account_code", "account_type", "source", "created_by")
-#: A time of day followed by a zone: "Z", "UTC", "GMT", "+05:30", "-0700" or an hour alone
-#: ("-08", as PostgreSQL writes one). Every time here is naive, the company's own clock; one
-#: with a zone cannot be put on that clock without knowing the company's zone. With a zone
-#: on every row it was a TypeError in the load, and beside naive ones a pandas format error.
-_OFFSET = re.compile(r"\d:\d\d(?::\d\d(?:\.\d+)?)?\s*(?:Z|UTC|GMT|[+-]\d\d(?::?\d\d)?)$",
+#: A time of day followed by a zone: "Z", a name ("UTC", "EST", "CEST"), an offset ("+05:30",
+#: "-0700", an hour alone as PostgreSQL writes "-08"), or a name and an offset ("UTC+1").
+#: Every time here is naive, the company's own clock; one with a zone cannot be put on that
+#: clock without knowing the company's zone. With a zone on every row it was a TypeError in
+#: the load, beside naive ones a pandas format error; and pandas 2 reads the machine's own
+#: zone name (EST on a New York machine) and drops any other, so every name is caught here,
+#: before pandas sees it. AM and PM are two letters and are not names.
+_OFFSET = re.compile(r"\d:\d\d(?::\d\d(?:\.\d+)?)?\s*(?:Z|[A-Z]{3,5}|(?:UTC|GMT)?\s*[+-]\d\d?(?::?\d\d)?)$",
                      re.IGNORECASE)
 #: Words pandas reads as the clock: a ledger dated "today" would be dated the day it was read.
 _CLOCK_WORDS = frozenset({"now", "today"})
+#: A date written as a number, read by its count of digits. Any other count is refused, not
+#: guessed: read as a number it was nanoseconds since 1970, and read as text pandas took
+#: six-digit YYMMDD dates for days spread over 2002 to 2031.
+_DIGIT_FORMATS = {8: "%Y%m%d", 12: "%Y%m%d%H%M", 14: "%Y%m%d%H%M%S"}
 
 
 class SchemaError(ValueError):
@@ -176,15 +184,26 @@ def _rows(column: str, what: str, mask: np.ndarray, raw: pd.Series | None = None
     return text if raw is None else f"{text} ({quote(str(raw.iloc[first]))})"
 
 
-def _digits_as_text(raw: pd.Series) -> pd.Series:
-    """A date column held as numbers (20240101) as the text it spells: to_datetime takes a
-    number for nanoseconds since 1970."""
-    def text(value):
-        if pd.isna(value):
-            return pd.NA
+def _is_number(value: object) -> bool:
+    """A number in a date column, whatever holds it: an int64 column, a float one (a blank
+    elsewhere), or Python ints in an object column."""
+    return (isinstance(value, (int, float, np.integer, np.floating))
+            and not isinstance(value, (bool, np.bool_)) and not pd.isna(value))
+
+
+def _spelled(numbers: pd.Series) -> pd.Series:
+    """Numbers in a date column as the dates their digits spell (see ``_DIGIT_FORMATS``),
+    NaT where they spell none."""
+    def digits(value) -> str:
         number = float(value)
-        return str(int(number)) if number.is_integer() else str(value)
-    return raw.map(text).astype("string")
+        return str(int(number)) if np.isfinite(number) and number.is_integer() and number >= 0 else ""
+    text = pd.Series([digits(v) for v in numbers], index=numbers.index, dtype=object)
+    out = pd.Series(pd.NaT, index=numbers.index, dtype="datetime64[ns]")
+    for size, fmt in _DIGIT_FORMATS.items():
+        group = (text.str.len() == size).to_numpy()
+        if group.any():
+            out.iloc[group] = pd.to_datetime(text[group], format=fmt, errors="coerce").to_numpy()
+    return out
 
 
 def _has_zone(value: object) -> bool:
@@ -203,9 +222,29 @@ def _dates(cells: pd.Series, **how) -> pd.Series | None:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", FutureWarning)
             values = pd.to_datetime(cells, errors="coerce", **how)
-    except (ValueError, TypeError, OverflowError):
+    # AttributeError: pandas 2 on a zone name it half reads (the machine's own, beside naive
+    # times) in format="mixed"; _OFFSET now catches those first, and this stays as a backstop
+    except (ValueError, TypeError, OverflowError, AttributeError):
         return None
     return values if pd.api.types.is_datetime64_any_dtype(values) else None
+
+
+def _another_format(column: str, raw: pd.Series, skip: np.ndarray, readable: np.ndarray) -> list[str]:
+    """Cells that are dates, but not in the format pandas took from the column's first cell:
+    named against that cell, with the format it was read in. When every cell reads day first,
+    the first cell (say 02/01/2024) was most likely the one misread, so that is said too."""
+    first = int((~skip).argmax())
+    cell = str(raw.iloc[first])
+    fmt = guess_datetime_format(cell)
+    read_as = f", read as {fmt}" if fmt else ""
+    found = [_rows(column, f"is in a different date format from data row {first + 1} ({quote(cell)}{read_as})",
+                   readable, raw)]
+    day_first = guess_datetime_format(cell, dayfirst=True)
+    if day_first and day_first != fmt:
+        whole = _dates(raw[~skip], format=day_first)
+        if whole is not None and whole.notna().all():
+            found.append(f"{column}: every cell reads as {day_first} (day first): write dates as YYYY-MM-DD")
+    return found
 
 
 def _read_cells(df: pd.DataFrame) -> dict[str, pd.Series]:
@@ -222,11 +261,10 @@ def _read_cells(df: pd.DataFrame) -> dict[str, pd.Series]:
         raw = df[column]
         blank = _blank(raw)
         if column in _DATE_COLUMNS:
-            if pd.api.types.is_numeric_dtype(raw) and not pd.api.types.is_bool_dtype(raw):
-                raw = _digits_as_text(raw)
+            number = np.array([_is_number(v) for v in raw], dtype=bool)
             offset = np.array([_has_zone(v) for v in raw], dtype=bool)
             clock = np.array([isinstance(v, str) and v.strip().lower() in _CLOCK_WORDS for v in raw], dtype=bool)
-            skip = blank | offset | clock
+            skip = blank | number | offset | clock
             values = _dates(raw.mask(skip))
             if blank.any():
                 problems.append(_rows(column, "is blank", blank))
@@ -234,11 +272,12 @@ def _read_cells(df: pd.DataFrame) -> dict[str, pd.Series]:
                 problems.append(_rows(column, "carries a time zone offset", offset, raw))
             unreadable = clock
             if values is None or isinstance(values.dtype, pd.DatetimeTZDtype):
-                # a zone pandas read that the checks above did not see (a name such as EST),
-                # beside naive times or other zones: one problem, not a count of rows
-                first = int((~skip).argmax())
-                problems.append(f"{column} mixes times with and without a time zone, or in several zones; "
-                                f"the first is data row {first + 1} ({quote(str(raw.iloc[first]))})")
+                # a zone pandas read that the checks above did not see, beside naive times or
+                # other zones: one problem, not a count of rows (and none if nothing was left)
+                if (~skip).any():
+                    first = int((~skip).argmax())
+                    problems.append(f"{column} mixes times with and without a time zone, or in several zones; "
+                                    f"the first is data row {first + 1} ({quote(str(raw.iloc[first]))})")
                 values = pd.Series(pd.NaT, index=raw.index, dtype="datetime64[ns]")
             else:
                 failed = values.isna().to_numpy() & ~skip
@@ -249,12 +288,18 @@ def _read_cells(df: pd.DataFrame) -> dict[str, pd.Series]:
                     readable = np.zeros(len(raw), dtype=bool)
                     readable[failed] = False if alone is None else alone.notna().to_numpy()
                     if readable.any():
-                        first = int((~skip).argmax())
-                        what = f"is in a different date format from data row {first + 1} ({quote(str(raw.iloc[first]))})"
-                        problems.append(_rows(column, what, readable, raw))
+                        problems.extend(_another_format(column, raw, skip, readable))
                     unreadable = unreadable | (failed & ~readable)
             if unreadable.any():
                 problems.append(_rows(column, "is not a readable date", unreadable, raw))
+            if number.any():
+                spelled = _spelled(raw[number])
+                bad = np.zeros(len(raw), dtype=bool)
+                bad[number] = spelled.isna().to_numpy()
+                if bad.any():
+                    problems.append(_rows(column, "is a number, not a date (write YYYY-MM-DD)", bad, raw))
+                values = values.copy()
+                values.iloc[np.flatnonzero(number & ~bad)] = spelled[~spelled.isna()].to_numpy()
             parsed[column] = values
         elif column in _INT_COLUMNS or column in _AMOUNT_COLUMNS:
             values = pd.to_numeric(raw.mask(blank), errors="coerce")
@@ -331,7 +376,9 @@ _TRUTH = {"true": True, "false": False, "1": True, "0": False, "1.0": True, "0.0
 def load_labels(path: str | Path) -> pd.DataFrame:
     """Read the ground-truth label file produced by the generator."""
     # Ids as text, like load_csv: a numeric-looking id must not lose its zeros.
-    df = pd.read_csv(path, dtype={"entry_id": "string", "is_anomaly": "string"})
+    # and only an empty field is missing, as load_csv reads it: an entry id "NA" is an id
+    df = pd.read_csv(path, dtype={"entry_id": "string", "is_anomaly": "string"},
+                     keep_default_na=False, na_values=[""])
     # Read strictly. astype(bool) made a blank cell, "no" and "false " all True, and
     # every such row then counted as an injected anomaly.
     truth = df["is_anomaly"].str.strip().str.lower().map(_TRUTH)

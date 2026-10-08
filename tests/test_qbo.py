@@ -1243,6 +1243,10 @@ def test_a_user_cell_holding_only_spaces_is_an_unknown_user_not_a_refused_pull()
     lines = qbo.journal_entries_to_lines([entry], {}, {("JournalEntry", "9"): {"create_by": "   "}}, None, stats)
     assert {line["created_by"] for line in lines} == {"qbo-unknown"} and stats.unknown_users == 1
 
+    # an account number of spaces is no number either: the account's id stands in for it
+    accounts = qbo.accounts_by_id([{"Id": "35", "AcctNum": "  ", "Name": "Checking", "AccountType": "Bank"}])
+    assert accounts["35"].code == "35"
+
     report = gl_report("2026-09-02", first_row_user="  ")
     report["Rows"]["Row"][1]["Rows"]["Row"][0]["ColData"][3]["value"] = " "
     gl_stats = qbo.PullStats()

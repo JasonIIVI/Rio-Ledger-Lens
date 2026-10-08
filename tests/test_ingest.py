@@ -294,8 +294,9 @@ def test_an_all_digit_date_is_the_date_it_spells_not_nanoseconds_since_1970(tmp_
     path = _rewrite_column(tmp_path / "ledger.csv", "posting_date", lambda v: v.replace("-", ""))
     path = _rewrite_column(path, "entered_at", lambda v: v.replace("-", "").replace(" ", "").replace(":", ""))
     digits = load_csv(path)
-    pd.testing.assert_series_equal(digits["posting_date"], plain["posting_date"])
-    pd.testing.assert_series_equal(digits["entered_at"], plain["entered_at"])
+    # values, not the unit: pandas 3 gives text and numbers different units
+    assert digits["posting_date"].tolist() == plain["posting_date"].tolist()
+    assert digits["entered_at"].tolist() == plain["entered_at"].tolist()
 
 
 def test_an_all_digit_date_built_in_memory_is_read_the_same_way(small_ledger):
@@ -306,17 +307,96 @@ def test_an_all_digit_date_built_in_memory_is_read_the_same_way(small_ledger):
     raw["posting_date"] = raw["posting_date"].dt.strftime("%Y%m%d").astype("int64")
     # values, not the unit: pandas 3 parses text at a finer unit than the generator's dates
     assert prepare(raw)["posting_date"].tolist() == expected.tolist()
+    # a column of Python ints held as objects (a list once padded with pd.NA) too: it was
+    # still parsed as nanoseconds since 1970, past the dtype check
+    raw["posting_date"] = pd.Series([int(v) for v in raw["posting_date"]], index=raw.index, dtype=object)
+    assert prepare(raw)["posting_date"].tolist() == expected.tolist()
 
 
-@pytest.mark.parametrize("value", ["45292", "today", "now", " Today "])
-def test_a_serial_number_or_a_word_for_the_clock_is_not_a_date(tmp_path, value):
+@pytest.mark.parametrize("row, value", [(1, "today"), (3, "now"), (1, "now")])
+def test_a_word_for_the_clock_is_not_a_date(tmp_path, row, value):
     """pandas read "today" and "now" as the time the ledger was loaded."""
     from ledgerlens.ingest import load_csv
 
     with pytest.raises(SchemaError) as excinfo:
-        load_csv(_damage(_small_csv(tmp_path), {(3, "posting_date"): value}))
-    assert f"posting_date is not a readable date on 1 row, the first is data row 3 ({ascii(value)})" in str(
+        load_csv(_damage(_small_csv(tmp_path), {(row, "posting_date"): value}))
+    assert f"posting_date is not a readable date on 1 row, the first is data row {row} ({ascii(value)})" in str(
         excinfo.value)
+
+
+@pytest.mark.parametrize("spell, words", [
+    (lambda d: str((d - pd.Timestamp("1899-12-30")).days), "an Excel serial"),
+    (lambda d: d.strftime("%y%m%d"), "six digits, YYMMDD"),
+    (lambda d: d.strftime("%m%d%Y").lstrip("0"), "MMDDYYYY without its leading zero"),
+])
+def test_a_date_written_as_a_number_of_another_length_is_refused_not_guessed(tmp_path, spell, words):
+    """A date column of numbers was nanoseconds since 1970; then, read as digit text, pandas
+    guessed: six-digit YYMMDD dates loaded as plausible days between 2002 and 2031."""
+    from ledgerlens.ingest import load_csv
+
+    path = _rewrite_column(_small_csv(tmp_path), "posting_date", lambda v: spell(pd.Timestamp(v)))
+    with pytest.raises(SchemaError) as excinfo:
+        load_csv(path)
+    message = str(excinfo.value)
+    assert "posting_date is a number, not a date (write YYYY-MM-DD) on " in message, (words, message)
+    assert "the first is data row 1 (" in message
+
+
+def test_a_zone_named_by_its_abbreviation_is_found_whatever_the_machine_s_own_zone(tmp_path, monkeypatch):
+    """On pandas 2, a cell ending in the machine's own zone abbreviation (EST on a New York
+    machine) made the re-parse that tells formats apart raise an AttributeError: a traceback
+    where the load had printed one line. On every row, such a zone was dropped without a word."""
+    import time
+
+    from ledgerlens.ingest import load_csv
+
+    monkeypatch.setenv("TZ", "America/New_York")
+    time.tzset()
+    try:
+        one = _damage(_small_csv(tmp_path), {(3, "entered_at"): "2024-01-02 09:15:00 EST"})
+        with pytest.raises(SchemaError) as excinfo:
+            load_csv(one)
+        assert "entered_at carries a time zone offset on 1 row, the first is data row 3 ('2024-01-02 09:15:00 EST')" in str(
+            excinfo.value)
+        every = _rewrite_column(one, "entered_at", lambda v: v.replace(" EST", "") + " PST")
+        with pytest.raises(SchemaError) as excinfo:
+            load_csv(every)
+        assert "entered_at carries a time zone offset on " in str(excinfo.value)
+        assert "mixes" not in str(excinfo.value)
+    finally:
+        monkeypatch.delenv("TZ")
+        time.tzset()
+
+
+@pytest.mark.parametrize("value", ["2024-01-02 09:15:00 UTC+1", "2024-01-02 09:15:00 GMT-5", "2024-01-02 09:15 CET"])
+def test_a_zone_written_with_a_name_and_an_offset_is_an_offset(tmp_path, value):
+    from ledgerlens.ingest import load_csv
+
+    with pytest.raises(SchemaError) as excinfo:
+        load_csv(_damage(_small_csv(tmp_path), {(3, "entered_at"): value}))
+    assert f"entered_at carries a time zone offset on 1 row, the first is data row 3 ({ascii(value)})" in str(
+        excinfo.value)
+
+
+def test_times_of_day_that_end_in_letters_are_not_zones(tmp_path):
+    from ledgerlens.ingest import load_csv
+
+    path = _rewrite_column(_small_csv(tmp_path), "entered_at", lambda v: pd.Timestamp(v).strftime("%Y-%m-%d %I:%M %p"))
+    lines = load_csv(path)
+    assert lines["entered_at"].dt.hour.max() >= 12  # read as the afternoon it says
+
+
+def test_a_day_first_ledger_is_told_which_format_was_read_and_why_it_failed(tmp_path):
+    """pandas reads 02/01/2024 as 1 February and then cannot read 15/01/2024: the message
+    blamed the rows that were written correctly, and dropped pandas' clue, the format."""
+    from ledgerlens.ingest import load_csv
+
+    path = _rewrite_column(_small_csv(tmp_path), "posting_date", lambda v: pd.Timestamp(v).strftime("%d/%m/%Y"))
+    with pytest.raises(SchemaError) as excinfo:
+        load_csv(path)
+    message = str(excinfo.value)
+    assert "posting_date is in a different date format from data row 1 ('01/01/2024', read as %m/%d/%Y)" in message
+    assert "every cell reads as %d/%m/%Y (day first): write dates as YYYY-MM-DD" in message, message
 
 
 def test_a_date_in_another_format_is_named_against_the_row_that_set_the_format(tmp_path):
@@ -331,7 +411,7 @@ def test_a_date_in_another_format_is_named_against_the_row_that_set_the_format(t
     with pytest.raises(SchemaError) as excinfo:
         load_csv(path)
     message = str(excinfo.value)
-    assert f"entered_at is in a different date format from data row 1 ({ascii(first)}) on " in message, message
+    assert f"entered_at is in a different date format from data row 1 ({ascii(first)}, read as %Y-%m-%dT%H:%M:%S.%f) on " in message, message
     assert "rows, the first is data row 2 (" in message and "not a readable date" not in message
 
 
@@ -341,8 +421,7 @@ def test_an_odd_date_further_down_is_named_and_a_bad_one_beside_it_is_told_apart
     with pytest.raises(SchemaError) as excinfo:
         load_csv(_damage(_small_csv(tmp_path), {(4, "posting_date"): "01/02/2024", (6, "posting_date"): "2024-02-30"}))
     message = str(excinfo.value)
-    assert "posting_date is in a different date format from data row 1 (" in message
-    assert "on 1 row, the first is data row 4 ('01/02/2024')" in message
+    assert "posting_date is in a different date format from data row 1 ('2024-01-01', read as %Y-%m-%d) on 1 row, the first is data row 4 ('01/02/2024')" in message, message
     assert "posting_date is not a readable date on 1 row, the first is data row 6 ('2024-02-30')" in message
 
 
@@ -389,9 +468,12 @@ def test_a_zoned_datetime_built_in_memory_is_found_before_pandas_coerces_its_nei
     assert "not a readable date" not in message and "different date format" not in message
 
 
-def test_zones_pandas_reads_that_the_checks_do_not_see_are_one_problem_not_a_count(small_ledger, monkeypatch):
-    """A zone named some other way (EST) gives objects on pandas 2 and an error on pandas 3:
-    either is one problem naming the first cell, never pandas' own message."""
+@pytest.mark.parametrize("error", [ValueError("Mixed timezones detected"),
+                                   AttributeError("'NoneType' object has no attribute 'total_seconds'")])
+def test_zones_pandas_reads_that_the_checks_do_not_see_are_one_problem_not_a_count(small_ledger, monkeypatch, error):
+    """A zone the pattern does not know gives objects on pandas 2 and an error on pandas 3, and
+    pandas 2 once raised an AttributeError on the machine's own zone name: each is one problem
+    naming the first cell, never pandas' own message or a traceback."""
     from ledgerlens import ingest
     from ledgerlens.schema import REQUIRED_COLUMNS
 
@@ -400,7 +482,7 @@ def test_zones_pandas_reads_that_the_checks_do_not_see_are_one_problem_not_a_cou
 
     def mixed_zones(cells, **how):
         if cells.name == "entered_at":
-            raise ValueError("Mixed timezones detected")
+            raise error
         return real(cells, **how)
 
     monkeypatch.setattr(ingest.pd, "to_datetime", mixed_zones)
@@ -408,3 +490,28 @@ def test_zones_pandas_reads_that_the_checks_do_not_see_are_one_problem_not_a_cou
         prepare(raw)
     assert ("entered_at mixes times with and without a time zone, or in several zones; the first is data "
             "row 1 (") in str(excinfo.value)
+
+
+
+def test_a_column_built_in_memory_with_one_zone_is_one_problem(small_ledger):
+    """Every row skipped for its zone left nothing to parse, and the check then also said the
+    column mixed zones, quoting row 1 against nothing."""
+    from ledgerlens.schema import REQUIRED_COLUMNS
+
+    raw = small_ledger[0][list(REQUIRED_COLUMNS)].copy()
+    raw["entered_at"] = raw["entered_at"].dt.tz_localize("UTC")
+    with pytest.raises(SchemaError) as excinfo:
+        prepare(raw)
+    message = str(excinfo.value)
+    assert f"entered_at carries a time zone offset on {len(raw)} rows, the first is data row 1" in message
+    assert "mixes" not in message
+
+
+def test_a_label_file_keeps_an_id_pandas_would_read_as_missing(tmp_path):
+    """load_csv keeps "NA" as an entry id; load_labels made it missing, so a ledger the load
+    accepts could not be paired with its own label file."""
+    from ledgerlens.ingest import load_labels
+
+    path = tmp_path / "labels.csv"
+    path.write_text("entry_id,is_anomaly,anomaly_type\nNA,false,\nJE-1,true,round_amount\n", encoding="utf-8")
+    assert load_labels(path)["entry_id"].tolist() == ["NA", "JE-1"]
