@@ -25,10 +25,13 @@ and the MCP SDK, so the two together cover every code path CI will see.
 
 ## Current state
 
-- **v1.0.0** is PR #9 (`week4/automation-and-readme`), tagged after its merge once the weekly
-  run has opened its first Issue. **v0.4.0** was PR #7 (2026-09-29; v0.3.1 was PR #5 on
-  2026-09-25; v0.3.0 was PR #2 on 2026-09-23). Weeks 1–4 complete; weeks 1–3 were:
-  narratives, review loop, dashboard integration, MCP server, narrative eval, `@claude` workflow.
+- **v1.0.0** was PR #9 (`week4/automation-and-readme`, squash-merged 2026-10-07 as `039a3ad`,
+  tagged once the weekly run had opened its first Issue, #10; release notes reviewed against
+  the code). **v0.4.0** was PR #7 (2026-09-29; v0.3.1 was PR #5 on 2026-09-25; v0.3.0 was PR #2
+  on 2026-09-23). Weeks 1–4 complete; weeks 1–3 were: narratives, review loop, dashboard
+  integration, MCP server, narrative eval, `@claude` workflow. Week 5 is three PRs: ledger
+  validation (`week5/ledger-validation`), settable controls for JET-12 and JET-06, and a
+  held-out ledger of archetypes no rule describes (v1.1.0).
 - **Review follow-up on `main`** (PR #4, 2026-09-24) — the first `@claude` review's findings:
   narratives are versioned and each decision records the note it saw (`narrative_id`);
   append-only is enforced by SQLite triggers; the MCP path opens the review database read-only;
@@ -72,7 +75,7 @@ and the MCP SDK, so the two together cover every code path CI will see.
   verification pass over those fixes found four more, also fixed: the start-from-scratch
   choice was keyed by ledger but not by file, a `null` override and a Unicode-digit line key
   got past the case loader, and the draft half of the per-entry keying was untested.
-- **QuickBooks Online connector (`week4/qbo-connector`, no tag)** — `connectors/qbo.py`,
+- **QuickBooks Online connector (PR #8, `week4/qbo-connector`, released in v1.0.0)** — `connectors/qbo.py`,
   standard library only: OAuth 2.0 through the token store (`ledgerlens qbo-auth`, a
   localhost callback that accepts only the expected state), a client that refreshes once on
   a 401, waits out a 429 (60 s unless `Retry-After` says otherwise) and pages queries, and a
@@ -194,12 +197,31 @@ and the MCP SDK, so the two together cover every code path CI will see.
   the sort (JET-07 could flag the original of a same-day re-post instead of the re-post);
   on one day the entry keyed first now stands, then the lower id. `docs/demo.gif` predates
   the fix: the model scores in its queue are the old ones.
-- **Next** — week 5 breaks the circularity in the detection numbers (archetypes no rule
-  describes, both tiers re-measured), and an approver list and approval limit that can be set
-  for JET-12 and JET-06. Also: a blank account code on a posting line makes `ledgerlens
-  test` raise a TypeError in `jets._entry_pairs`; it should be one `error:` line, like
-  any other ledger that cannot be read.
-- 641 tests on 3.9 / 651 on 3.12 (the ten MCP tests need 3.10+), ruff clean.
+- **Ledger validation (week 5, `week5/ledger-validation`)** — `ingest.prepare` refuses a
+  cell no test can read before converting anything: blank or whitespace-only in a column a
+  test keys on (`entry_id`, `line_no`, both dates, `fiscal_year`, `period`, `account_code`,
+  `account_type`, `source`, `created_by`), a date that does not parse or carries a time
+  zone offset, a whole-number column that is not whole, an amount that is not a finite
+  number. One `SchemaError` names every such column with its count and first data row, the
+  cell quoted through `ingest.quote` (the one quoting rule, re-exported as
+  `evaluate._example`). Before, a blank account code was a TypeError in
+  `jets._entry_pairs` on six commands, the dashboard and the MCP server; a blank entered
+  time a TypeError inside the load; a blank entry id dropped its line, so the entry looked
+  unbalanced; `abc` or `1,234.00` in an amount became 0.00 and `inf` was taken as one; a
+  line number of 1.5 became 1. A blank account name, description or amount (0.00) is still
+  allowed. The dashboard shows the reason as text (it quotes a cell), the MCP server turns
+  any `ValueError` into a tool error, and `test --only` refuses an id it does not know in
+  one line. The workpaper, the methodology and the README now say the rule score sums the
+  flags (JET-09 and JET-11 judge lines, so one entry of the default ledger scores 4.0 for a
+  single JET-11), and that `--contamination` does not move the 0-1 score (the min-max
+  rescale cancels sklearn's offset); the JET-11 tuning table is per entry. The narration
+  system prompt still says "distinct tests": the grader's hash does not cover it, so a
+  change would date the published eval silently (recorded for `docs/limitations.md`).
+- **Next** — breaking the circularity in the detection numbers (a held-out ledger of
+  archetypes no rule describes, generated once after the code is frozen), and an approver
+  list and approval limit that can be set for JET-12 and JET-06 (a controls file beside the
+  ledger).
+- 686 tests on 3.9 (1 skipped) / 697 on 3.12 (the eleven MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth

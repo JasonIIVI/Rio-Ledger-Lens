@@ -304,9 +304,10 @@ def jet_large_value_outlier(df: pd.DataFrame, z_threshold: float = 3.5) -> pd.Da
     distribution and buries the reviewer in false positives.
 
     The default threshold of 3.5 was picked empirically against the labelled
-    ledger rather than chosen for roundness - see docs/tuning.md. At 3.0 the
-    test returns 19 flags of which 7 are real; at 3.5, 8 flags of which 6 are
-    real; at 5.0 it returns nothing at all.
+    ledger rather than chosen for roundness - see docs/tuning.md. It judges lines,
+    so one entry can raise it twice: at 3.0 it raises 19 flags on 14 entries, 7 of
+    them injected anomalies; at 3.5, 8 flags on 7 entries, 6 of them anomalies; at
+    5.0 nothing at all.
     """
     rows = []
     for _account, chunk in df.groupby("account_code", observed=True):
@@ -398,7 +399,9 @@ def run_all(df: pd.DataFrame, only: list[str] | None = None) -> pd.DataFrame:
 def score_entries(df: pd.DataFrame, flags: pd.DataFrame) -> pd.DataFrame:
     """Roll flags up into one risk-scored row per entry.
 
-    The score is a severity-weighted count of distinct tests that fired. It is
+    The score is a severity-weighted sum over the flags raised. A test that flags
+    two lines of one entry (JET-09 and JET-11 judge lines) counts twice, while
+    ``n_flags`` counts the distinct tests. It is
     deliberately simple and readable: a reviewer can reconstruct it by hand,
     which matters more at this tier than squeezing out accuracy. The ML layer
     in week 2 contributes a second, separate score rather than muddying this

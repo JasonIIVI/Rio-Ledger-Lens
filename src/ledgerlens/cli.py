@@ -909,7 +909,9 @@ def build_parser() -> argparse.ArgumentParser:
     sc = sub.add_parser("score", help="run both tiers and compare them")
     sc.add_argument("ledger", help="path to a GL csv")
     sc.add_argument("--labels", help="ground-truth csv, enables tier comparison")
-    sc.add_argument("--contamination", type=float, default=0.02)
+    sc.add_argument("--contamination", type=float, default=0.02,
+                    help="sklearn's expected outlier share; recorded, but the 0-1 score does "
+                         "not depend on it (the share flagged is --model-top-pct)")
     sc.add_argument("--model-top-pct", type=float, default=0.02,
                     help="proportion of the population the model may flag")
     sc.add_argument("--out", help="write combined scores to this csv")

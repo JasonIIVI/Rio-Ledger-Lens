@@ -190,3 +190,14 @@ def test_a_dormant_account_is_woken_by_the_entry_keyed_first():
     flags = jets.jet_dormant_account(_entries(backdated))
     assert set(flags["entry_id"]) == {"JE-5"}
     assert flags["reason"].str.contains("no activity for 244 days").all()
+
+
+def test_a_test_that_flags_two_lines_of_one_entry_counts_twice_in_the_score(ledger):
+    """The docstring, the workpaper and the methodology said the score counts distinct tests.
+    It sums the flags: JET-11 judges lines, and on the default ledger one entry raises it on
+    both lines and scores 4.0 for that one test, while n_flags counts it once."""
+    flags = jets.run_all(ledger)
+    per_test = flags.groupby(["entry_id", "test_id"]).size()
+    assert per_test[per_test > 1].index.tolist() == [("JE-2024-001465", "JET-11")]
+    scored = jets.score_entries(ledger, flags).set_index("entry_id").loc["JE-2024-001465"]
+    assert (scored["risk_score"], scored["n_flags"], scored["tests_fired"]) == (4.0, 1, "JET-11")

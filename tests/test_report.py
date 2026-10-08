@@ -60,6 +60,9 @@ def test_methodology_records_the_model_fit(ledger, labels, tmp_path):
     )
     assert "Isolation Forest" in text
     assert "not an audit procedure" in text
+    # It said "count of distinct tests"; JET-09 and JET-11 judge lines, so a test can count twice.
+    assert "sum over the flags raised" in text and "counts twice" in text
+    assert "distinct tests" not in text
 
 
 def _note(summary, confidence="medium"):

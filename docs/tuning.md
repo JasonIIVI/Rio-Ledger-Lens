@@ -14,21 +14,26 @@ That is a useless test: transaction values are lognormal, so a robust z-score on
 dollars flags the entire natural right tail of the distribution. The fix was to score
 `log10(amount)` instead, which is the scale the data actually lives on.
 
-Sweeping the threshold on the two-year ledger (5,085 entries, 77 injected anomalies):
+Sweeping the threshold on the two-year ledger (5,085 entries, 77 injected anomalies).
+The test judges lines, so one entry can raise it twice: the table counts both, and
+precision is per entry, as `evaluate.precision_by_test` reports it.
 
-| z threshold | flags raised | genuinely anomalous | precision |
-|---:|---:|---:|---:|
-| 2.5 | 92 | 23 | 0.25 |
-| 3.0 | 19 | 7 | 0.37 |
-| **3.5** | **8** | **6** | **0.75** |
-| 4.0 | 4 | 4 | 1.00 |
-| 4.5 | 3 | 3 | 1.00 |
-| 5.0 | 0 | 0 | — |
+| z threshold | flags raised | entries flagged | of them injected anomalies | precision (per entry) |
+|---:|---:|---:|---:|---:|
+| 2.5 | 92 | 58 | 23 | 0.40 |
+| 3.0 | 19 | 14 | 7 | 0.50 |
+| **3.5** | **8** | **7** | **6** | **0.86** |
+| 4.0 | 4 | 4 | 4 | 1.00 |
+| 4.5 | 3 | 3 | 3 | 1.00 |
+| 5.0 | 0 | 0 | 0 | — |
+
+(An earlier version of this table divided the anomalous entries by the flags, which
+mixes the two counts: 0.25, 0.37 and 0.75 in the first three rows.)
 
 **3.5 was chosen.** 4.0 and above look perfect on precision but are catching only the
 most extreme handful; a test that fires four times across two years is not earning its
-place in the workpaper. 3.5 keeps three-quarters precision while surfacing meaningfully
-more. A test that never fires is as useless as one that always does.
+place in the workpaper. 3.5 keeps six of its seven entries real while surfacing
+meaningfully more. A test that never fires is as useless as one that always does.
 
 ## JET-12 — manual entry outside approver list
 
