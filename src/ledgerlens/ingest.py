@@ -37,13 +37,18 @@ _INT_COLUMNS = ("line_no", "fiscal_year", "period")
 #: blank amount is 0.
 _KEYED_TEXT = ("entry_id", "account_code", "account_type", "source", "created_by")
 #: A time of day followed by a zone: "Z", a name ("UTC", "EST", "CEST"), an offset ("+05:30",
-#: "-0700", an hour alone as PostgreSQL writes "-08"), or a name and an offset ("UTC+1").
+#: "-0700", an hour alone as PostgreSQL writes "-08"), or a name and an offset ("UTC+1"); after
+#: an AM or PM too, and before a year, as Java writes one ("Mon Jan 01 09:23:30 CET 2024").
 #: Every time here is naive, the company's own clock; one with a zone cannot be put on that
 #: clock without knowing the company's zone. With a zone on every row it was a TypeError in
 #: the load, beside naive ones a pandas format error; and pandas 2 reads the machine's own
 #: zone name (EST on a New York machine) and drops any other, so every name is caught here,
-#: before pandas sees it. AM and PM are two letters and are not names.
-_OFFSET = re.compile(r"\d:\d\d(?::\d\d(?:\.\d+)?)?\s*(?:Z|[A-Z]{3,5}|(?:UTC|GMT)?\s*[+-]\d\d?(?::?\d\d)?)$",
+#: before pandas sees it. AM and PM are two letters and are not names, and a weekday or HRS
+#: after the time is not one; any other word of three to five letters there is taken for a
+#: zone, so a word this list does not know is refused in a line, never dropped unsaid.
+_OFFSET = re.compile(r"\d:\d\d(?::\d\d(?:\.\d+)?)?\s*(?:[AP]\.?M\.?\s*)?"
+                     r"(?!(?:MON|TUES?|WEDS?|THU(?:RS?)?|FRI|SAT|SUN|HRS)\b)"
+                     r"(?:Z|[A-Z]{3,5}|(?:UTC|GMT)?\s*[+-]\d\d?(?::?\d\d)?)(?:\s+\d{4})?$",
                      re.IGNORECASE)
 #: Words pandas reads as the clock: a ledger dated "today" would be dated the day it was read.
 _CLOCK_WORDS = frozenset({"now", "today"})
@@ -186,7 +191,11 @@ def _rows(column: str, what: str, mask: np.ndarray, raw: pd.Series | None = None
 
 def _is_number(value: object) -> bool:
     """A number in a date column, whatever holds it: an int64 column, a float one (a blank
-    elsewhere), or Python ints in an object column."""
+    elsewhere), Python ints in an object column, or ASCII digits as text (one cell of another
+    kind makes a CSV column text, and pandas then guessed six digits as DDMMYY)."""
+    if isinstance(value, str):
+        text = value.strip()
+        return text.isascii() and text.isdigit()
     return (isinstance(value, (int, float, np.integer, np.floating))
             and not isinstance(value, (bool, np.bool_)) and not pd.isna(value))
 
@@ -195,7 +204,7 @@ def _spelled(numbers: pd.Series) -> pd.Series:
     """Numbers in a date column as the dates their digits spell (see ``_DIGIT_FORMATS``),
     NaT where they spell none."""
     def digits(value) -> str:
-        number = float(value)
+        number = float(value)  # digit text too, so it reads as the same digits held as a number
         return str(int(number)) if np.isfinite(number) and number.is_integer() and number >= 0 else ""
     text = pd.Series([digits(v) for v in numbers], index=numbers.index, dtype=object)
     out = pd.Series(pd.NaT, index=numbers.index, dtype="datetime64[ns]")
@@ -229,17 +238,33 @@ def _dates(cells: pd.Series, **how) -> pd.Series | None:
     return values if pd.api.types.is_datetime64_any_dtype(values) else None
 
 
+#: A date ending in a two-digit year (02/01/24), and what comes before that year.
+_SHORT_YEAR = re.compile(r"^(\s*\d{1,2}([/.-])\d{1,2}\2)(\d\d)(?!\d)")
+
+
+def _format_of(cell: str, dayfirst: bool = False) -> str | None:
+    """The format pandas reads ``cell`` in, as ``guess_datetime_format`` names it. That guesses
+    none for a two-digit year (02/01/24), and pandas then let dateutil choose day or month
+    first cell by cell; so the year is widened to guess, and the format names it as two digits.
+    The cell is taken as written: pandas' own guess keeps a leading space in the format."""
+    fmt = guess_datetime_format(cell, dayfirst=dayfirst)
+    if fmt is None and _SHORT_YEAR.match(cell):
+        wide = guess_datetime_format(_SHORT_YEAR.sub(r"\g<1>20\3", cell, count=1), dayfirst=dayfirst)
+        fmt = wide.replace("%Y", "%y", 1) if wide and "%Y" in wide else None
+    return fmt
+
+
 def _another_format(column: str, raw: pd.Series, skip: np.ndarray, readable: np.ndarray) -> list[str]:
     """Cells that are dates, but not in the format pandas took from the column's first cell:
     named against that cell, with the format it was read in. When every cell reads day first,
     the first cell (say 02/01/2024) was most likely the one misread, so that is said too."""
     first = int((~skip).argmax())
     cell = str(raw.iloc[first])
-    fmt = guess_datetime_format(cell)
+    fmt = _format_of(cell)
     read_as = f", read as {fmt}" if fmt else ""
     found = [_rows(column, f"is in a different date format from data row {first + 1} ({quote(cell)}{read_as})",
                    readable, raw)]
-    day_first = guess_datetime_format(cell, dayfirst=True)
+    day_first = _format_of(cell, dayfirst=True)
     if day_first and day_first != fmt:
         whole = _dates(raw[~skip], format=day_first)
         if whole is not None and whole.notna().all():
@@ -265,7 +290,13 @@ def _read_cells(df: pd.DataFrame) -> dict[str, pd.Series]:
             offset = np.array([_has_zone(v) for v in raw], dtype=bool)
             clock = np.array([isinstance(v, str) and v.strip().lower() in _CLOCK_WORDS for v in raw], dtype=bool)
             skip = blank | number | offset | clock
-            values = _dates(raw.mask(skip))
+            # pandas takes a column's format from its first cell, but guesses none for a
+            # two-digit year: give it that cell's format, or dateutil reads 02/01/24 month
+            # first and 13/01/24 day first in the one column (None is pandas' own default)
+            lead = raw[~skip].iloc[0] if (~skip).any() else None
+            short = (_format_of(lead) if isinstance(lead, str) and guess_datetime_format(lead) is None
+                     else None)
+            values = _dates(raw.mask(skip), format=short)
             if blank.any():
                 problems.append(_rows(column, "is blank", blank))
             if offset.any():
