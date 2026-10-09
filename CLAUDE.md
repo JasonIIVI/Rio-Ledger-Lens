@@ -215,25 +215,39 @@ and the MCP SDK, so the two together cover every code path CI will see.
   description "N/A") now has another `csv:` identity than under v1.0.0, and its earlier
   review rows show as another ledger's; "NA" in an amount must be written blank or 0. A
   date written as a number, or as digits in a text column (one cell of another kind makes a
-  CSV column text), is read by its digits (8, 12 or 14: `%Y%m%d`, plus `%H%M`, plus `%S`)
-  and any other count refused, never guessed (read as a number it was nanoseconds since
-  1970; left to pandas as text, six-digit YYMMDD was read as DDMMYY); `today`
+  CSV column text; text is counted as written, so a leading zero is a digit), is read by its
+  digits (8, 12 or 14: `%Y%m%d`, plus `%H%M`, plus `%S`) and any other count refused, never
+  guessed (read as a number it was nanoseconds since 1970; left to pandas as text, six-digit
+  YYMMDD was read as DDMMYY); `today`
   and `now` are refused, not read as the clock; a cell in another date format than the
   column's first is named against that row with the format pandas read it in, and a column
-  that reads day first throughout is told so, a two-digit year included (pandas guesses no
-  format for 02/01/24 and let dateutil read each cell either way, so a dd/mm/yy ledger
-  loaded with days and months swapped; the first cell's format is now given to pandas). A
-  day-first ledger whose days are all 12 or under cannot be told from a month-first one:
-  write YYYY-MM-DD. A zone is found before
+  that reads day first throughout is told so. Where pandas takes no format from the first
+  cell (a two-digit year such as 02/01/24, an afternoon time, 12 AM) it reads each cell on
+  its own, and dateutil reads a day of 12 or under as the month wherever it can, so such a
+  column is refused when it was read day first in some rows and month first in others (a
+  dd/mm/yy ledger, or a day-first one with an afternoon in row 1, had loaded with those days
+  and months swapped). am, pm, a.m. or p.m. in lower case pandas writes into its format as
+  text beside a 24-hour clock ("2:05 pm" read as 02:05 after "12:30 pm" in row 1, and a pm
+  row "another format" after a morning), so that column is read cell by cell too. A day-first
+  ledger whose days are all 12 or under cannot be told from a month-first one, nor a
+  two-digit year written first (24-01-02) from a day: write YYYY-MM-DD. A zone is found before
   pandas sees it, on text (`Z`, a name such as `UTC` or `EST`, `+05:30`, `-0700`, an hour
   alone, `UTC+1`; after an AM or PM too, and before a year as Java writes one) and on
   datetime objects; a weekday or `HRS` after the time is not a zone, and any other word of
-  three to five letters there is refused as one rather than dropped; pandas 2 read the
-  machine's own zone name and dropped others, and once raised an AttributeError on one (now
-  caught too); any zone pandas reads that neither sees is one "mixes times" problem. A
+  three to five letters there is refused as one rather than dropped. A name written another
+  way (`ET`, `EST.`, `Mon EST`, `, EST`) still reaches pandas: pandas 3 refuses the cell as
+  unreadable, and pandas 2, which drops a name it does not know with a warning, is held to
+  that warning (`_dates`), so the row is refused as carrying a zone. pandas 2 read the
+  machine's own zone name, and once raised an AttributeError on one (now caught too); any
+  zone pandas reads that none of these sees is one "mixes times" problem. pandas' warnings
+  from the parse are not passed on. A
   review of this work (two reviewers) found eleven problems, a verification of those fixes
   ten more (one a regression CI in UTC could not see: an AttributeError on the machine's own
-  zone name), and a re-check of that under five machine zones five more; all fixed. A QuickBooks pull goes
+  zone name), a re-check of that under five machine zones five more, and a verification of
+  that fix (a fix-verifier, and an adversary over a hundred date spellings) seven more, four
+  of them caused by that fix; all fixed but two: the year written first is documented above,
+  and a column of digits held as text reads about a quarter slower than when pandas guessed
+  it (half a second on 500,000 rows), the price of reading it. A QuickBooks pull goes
   through the same check (a user or an account number of spaces is counted as unknown,
   not a refused pull). The dashboard shows
   the reason as text (it quotes a cell) and catches an unreadable path too; the MCP server
@@ -250,7 +264,7 @@ and the MCP SDK, so the two together cover every code path CI will see.
   archetypes no rule describes, generated once after the code is frozen), and an approver
   list and approval limit that can be set for JET-12 and JET-06 (a controls file beside the
   ledger).
-- 742 tests on 3.9 (1 skipped) / 754 on 3.12 (the twelve MCP tests need 3.10+), ruff clean.
+- 765 tests on 3.9 (1 skipped) / 777 on 3.12 (the twelve MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth

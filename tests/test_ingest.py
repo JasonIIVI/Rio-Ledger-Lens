@@ -363,6 +363,21 @@ def test_digits_held_as_text_are_read_by_their_count_too(tmp_path, small_ledger)
     assert "posting_date is a number, not a date (write YYYY-MM-DD) on " in str(excinfo.value), str(excinfo.value)
 
 
+def test_digit_text_is_counted_as_written(tmp_path):
+    """A leading zero is a digit in a text cell: 020240101 is nine digits and refused, where
+    504c108 read the text as a number and so as the eight digits 20240101."""
+    from ledgerlens.ingest import load_csv
+
+    plain = load_csv(_small_csv(tmp_path))
+    path = _rewrite_column(tmp_path / "ledger.csv", "posting_date", lambda v: v.replace("-", ""))
+    _damage(path, {(6, "posting_date"): plain["posting_date"].iloc[5].strftime("%Y-%m-%d"),
+                   (4, "posting_date"): "020240101"})
+    with pytest.raises(SchemaError) as excinfo:
+        load_csv(path)
+    assert ("posting_date is a number, not a date (write YYYY-MM-DD) on 1 row, the first is data row 4 "
+            "('020240101')") in str(excinfo.value), str(excinfo.value)
+
+
 def test_eight_digits_as_text_beside_an_iso_cell_read_as_the_days_they_spell(tmp_path):
     """Both cells say which day they are, so neither is guessed; the column was refused as
     written in two formats."""
@@ -461,17 +476,50 @@ def test_a_weekday_after_the_time_is_not_a_zone(tmp_path):
 
 def test_hrs_after_the_time_is_not_taken_for_a_zone(tmp_path):
     """Military time's HRS, also taken for a zone since e19d210. pandas 2 reads it and pandas 3
-    does not, as before; neither calls it a zone."""
+    does not, as before; neither calls it a zone, and pandas 2's warning that it dropped a
+    zone called HRS (from 504c108's own guess at the format) is not passed on."""
+    import warnings
+
     from ledgerlens.ingest import load_csv
 
     plain = load_csv(_small_csv(tmp_path))
     path = _rewrite_column(tmp_path / "ledger.csv", "entered_at", lambda v: v + " HRS")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        try:
+            lines = load_csv(path)
+        except SchemaError as exc:
+            assert "entered_at is not a readable date on " in str(exc) and "zone" not in str(exc), str(exc)
+        else:
+            assert lines["entered_at"].tolist() == plain["entered_at"].tolist()
+    assert not [w for w in caught if "timezone" in str(w.message)], [str(w.message) for w in caught]
+
+
+@pytest.mark.parametrize("machine", ["UTC", "Europe/Paris"])
+@pytest.mark.parametrize("suffix", [" ET", " PT", ", EST", " EST.", " Mon EST"])
+def test_a_zone_the_pattern_does_not_know_is_refused_on_either_pandas(tmp_path, monkeypatch, suffix, machine):
+    """A zone the pattern does not see (two letters, after a comma or a weekday, before a dot)
+    reached pandas: pandas 2 dropped a name it did not know and loaded the time as if it had
+    no zone, where pandas 3 refuses the cell, so one CSV loaded on 3.9 and not on 3.12. (On a
+    machine in the zone named, pandas 2 read it and the column "mixes" zones.)"""
+    import time
+
+    from ledgerlens.ingest import load_csv
+
+    path = _rewrite_column(_small_csv(tmp_path), "entered_at", lambda v: v + suffix)
+    monkeypatch.setenv("TZ", machine)
+    time.tzset()
     try:
-        lines = load_csv(path)
-    except SchemaError as exc:
-        assert "entered_at is not a readable date on " in str(exc) and "zone" not in str(exc), str(exc)
+        with pytest.raises(SchemaError) as excinfo:
+            load_csv(path)
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+    message = str(excinfo.value)
+    if int(pd.__version__.split(".")[0]) < 3:  # pandas 2 says why: it found a zone
+        assert "entered_at carries a time zone offset on " in message or "entered_at mixes" in message, message
     else:
-        assert lines["entered_at"].tolist() == plain["entered_at"].tolist()
+        assert "entered_at is not a readable date on " in message, message
 
 
 def test_a_day_first_ledger_is_told_which_format_was_read_and_why_it_failed(tmp_path):
@@ -487,6 +535,9 @@ def test_a_day_first_ledger_is_told_which_format_was_read_and_why_it_failed(tmp_
     assert "every cell reads as %d/%m/%Y (day first): write dates as YYYY-MM-DD" in message, message
 
 
+DAY_AND_MONTH_BOTH_WAYS = "can only be read day first, beside rows read month first (write dates as YYYY-MM-DD) on "
+
+
 def test_a_day_first_ledger_with_two_digit_years_is_told_so_too(tmp_path):
     """pandas guesses no format for 02/01/24 and then let dateutil choose cell by cell: month
     first where it could be, day first where it had to be. A dd/mm/yy ledger loaded with every
@@ -497,8 +548,66 @@ def test_a_day_first_ledger_with_two_digit_years_is_told_so_too(tmp_path):
     with pytest.raises(SchemaError) as excinfo:
         load_csv(path)
     message = str(excinfo.value)
-    assert "posting_date is in a different date format from data row 1 ('01/01/24', read as %m/%d/%y)" in message, message
-    assert "every cell reads as %d/%m/%y (day first): write dates as YYYY-MM-DD" in message, message
+    assert "posting_date " + DAY_AND_MONTH_BOTH_WAYS in message, message
+
+
+@pytest.mark.parametrize("date, meridiem, afternoon_first", [
+    ("%d/%m/%Y", str, True), ("%d/%m/%y", str, True), ("%d/%m/%Y", str.lower, False),
+], ids=["four-digit-year", "two-digit-year", "lower-case-am-pm"])
+def test_a_day_first_ledger_read_cell_by_cell_is_told_so(tmp_path, date, meridiem, afternoon_first):
+    """pandas guesses no format for an afternoon time (or 12 AM), so it read the column cell by
+    cell, and dateutil read a day of 12 or under as the month wherever it could: a day-first
+    ledger with an afternoon in row 1 loaded with those days and months swapped, unsaid. A
+    column in lower-case am/pm, now read cell by cell, is checked the same way."""
+    from ledgerlens.ingest import load_csv
+
+    plain = load_csv(_small_csv(tmp_path))
+    path = _rewrite_column(tmp_path / "ledger.csv", "entered_at",
+                           lambda v: pd.Timestamp(v).strftime(f"{date} %I:%M ") + meridiem(pd.Timestamp(v).strftime("%p")))
+    if afternoon_first:
+        afternoon = plain["entered_at"].iloc[0].replace(hour=14, minute=5)
+        _damage(path, {(1, "entered_at"): afternoon.strftime(f"{date} %I:%M %p")})
+    with pytest.raises(SchemaError) as excinfo:
+        load_csv(path)
+    assert "entered_at " + DAY_AND_MONTH_BOTH_WAYS in str(excinfo.value), str(excinfo.value)
+
+
+def test_a_column_read_day_first_throughout_is_not_refused(tmp_path):
+    """Only both orders in one column are refused: dates whose days are all over 12 can be read
+    only one way, and do."""
+    import datetime as dt
+
+    from ledgerlens.generate import generate_ledger
+    from ledgerlens.ingest import load_csv
+
+    lines, _ = generate_ledger(start=dt.date(2024, 1, 13), end=dt.date(2024, 1, 31), entries_per_day=2)
+    lines = lines[lines["posting_date"].dt.day > 12]  # a whole entry goes: it has one posting date
+    path = tmp_path / "ledger.csv"
+    lines.to_csv(path, index=False)
+    plain = load_csv(path)
+    _rewrite_column(path, "posting_date", lambda v: pd.Timestamp(v).strftime("%d/%m/%y"))
+    assert load_csv(path)["posting_date"].tolist() == plain["posting_date"].tolist()
+
+
+@pytest.mark.parametrize("first", [None, "12:30 pm"], ids=["morning-first", "noon-first"])
+@pytest.mark.parametrize("meridiem", [str.lower, lambda m: m[0].lower() + ".m."], ids=["am-pm", "a.m.-p.m."])
+@pytest.mark.parametrize("date", ["%m/%d/%Y", "%m/%d/%y"], ids=["four-digit-year", "two-digit-year"])
+def test_am_and_pm_in_lower_case_read_as_the_clock_they_say(tmp_path, date, meridiem, first):
+    """pandas writes am, pm, a.m. or p.m. in lower case into the format it guesses as literal
+    text beside a 24-hour clock: with a morning in row 1 every afternoon row was "in a different
+    date format", and with "12:30 pm" in row 1, "2:05 pm" read as 02:05 and nothing was said.
+    504c108 made the same guess for two-digit years, which pandas had read cell by cell."""
+    from ledgerlens.ingest import load_csv
+
+    plain = load_csv(_small_csv(tmp_path))
+    expected = plain["entered_at"].dt.floor("min").tolist()
+    path = _rewrite_column(tmp_path / "ledger.csv", "entered_at",
+                           lambda v: pd.Timestamp(v).strftime(f"{date} %I:%M ") + meridiem(pd.Timestamp(v).strftime("%p")))
+    if first:
+        day = plain["entered_at"].iloc[0]
+        _damage(path, {(1, "entered_at"): day.strftime(f"{date} ") + first.replace("pm", meridiem("PM"))})
+        expected[0] = day.normalize() + pd.Timedelta(hours=12, minutes=30)
+    assert load_csv(path)["entered_at"].tolist() == expected
 
 
 @pytest.mark.parametrize("fmt", ["%m/%d/%y", " %m/%d/%y"], ids=["mm/dd/yy", "leading-space"])
