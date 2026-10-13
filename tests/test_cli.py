@@ -1174,6 +1174,12 @@ def test_what_the_readme_says_the_tests_make_of_the_recorded_quarter(qbo_env, ca
     assert inspect.signature(jets.jet_rare_account_pair).parameters["max_occurrences"].default == 3
     assert inspect.signature(jets.jet_dormant_account).parameters["dormant_days"].default == 120
 
+    # what a controls file naming the sandbox's one user makes of JET-12
+    from ledgerlens.controls import Controls, format_limit
+
+    (only_user,) = set(lines["created_by"])
+    quieted = len(jets.run_all(lines, only=["JET-12"], controls=Controls((only_user,), 10_000)))
+
     # and the sentences themselves, as the README prints them
     from ledgerlens.connectors.qbo import SMALL_LEDGER
 
@@ -1191,7 +1197,9 @@ def test_what_the_readme_says_the_tests_make_of_the_recorded_quarter(qbo_env, ca
         f"{payload['entries']}, not a detection",
         f"more than two lines ({multi} of the {payload['entries']})",
         "an account pairing seen three times or fewer",
-        "the generator's $10,000 approval limit",
+        f"the synthetic company's {format_limit(DEFAULT_CONTROLS.approval_limit)} approval limit",
+        f"with a controls file naming `{only_user}`, the sandbox's one user, as an approver, "
+        f"{'none' if quieted == 0 else words[quieted]} does",
     ):
         assert said in readme, said
 

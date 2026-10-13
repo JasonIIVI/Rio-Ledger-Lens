@@ -385,22 +385,65 @@ sanitized recording of a real sandbox pull (`pull-qbo --record`, Intuit's sample
 July–September 2026). Its README says what the recording settled about Intuit's responses.
 
 **What the tests make of a pull.** Read a pull's flags as the tool running, not as findings
-about the company: the thresholds and lists are still the synthetic generator's, and there is
-no ground truth, so there is no precision or recall for a pull at all (`summary` says so in
-place of the numbers). In the recorded quarter 81 of the 116 entries are flagged, 79 of them
+about the company: the thresholds were tuned on the synthetic generator, the approver list and
+approval limit are the synthetic company's until a controls file states the company's own, and
+there is no ground truth, so there is no precision or recall for a pull at all (`summary` says
+so in place of the numbers). In the recorded quarter 81 of the 116 entries are flagged, 79 of them
 by JET-08: "rare" means an account pairing seen three times or fewer, and in a population this
-small most pairings are. All three journal entries fire JET-12, because its approver list is
-the synthetic company's two users rather than the QuickBooks company's, and JET-06 compares
-against the generator's $10,000 approval limit. JET-09 looks for an account quiet for more
+small most pairings are. All three journal entries fire JET-12, because with no controls file
+beside the pull its approver list is the synthetic company's two users rather than the
+QuickBooks company's, and JET-06 compares against the synthetic company's $10,000 approval
+limit; with a controls file naming `qbo-user-1`, the sandbox's one user, as an approver, none
+does (see the next section). JET-09 looks for an account quiet for more
 than 120 days, which a single quarter cannot contain. The model tier's two flagged entries are
 its 2% budget of 116, not a detection. Unlike the generator's ledger, a pull has entries of
 more than two lines (25 of the 116), which the tests read as they read any entry.
+
+## Set a company's controls
+
+Two tests judge entries against facts about the company rather than about the entries:
+JET-12 against the users allowed to post manual journal entries, JET-06 against the approval
+limit. With nothing set, both use the synthetic company's (`controller` and `mchen`; $10,000),
+which is right for the generator's ledger and wrong for anyone else's. A company states its
+own in a file beside its ledger, named after it: for `data/qbo-ledger.csv`,
+`data/qbo-ledger.controls.json`.
+
+```json
+{"version": 1, "manual_entry_approvers": ["qbo-user-1"], "approval_limit": 10000}
+```
+
+Every command that runs the tests reads it (`test`, `score`, `report`, `summary`, `narrate`,
+`eval-narratives`), and so do the dashboard and the MCP server. There is no flag and no
+environment variable, so no two of them can disagree. A command that used a file says so in
+one line before its output (`summary` names it on the page instead), and the summary, the
+workpaper and the dashboard's sidebar name the approvers, the limit and the file, or say the
+synthetic company's were used because there was none.
+
+- **Refused, never replaced.** A file that is there but cannot be used stops the command with
+  one `error:` line naming every problem it finds: for instance a key given twice, an unknown
+  or missing key, a version other than 1, an approver that is empty, listed twice, longer than
+  64 characters, or holds a comma, a space at either end, two spaces together or a character
+  no reader sees, and a limit that is not a positive number of whole cents. Falling back to the
+  synthetic company's list would flag every manual entry the company's own approvers keyed.
+- **Names match exactly.** An approver matches the ledger's `created_by` as written, case
+  included. The list is kept sorted, so JET-12's reason names it in one order everywhere.
+- **Company facts, not thresholds.** The tests' other settings were tuned against labelled
+  data ([docs/tuning.md](docs/tuning.md)); these are what the company's approval policy says,
+  and nothing tunes them. JET-06's window, 3% below the limit, stays the test's own.
+- **The model tier does not read them.** No model feature encodes an approver or the limit.
+- **The eval stays on the defaults.** `eval-narratives` refuses other controls on the default
+  synthetic ledger: its committed cases, runs and report were written under the defaults,
+  whose wording is in every prompt.
+
+A controls file can name real people, so git ignores any `*.controls.json` and CI's rule-1
+check fails if one is ever committed.
 
 ## One page, and a weekly run
 
 `ledgerlens summary` gathers what the other commands print piecemeal into one page: the rule
 tier's flags by test, the model tier's budget, how the two tiers agree, the riskiest entries,
-review progress when `--db` is given, and measured quality when `--labels` is.
+the controls JET-12 and JET-06 ran against, review progress when `--db` is given, and measured
+quality when `--labels` is.
 
 ```bash
 ledgerlens summary data/ledger.csv --labels data/labels.csv                       # text, to the terminal
@@ -521,9 +564,12 @@ and reopen Claude Desktop:
 - [x] **Week 4** — QuickBooks Online connector (sandbox: `qbo-auth`, `pull-qbo`, tested
       against a sanitized recording of a real sandbox pull), `ledgerlens summary`, and a
       weekly scheduled run that opens an Issue with it (v1.0.0)
+- [x] **Week 5, first two parts** — a ledger cell no test can read is refused when the
+      ledger is loaded, and a company's approver list and approval limit are read from a
+      controls file beside its ledger, so JET-12 and JET-06 test a QuickBooks company
+      against its own controls
 - [ ] **Next** — break the circularity: inject archetypes no rule describes and re-measure
-      both tiers against them; and an approver list and approval limit that can be set, so
-      JET-12 and JET-06 test a QuickBooks company against its own controls
+      both tiers against them
 
 ## Limitations
 
@@ -532,9 +578,10 @@ and reopen Claude Desktop:
 - The generator writes two-line journal entries only, which also keeps two model features
   (`n_lines`, `posting_lag_days`) constant on synthetic data. A QuickBooks pull does have
   multi-line entries, but far too few entries for the model tier to mean anything.
-- JET-12's approver list and JET-06's approval limit are the generator's constants and
-  cannot be set yet, so on any other ledger those two tests describe the synthetic
-  company's controls, not the company's own.
+- A company's controls are one approver list and one approval limit for every entry: no
+  approval tiers by amount or account, no limit per user, and no effective dates (a list that
+  changed during the year is applied to the whole year). With no controls file beside a
+  ledger they are the synthetic company's.
 - The unsupervised tier cannot see cross-entry patterns such as duplicates, because its
   features are computed per entry.
 - Thresholds are tuned against this generator. Against a real ledger they are a

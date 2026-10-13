@@ -153,6 +153,15 @@ def test_every_problem_in_a_file_is_named_at_once(tmp_path):
     ledger = _write(tmp_path, _file(("a,b", "a,b"), 0))
     message = str(pytest.raises(ControlsError, load_controls, ledger).value)
     assert message.count("holds a comma") == 2 and "above 0" in message
+    # a key problem does not hide the values' problems behind it
+    ledger = _write(tmp_path, _file(("a,b",), "10,000", version=2, limit_usd=5))
+    message = str(pytest.raises(ControlsError, load_controls, ledger).value)
+    for said in ("unknown key(s): 'limit_usd'", "version must be 1, got 2", "holds a comma",
+                 "must be a number of dollars"):
+        assert said in message, (said, message)
+    ledger = _write(tmp_path, '{"version": 1, "approval_limit": -1}')
+    message = str(pytest.raises(ControlsError, load_controls, ledger).value)
+    assert "missing key(s): manual_entry_approvers" in message and "above 0" in message
 
 
 @pytest.mark.parametrize("code", sorted({a for a, _ in summary._UNSEEN_RANGES}

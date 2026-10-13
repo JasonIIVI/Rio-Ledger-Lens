@@ -202,11 +202,17 @@ def parse_controls(text: str) -> Controls:
     version = payload.get("version")
     if "version" in payload and not (type(version) is int and version == VERSION):
         problems.append(f"version must be {VERSION}, got {_shown(version)}")
-    if problems:
+    approvers = payload.get("manual_entry_approvers")
+    if isinstance(approvers, list):
+        approvers = tuple(approvers)
+    if problems:  # the values are judged too, so one message names everything to fix
+        if "manual_entry_approvers" in payload:
+            problems += _approver_problems(approvers)
+        if "approval_limit" in payload:
+            _, problem = _limit(payload["approval_limit"])
+            problems += [problem] if problem else []
         raise ControlsError("; ".join(problems))
-    approvers = payload["manual_entry_approvers"]
-    return Controls(tuple(approvers) if isinstance(approvers, list) else approvers,
-                    payload["approval_limit"])
+    return Controls(approvers, payload["approval_limit"])
 
 
 def load_controls(ledger_path: str | Path) -> Controls:

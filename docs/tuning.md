@@ -49,6 +49,11 @@ individual entry. The generator posts 94% of manual entries from authorised user
 The right handling is to report it separately rather than to suppress it, which is what
 `evaluate.precision_by_test` is for.
 
+The approver list itself is not tuned and is not a threshold. It is a fact about the
+company, as is JET-06's approval limit: both are read from a `<stem>.controls.json` file
+beside the ledger, and default to the synthetic company's (`controller` and `mchen`;
+$10,000). JET-06's 3% window below the limit is the test's own.
+
 ## Benford: MAD versus chi-square
 
 Both are reported. Chi-square is what textbooks use; MAD (with Nigrini's conformity

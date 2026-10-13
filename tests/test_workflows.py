@@ -327,6 +327,19 @@ def test_ci_still_has_its_rule_1_job_and_claude_yml_its_mention_gate():
     assert "contains(github.event.issue.title, '@claude')" in claude
 
 
+def test_the_rule_1_patterns_catch_a_controls_file_wherever_it_sits():
+    """A company's controls file names its approvers, real people: git ignores it anywhere, and
+    both copies of rule 1's pattern (CI's job and CLAUDE.md's command) refuse it, in any case."""
+    root = Path(__file__).resolve().parents[1]
+    ci = re.search(r"(?m)^ +pattern='([^']+)'$", read("ci.yml")).group(1)
+    guide = re.search(r"LC_ALL=C grep -zaiE '([^']+)'", (root / "CLAUDE.md").read_text()).group(1)
+    for pattern in (ci, guide):
+        for path in ("books.controls.json", "tests/fixtures/x.controls.json", "Books.CONTROLS.JSON"):
+            assert re.search(pattern, path, re.IGNORECASE), (pattern, path)
+        assert not re.search(pattern, "src/ledgerlens/controls.py", re.IGNORECASE)
+    assert "*.controls.json" in (root / ".gitignore").read_text().splitlines()
+
+
 def gate_script(ci):
     """The Python the detection gate hands `python -`, as the runner would."""
     step = ci.split("      - name: Assert detection has not regressed\n", 1)[1]
