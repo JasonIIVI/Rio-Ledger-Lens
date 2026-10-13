@@ -20,6 +20,7 @@ import pandas as pd
 
 from . import jets
 from .benford import benford_test, segmented_benford
+from .controls import DEFAULT_CONTROLS, Controls, load_controls
 from .ingest import ledger_identity, load_csv
 from .model import combine, score_ledger
 from .narrate import entry_context
@@ -80,6 +81,9 @@ class LedgerContext:
     ``ledger`` is a CSV path or an already-prepared DataFrame (tests). The
     review database is optional and is only ever opened read-only: a server
     must neither leave a file behind nor be able to write into one.
+    ``controls`` are the company's approver list and approval limit: read from
+    the file beside a ledger given by path unless the caller names them, and the
+    synthetic company's for a frame.
     """
 
     def __init__(
@@ -88,6 +92,7 @@ class LedgerContext:
         review_db: str | Path | None = None,
         model_top_pct: float = 0.02,
         ledger_id: str | None = None,
+        controls: Controls | None = None,
     ) -> None:
         self._ledger = ledger
         self.review_db = Path(review_db) if review_db else None
@@ -95,6 +100,7 @@ class LedgerContext:
         #: The identity the review store is bound to; computed from the ledger
         #: at load unless the caller names it (a QuickBooks pull's ``qbo:<realm>``).
         self.ledger_id = ledger_id
+        self.controls = controls
         self.lines: pd.DataFrame | None = None
         self.flags: pd.DataFrame | None = None
         self.combined: pd.DataFrame | None = None
@@ -119,7 +125,9 @@ class LedgerContext:
         df = load_csv(self._ledger) if from_file else self._ledger
         if self.ledger_id is None:
             self.ledger_id = ledger_identity(df, self._ledger if from_file else None)
-        flags = jets.run_all(df)
+        if self.controls is None:  # a file that cannot be used is an error, never the defaults
+            self.controls = load_controls(self._ledger) if from_file else DEFAULT_CONTROLS
+        flags = jets.run_all(df, controls=self.controls)
         scored = jets.score_entries(df, flags)
         model_scores, report = score_ledger(df)
         self.lines, self.flags = df, flags

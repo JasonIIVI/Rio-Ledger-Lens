@@ -201,3 +201,66 @@ def test_a_test_that_flags_two_lines_of_one_entry_counts_twice_in_the_score(ledg
     assert per_test[per_test > 1].index.tolist() == [("JE-2024-001465", "JET-11")]
     scored = jets.score_entries(ledger, flags).set_index("entry_id").loc["JE-2024-001465"]
     assert (scored["risk_score"], scored["n_flags"], scored["tests_fired"]) == (4.0, 1, "JET-11")
+
+
+# --- a company's own controls (JET-06's limit, JET-12's approvers) -----------
+
+
+def test_the_default_controls_render_every_reason_as_before(ledger):
+    """JET-06's and JET-12's reasons sit in the committed eval prompts: the synthetic company's
+    controls, now read from controls.DEFAULT_CONTROLS, must word them byte for byte as before."""
+    from ledgerlens.controls import DEFAULT_CONTROLS
+    from ledgerlens.ingest import entry_level
+
+    flags = jets.run_all(ledger)
+    entries = entry_level(ledger).set_index("entry_id")
+    jet12, jet06 = flags[flags["test_id"] == "JET-12"], flags[flags["test_id"] == "JET-06"]
+    assert len(jet12) and len(jet06)
+    for r in jet12.itertuples():
+        assert r.reason == (f"Manual entry keyed by {entries.loc[r.entry_id, 'created_by']}, who is "
+                            "not in the approved list (controller, mchen). Confirm delegated authority.")
+    for r in jet06.itertuples():
+        assert r.reason == (f"${entries.loc[r.entry_id, 'entry_amount']:,.2f} falls within 3% beneath "
+                            "the $10,000 approval threshold. Review for split or structured transactions.")
+    pd.testing.assert_frame_equal(flags, jets.run_all(ledger, controls=DEFAULT_CONTROLS))
+
+
+def _apart_from_controls(flags):
+    """The other tests' flags, as records: an empty JET-12 frame changes the stacked frame's
+    dtypes on pandas 3 without changing a value."""
+    return flags[~flags["test_id"].isin(["JET-06", "JET-12"])].to_dict("records")
+
+
+def test_a_companys_own_controls_move_jet06_and_jet12_and_nothing_else(ledger):
+    from ledgerlens.controls import Controls
+    from ledgerlens.ingest import entry_level
+
+    base = jets.run_all(ledger)
+    e = entry_level(ledger)
+    keyed_by = set(e.loc[e["entry_id"].isin(base.loc[base["test_id"] == "JET-12", "entry_id"]),
+                         "created_by"])
+    own = Controls(tuple(keyed_by | {"controller", "mchen"}), 5_000.50)
+    moved = jets.run_all(ledger, controls=own)
+    assert moved[moved["test_id"] == "JET-12"].empty  # everyone who keyed one is an approver now
+    under = set(e.loc[(e["entry_amount"] >= 5_000.50 * 0.97) & (e["entry_amount"] < 5_000.50), "entry_id"])
+    jet06 = moved[moved["test_id"] == "JET-06"]
+    assert under and set(jet06["entry_id"]) == under
+    assert jet06["reason"].str.contains("beneath the $5,000.50 approval threshold", regex=False).all()
+    assert _apart_from_controls(base) == _apart_from_controls(moved)
+
+    one_more = jets.run_all(ledger, only=["JET-12"], controls=Controls(("zz", "mchen", "controller"), 10_000))
+    assert set(one_more["entry_id"]) == set(base.loc[base["test_id"] == "JET-12", "entry_id"])
+    assert one_more["reason"].str.contains("(controller, mchen, zz)", regex=False).all()
+
+
+def test_detection_reads_nothing_from_the_generator():
+    """The approver list and limit were the generator's constants, imported: every ledger was
+    tested against the synthetic company's controls whatever company it came from."""
+    import ast
+    from pathlib import Path
+
+    tree = ast.parse(Path(jets.__file__).read_text(encoding="utf-8"))
+    modules = {node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
+    modules |= {alias.name for node in ast.walk(tree) if isinstance(node, ast.Import)
+                for alias in node.names}
+    assert not [m for m in modules if m.split(".")[-1] == "generate"], modules

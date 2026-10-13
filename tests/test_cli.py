@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from ledgerlens.cli import build_parser, main
+from ledgerlens.controls import DEFAULT_CONTROLS, controls_path
 
 
 def test_generate_writes_both_files(tmp_path):
@@ -1168,7 +1169,8 @@ def test_what_the_readme_says_the_tests_make_of_the_recorded_quarter(qbo_env, ca
     assert int((per_entry["source"].first() == "Manual").sum()) == 3
     assert int((per_entry.size() > 2).sum()) == 25  # multi-line entries; the generator writes none
     # the definitions the paragraph explains those figures by
-    assert (jets.APPROVAL_THRESHOLD, jets.MANUAL_JE_APPROVERS) == (10_000.0, ("controller", "mchen"))
+    assert (DEFAULT_CONTROLS.approval_limit, DEFAULT_CONTROLS.manual_entry_approvers) == (
+        10_000.0, ("controller", "mchen"))
     assert inspect.signature(jets.jet_rare_account_pair).parameters["max_occurrences"].default == 3
     assert inspect.signature(jets.jet_dormant_account).parameters["dormant_days"].default == 120
 
@@ -1183,7 +1185,7 @@ def test_what_the_readme_says_the_tests_make_of_the_recorded_quarter(qbo_env, ca
         f"pull warns below {SMALL_LEDGER} entries",
         f"{payload['flagged']} of the {payload['entries']} entries are flagged, {fired['JET-08']} of them by JET-08",
         f"All {words[fired['JET-12']]} journal entries fire JET-12",
-        f"the synthetic company's {words[len(jets.MANUAL_JE_APPROVERS)]} users",
+        f"the synthetic company's {words[len(DEFAULT_CONTROLS.manual_entry_approvers)]} users",
         "JET-09 looks for an account quiet for more than 120 days",
         f"The model tier's {words[payload['model_tier']['flagged']]} flagged entries are its 2% budget of "
         f"{payload['entries']}, not a detection",
@@ -1599,3 +1601,146 @@ def test_test_only_runs_a_repeated_id_once(two_ledgers, capsys):
     once = capsys.readouterr().out
     assert main(["test", ledger, "--only", "JET-02,JET-02, JET-02"]) == 0
     assert capsys.readouterr().out == once and "Ran 1 test(s)" in once
+
+
+# --- a company's own controls --------------------------------------------------
+
+
+def test_every_command_that_runs_the_tests_refuses_a_controls_file_it_cannot_use_in_one_line(
+        two_ledgers, tmp_path, capsys):
+    """A controls file that is there but cannot be used is never replaced by the synthetic
+    company's: each command that runs JET-06 and JET-12 says why in one line, before it
+    writes or opens anything. Benford does not read the controls and is not stopped."""
+    import shutil
+
+    ledger = tmp_path / "books.csv"
+    shutil.copy(_pair(two_ledgers)[0], ledger)
+    controls_path(ledger).write_text(
+        '{"version": 1, "manual_entry_approvers": ["controller"], "approval_limit": "10,000"}')
+    (tmp_path / "r.sqlite").write_bytes(b"")
+    said = (f"error: cannot use the controls file {controls_path(ledger)}: approval_limit must be a "
+            "number of dollars, got '10,000' (write 10000, not \"10,000\")\n")
+    for argv in (
+        ["test", str(ledger)], ["score", str(ledger)],
+        ["report", str(ledger), "--out", str(tmp_path / "wp.xlsx")],
+        ["summary", str(ledger)], ["summary", str(ledger), "--format", "json"],
+        ["narrate", str(ledger), "--db", str(tmp_path / "r.sqlite")],
+        ["eval-narratives", str(ledger), "--cases", str(tmp_path / "c.json")],
+        ["eval-narratives", str(ledger), "--select", "--labels", _pair(two_ledgers)[1],
+         "--cases", str(tmp_path / "c.json")],
+    ):
+        capsys.readouterr()
+        assert main(argv) == 2, argv
+        assert capsys.readouterr().out == said, argv
+    assert (tmp_path / "r.sqlite").read_bytes() == b""
+    assert not (tmp_path / "wp.xlsx").exists() and not (tmp_path / "c.json").exists()
+    assert main(["benford", str(ledger)]) == 0
+
+
+def test_eval_narratives_runs_the_default_ledger_under_the_default_controls_only(
+        raw_ledger, tmp_path, capsys):
+    """The committed case set, runs and report were built from the default ledger under the
+    synthetic company's controls, whose wording is in every prompt. Other controls on that
+    ledger are refused in every mode before anything is scored; a file restating the defaults
+    rebuilds every committed prompt byte for byte."""
+    import shutil
+
+    from ledgerlens import narrative_eval
+
+    lines, labels = raw_ledger
+    ledger = tmp_path / "ledger.csv"
+    lines.to_csv(ledger, index=False)
+    labels.to_csv(tmp_path / "labels.csv", index=False)
+    controls_path(ledger).write_text(json.dumps(
+        {"version": 1, "manual_entry_approvers": ["controller", "mchen", "dsilva"], "approval_limit": 10000}))
+    runs, report, cases = tmp_path / "runs", tmp_path / "r.md", str(narrative_eval.CASES_FILE.resolve())
+    for argv in (
+        ["eval-narratives", str(ledger), "--cases", cases, "--runs-dir", str(runs), "--out", str(report)],
+        ["eval-narratives", str(ledger), "--cases", cases, "--runs-dir", str(runs), "--out", str(report),
+         "--regrade"],
+        ["eval-narratives", str(ledger), "--select", "--labels", str(tmp_path / "labels.csv"),
+         "--cases", str(tmp_path / "c.json")],
+    ):
+        capsys.readouterr()
+        assert main(argv) == 2, argv
+        printed = capsys.readouterr().out
+        assert printed.startswith(f"refused: {controls_path(ledger)} sets controls other than the "
+                                  "synthetic company's on the default synthetic ledger"), printed
+        assert printed.count("\n") == 1
+        assert "built under approvers controller, mchen (JET-12); approval limit $10,000" in printed
+    assert not runs.exists() and not report.exists() and not (tmp_path / "c.json").exists()
+
+    # the defaults restated (another order, a float): the committed rows re-grade from them
+    controls_path(ledger).write_text(json.dumps(
+        {"version": 1, "manual_entry_approvers": ["mchen", "controller"], "approval_limit": 10000.0}))
+    committed = sorted(narrative_eval.RUNS_ROOT.resolve().glob("*/results.jsonl"))
+    assert committed
+    shutil.copytree(committed[-1].parent, runs)
+    capsys.readouterr()
+    assert main(["eval-narratives", str(ledger), "--cases", cases, "--runs-dir", str(runs),
+                 "--out", str(report), "--regrade"]) == 0
+    printed = capsys.readouterr().out
+    assert printed.startswith(f"Controls from {controls_path(ledger)}: approvers controller, mchen")
+    assert "Graded 17/17 cases" in printed and report.exists()
+
+
+def test_a_controls_file_naming_the_companys_user_quiets_jet12_on_the_recorded_quarter(qbo_env, capsys):
+    """All three journal entries of the recorded quarter fired JET-12 because the approver list
+    was the synthetic company's. A pull says so; the company's own list is read by every command."""
+    out = qbo_env.root / "data" / "qbo-ledger.csv"
+    assert _replay_to(out) == 0
+    assert (f"Controls: none at {controls_path(out)}, so JET-12 and JET-06 test this company against "
+            "the synthetic company's") in capsys.readouterr().out
+    assert main(["test", str(out), "--only", "JET-12"]) == 0
+    assert "Raised 3 flag(s) on 3 entrie(s)" in capsys.readouterr().out
+
+    controls_path(out).write_text(json.dumps(
+        {"version": 1, "manual_entry_approvers": ["qbo-user-1"], "approval_limit": 10000}))
+    assert main(["test", str(out), "--only", "JET-12"]) == 0
+    printed = capsys.readouterr().out
+    assert printed.startswith(f"Controls from {controls_path(out)}: approvers qbo-user-1 (JET-12); "
+                              "approval limit $10,000 (JET-06)\n")
+    assert "Raised 0 flag(s) on 0 entrie(s)" in printed
+    assert main(["summary", str(out), "--format", "json"]) == 0
+    payload = json.loads(capsys.readouterr().out)  # still one JSON document
+    assert payload["flags_by_test"]["JET-12"] == 0 and payload["flags_by_test"]["JET-01"] == 4
+    assert _replay_to(out) == 0  # a re-pull keeps the company's controls and says nothing of them
+    assert "Controls: none" not in capsys.readouterr().out
+
+
+def test_generate_says_when_a_controls_file_already_sits_beside_the_new_ledger(tmp_path, capsys):
+    argv = ["generate", "--start", "2024-01-01", "--end", "2024-01-31", "--out-dir", str(tmp_path)]
+    assert main(argv) == 0
+    assert "controls" not in capsys.readouterr().out
+    controls_path(tmp_path / "ledger.csv").write_text("{}")
+    assert main(argv) == 0
+    assert (f"Note: {controls_path(tmp_path / 'ledger.csv')} sits beside the new ledger, so every "
+            "command tests it against those controls") in capsys.readouterr().out
+
+
+def test_report_score_and_narrate_flag_a_pull_by_its_companys_controls(qbo_env, capsys, monkeypatch, llm):
+    """The rule tier's flags reach the workpaper, the tier comparison and the narration prompt,
+    and each has to have been raised against the company's controls."""
+    import pandas as pd
+
+    from ledgerlens import cli
+    from ledgerlens.narrate import Narrator
+
+    out = qbo_env.root / "data" / "qbo-ledger.csv"
+    assert _replay_to(out) == 0
+    controls_path(out).write_text(json.dumps(
+        {"version": 1, "manual_entry_approvers": ["qbo-user-1"], "approval_limit": 10000}))
+    workpaper, combined = qbo_env.root / "wp.xlsx", qbo_env.root / "combined.csv"
+    assert main(["report", str(out), "--no-model", "--out", str(workpaper)]) == 0
+    fired = set(pd.read_excel(workpaper, sheet_name="All flags")["test_id"])
+    assert "JET-01" in fired and "JET-12" not in fired
+    assert main(["score", str(out), "--out", str(combined)]) == 0
+    tests_fired = pd.read_csv(combined)["tests_fired"].fillna("")
+    assert tests_fired.str.contains("JET-01").any() and not tests_fired.str.contains("JET-12").any()
+    client = llm.client()
+    monkeypatch.setattr(cli, "Narrator", lambda **kw: Narrator(client=client, **kw))
+    assert main(["narrate", str(out), "--db", str(qbo_env.root / "r.sqlite"), "--top", "3",
+                 "--no-model"]) == 0
+    prompts = [call["messages"][0]["content"] for call in client.calls]
+    assert len(prompts) == 3 and any("JET-01" in p for p in prompts)
+    assert not any("JET-12" in p or "approved list" in p for p in prompts)

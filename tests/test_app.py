@@ -605,3 +605,37 @@ def test_a_ledger_path_that_cannot_be_read_is_a_message_not_an_exception_page(tm
     (folder / "ledger.csv").mkdir(parents=True)
     at = _run(folder, tmp_path / "review.sqlite", reviewer="ana")
     assert at.error and any("ledger.csv" in t.value for t in at.text)
+
+
+def test_a_controls_file_that_cannot_be_used_is_a_message_not_the_defaults(data_dir, tmp_path):
+    bad = tmp_path / "bad"
+    bad.mkdir()
+    shutil.copy(data_dir / "ledger.csv", bad / "ledger.csv")
+    (bad / "ledger.controls.json").write_text('{"version": 1, "manual_entry_approvers": [], "approval_limit": 10000}')
+    at = _run(bad, tmp_path / "review.sqlite", reviewer="ana")  # _run asserts nothing was raised
+    assert [e.value for e in at.error] == ["The controls file beside this ledger cannot be used."]
+    assert any("ledger.controls.json: manual_entry_approvers is empty" in t.value for t in at.text)
+    assert not (tmp_path / "review.sqlite").exists()  # stopped before any store was opened
+
+
+def test_a_controls_file_written_after_the_first_load_is_read_on_the_next_run(data_dir, tmp_path):
+    """load() is cached by what its files are; the controls file is one of them."""
+    import json
+
+    from ledgerlens import jets
+    from ledgerlens.ingest import load_csv
+
+    side = tmp_path / "side"
+    side.mkdir()
+    shutil.copy(data_dir / "ledger.csv", side / "ledger.csv")
+    at = _run(side, tmp_path / "review.sqlite")
+    raised = next(m.value for m in at.metric if m.label == "Flags raised")
+    df = load_csv(side / "ledger.csv")
+    jet12 = jets.run_all(df, only=["JET-12"])
+    assert len(jet12) and str(len(jets.run_all(df))) == str(raised)
+    users = sorted(set(df.loc[df["entry_id"].isin(jet12["entry_id"]), "created_by"]))
+    (side / "ledger.controls.json").write_text(json.dumps(
+        {"version": 1, "manual_entry_approvers": ["controller", "mchen", *users], "approval_limit": 10000}))
+    at.run()
+    assert not at.exception, at.exception
+    assert next(m.value for m in at.metric if m.label == "Flags raised") == str(len(jets.run_all(df)) - len(jet12))

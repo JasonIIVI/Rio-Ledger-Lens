@@ -35,6 +35,7 @@ from .connectors.tokens import (
     default_token_dir,
     repository_root,
 )
+from .controls import DEFAULT_CONTROLS, Controls, ControlsError, controls_path, load_controls
 from .env import load_dotenv
 from .generate import generate_ledger
 from .ingest import IdentityError, ledger_identity, load_csv, load_labels, quote
@@ -78,6 +79,11 @@ def cmd_generate(args: argparse.Namespace) -> int:
     print("Wrote {:,} labels ({} anomalies, {:.2%}) to {}".format(
         len(labels), int(labels["is_anomaly"].sum()),
         labels["is_anomaly"].mean(), labels_path))
+    beside = controls_path(ledger_path)
+    if os.path.lexists(beside):  # left from an earlier ledger: it applies to this one now
+        print(f"Note: {beside} sits beside the new ledger, so every command tests it against "
+              "those controls rather than the synthetic company's; remove it to test against "
+              "the synthetic company's")
     return 0
 
 
@@ -110,6 +116,27 @@ def _load_ledger(path: str) -> tuple[pd.DataFrame | None, str | None]:
         return load_csv(path), None
     except (OSError, ValueError) as exc:
         return None, f"error: cannot read the ledger {path}: {one_line(exc)}"
+
+
+def _load_controls(path: str) -> tuple[Controls | None, str | None]:
+    """``(controls, None)``, or ``(None, the line to print)`` when the file beside ``path``
+    cannot be used.
+
+    No file is the synthetic company's controls. A file that is there is used or refused,
+    never replaced by the defaults; the reason can quote the file: one line, no controls.
+    """
+    try:
+        return load_controls(path), None
+    except ControlsError as exc:
+        return None, f"error: cannot use the controls file {one_line(exc)}"
+
+
+def _say_controls(controls: Controls) -> None:
+    """One line when the controls came from a file, so a run against a company's own
+    approvers never reads as a run against the synthetic company's. The defaults print
+    nothing, so a default run's output is what it always was."""
+    if controls.source is not None:
+        print(f"Controls from {one_line(controls.source)}: {one_line(controls.describe())}")
 
 
 def _inert(table: pd.DataFrame, column: str) -> pd.DataFrame:
@@ -149,13 +176,18 @@ def cmd_test(args: argparse.Namespace) -> int:
     if problem:
         print(problem)
         return 2
+    controls, problem = _load_controls(args.ledger)
+    if problem:
+        print(problem)
+        return 2
     labels = None
     if args.labels:
         labels, problem = _load_labels(args.labels, df)
         if problem:
             print(problem)
             return 2
-    flags = jets.run_all(df, only=only)
+    _say_controls(controls)
+    flags = jets.run_all(df, only=only, controls=controls)
 
     print("Ran {} test(s) over {:,} entries".format(
         len(only) if only else len(jets.REGISTRY), df["entry_id"].nunique()))
@@ -228,13 +260,18 @@ def cmd_score(args: argparse.Namespace) -> int:
     if problem:
         print(problem)
         return 2
+    controls, problem = _load_controls(args.ledger)
+    if problem:
+        print(problem)
+        return 2
     labels = None
     if args.labels:
         labels, problem = _load_labels(args.labels, df)
         if problem:
             print(problem)
             return 2
-    flags = jets.run_all(df)
+    _say_controls(controls)
+    flags = jets.run_all(df, controls=controls)
     scored = jets.score_entries(df, flags)
     try:
         model_scores, report = score_ledger(df, contamination=args.contamination)
@@ -281,13 +318,18 @@ def cmd_report(args: argparse.Namespace) -> int:
     if problem:
         print(problem)
         return 2
+    controls, problem = _load_controls(args.ledger)
+    if problem:
+        print(problem)
+        return 2
     labels = None
     if args.labels:
         labels, problem = _load_labels(args.labels, df)
         if problem:
             print(problem)
             return 2
-    flags = jets.run_all(df)
+    _say_controls(controls)
+    flags = jets.run_all(df, controls=controls)
     scored = jets.score_entries(df, flags)
 
     model_report = None
@@ -375,13 +417,20 @@ def cmd_summary(args: argparse.Namespace) -> int:
     try:
         df = load_csv(args.ledger)
         ledger_id = ledger_identity(df, args.ledger)
+        # Read here, not by the context, which is handed a frame: said as test says it,
+        # and not printed when used (the page names them; JSON stays one document).
+        controls, problem = _load_controls(args.ledger)
+        if problem:
+            print(problem)
+            return 2
         labels = None
         if args.labels:  # checked before either tier runs, as test, score and report do
             labels, problem = _load_labels(args.labels, df)
             if problem:
                 print(problem)
                 return 2
-        context = LedgerContext(df, review_db=args.db, ledger_id=ledger_id).load()
+        context = LedgerContext(df, review_db=args.db, ledger_id=ledger_id,
+                                controls=controls).load()
     except (OSError, ValueError) as exc:
         # No such file, not a ledger, a sidecar naming none, or a population the model
         # cannot be fitted on. The reason can quote a cell of the file: one line, no controls.
@@ -416,7 +465,12 @@ def cmd_narrate(args: argparse.Namespace) -> int:
     if problem:
         print(problem)
         return 2
-    flags = jets.run_all(df)
+    controls, problem = _load_controls(args.ledger)
+    if problem:
+        print(problem)
+        return 2
+    _say_controls(controls)
+    flags = jets.run_all(df, controls=controls)
     scored = jets.score_entries(df, flags)
     if not args.no_model:
         try:
@@ -709,6 +763,10 @@ def _pull_and_write(client: qbo.QboClient, args: argparse.Namespace, out: Path, 
               "analysis need far more to say anything.")
     if isinstance(transport, qbo.RecordedTransport) and transport.unused:
         print(f"Warning: fixtures not used by this pull: {', '.join(transport.unused)}")
+    if not os.path.lexists(controls_path(path)):
+        print(f"Controls: none at {controls_path(path)}, so JET-12 and JET-06 test this company "
+              "against the synthetic company's approvers and limit; write its own there (see the "
+              "README)")
     print(f"Next: ledgerlens test {path}   ledgerlens report {path} --db data/review.sqlite")
     return 0
 
@@ -761,6 +819,19 @@ def cmd_eval_narratives(args: argparse.Namespace) -> int:
     # path written (narrative_eval judges the literal path it is given).
     ledger_sha256 = narrative_eval.ledger_digest(df)
     default_ledger = ledger_sha256 == narrative_eval.DEFAULT_LEDGER_SHA256
+    controls, problem = _load_controls(args.ledger)
+    if problem:
+        print(problem)
+        return 2
+    if default_ledger and not controls.is_default:
+        # The committed case set, runs and report were built from this ledger under the
+        # synthetic company's controls, and JET-06's and JET-12's reasons are in every
+        # prompt: a run under others would grade notes against prompts no case was written for.
+        print(f"refused: {one_line(controls.source)} sets controls other than the synthetic "
+              "company's on the default synthetic ledger, whose eval cases, runs and report were "
+              f"built under {one_line(DEFAULT_CONTROLS.describe())}; move the file aside to "
+              "evaluate this ledger")
+        return 2
     try:
         cases_path, out_path = _expand_home(args.cases), _expand_home(args.out)
         if args.select:
@@ -785,7 +856,8 @@ def cmd_eval_narratives(args: argparse.Namespace) -> int:
             print(problem)
             return 2
 
-    flags = jets.run_all(df)
+    _say_controls(controls)
+    flags = jets.run_all(df, controls=controls)
     scored = jets.score_entries(df, flags)
     try:
         model_scores, _ = score_ledger(df)

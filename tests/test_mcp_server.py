@@ -224,3 +224,18 @@ async def test_a_ledger_that_cannot_be_opened_is_a_tool_error_and_the_server_log
             result = await c.call_tool("ledgerlens_summary", {})
     assert result.is_error and "ledger.csv" in result.content[0].text
     assert any(r.exc_info and "ledgerlens_summary" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.anyio
+async def test_a_controls_file_that_cannot_be_used_is_a_tool_error_the_client_can_read(tmp_path):
+    """Never the synthetic company's controls in its place: the summary would count JET-12
+    flags against an approver list the company does not have."""
+    from ledgerlens.cli import main
+
+    main(["generate", "--start", "2024-01-01", "--end", "2024-02-29", "--out-dir", str(tmp_path)])
+    (tmp_path / "ledger.controls.json").write_text('{"version": 2}')
+    mcp_server.use_context(LedgerContext(tmp_path / "ledger.csv"))
+    async with Client(mcp_server.mcp, raise_exceptions=True) as c:
+        result = await c.call_tool("ledgerlens_summary", {})
+    assert result.is_error and "ledger.controls.json" in result.content[0].text
+    assert "version must be 1, got 2" in result.content[0].text

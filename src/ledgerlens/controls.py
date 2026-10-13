@@ -216,10 +216,10 @@ def load_controls(ledger_path: str | Path) -> Controls:
         text = path.read_text(encoding="utf-8-sig")  # a byte-order mark is not a difference
     except FileNotFoundError:
         if path.is_symlink():  # a link to nothing is still a file somebody meant to be read
-            raise ControlsError(f"{path} is a link to a file that does not exist") from None
+            raise ControlsError(f"{path}: a link to a file that does not exist") from None
         return DEFAULT_CONTROLS
     except (OSError, UnicodeDecodeError) as exc:  # a directory, no permission, not UTF-8
-        raise ControlsError(f"{path} cannot be read ({exc})") from None
+        raise ControlsError(f"{path}: cannot be read ({exc})") from None
     try:
         controls = parse_controls(text)
     except ControlsError as exc:
