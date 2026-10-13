@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import re
 from pathlib import Path
 from types import SimpleNamespace
@@ -1724,6 +1725,10 @@ def test_generate_says_when_a_controls_file_already_sits_beside_the_new_ledger(t
     assert main(argv) == 0
     assert (f"Note: {controls_path(tmp_path / 'ledger.csv')} sits beside the new ledger, so every "
             "command tests it against those controls") in capsys.readouterr().out
+    controls_path(tmp_path / "ledger.csv").unlink()
+    os.symlink(tmp_path / "gone.json", controls_path(tmp_path / "ledger.csv"))  # refused, so said
+    assert main(argv) == 0
+    assert "Note: " in capsys.readouterr().out
 
 
 def test_report_score_and_narrate_flag_a_pull_by_its_companys_controls(qbo_env, capsys, monkeypatch, llm):
@@ -1795,3 +1800,42 @@ def test_pull_qbo_judges_and_writes_one_path_when_out_starts_with_a_tilde(qbo_en
     (home / ".git").mkdir()  # the home directory a checkout: only its data/ may hold books
     assert _replay_to("~/books/qbo-ledger.csv") == 2
     assert capsys.readouterr().out.startswith("refused: ") and not (home / "books").exists()
+
+
+
+def test_every_command_that_used_a_controls_file_says_so_first_in_one_line(
+        two_ledgers, tmp_path, capsys, monkeypatch, llm):
+    """README: a command that used a file says so in one line before its output. The folder's
+    name holds a newline: the line, and an error line naming the file, stay one line each."""
+    import shutil
+
+    from ledgerlens import cli
+    from ledgerlens.narrate import Narrator
+    from ledgerlens.summary import one_line
+
+    folder = tmp_path / "a\nb"
+    folder.mkdir()
+    ledger = folder / "books.csv"
+    shutil.copy(_pair(two_ledgers)[0], ledger)
+    controls_path(ledger).write_text(json.dumps(
+        {"version": 1, "manual_entry_approvers": ["controller", "mchen"], "approval_limit": 2500.5}))
+    client = llm.client()
+    monkeypatch.setattr(cli, "Narrator", lambda **kw: Narrator(client=client, **kw))
+    said = (f"Controls from {one_line(controls_path(ledger))}: approvers controller, mchen (JET-12); "
+            "approval limit $2,500.50 (JET-06)")
+    for argv in (
+        ["test", str(ledger)], ["score", str(ledger)],
+        ["report", str(ledger), "--no-model", "--out", str(tmp_path / "wp.xlsx")],
+        ["narrate", str(ledger), "--no-model", "--top", "0", "--db", str(tmp_path / "r.sqlite")],
+        ["eval-narratives", str(ledger), "--select", "--labels", _pair(two_ledgers)[1],
+         "--cases", str(tmp_path / "c.json")],
+    ):
+        capsys.readouterr()
+        assert main(argv) == 0, argv
+        assert capsys.readouterr().out.splitlines()[0] == said, argv
+    assert client.calls == []
+    controls_path(ledger).write_text("{}")
+    capsys.readouterr()
+    assert main(["test", str(ledger)]) == 2
+    printed = capsys.readouterr().out
+    assert printed.count("\n") == 1 and one_line(controls_path(ledger)) in printed

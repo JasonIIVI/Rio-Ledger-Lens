@@ -249,13 +249,23 @@ def test_a_companys_own_controls_move_jet06_and_jet12_and_nothing_else(ledger):
     assert _apart_from_controls(base) == _apart_from_controls(moved)
 
     one_more = jets.run_all(ledger, only=["JET-12"], controls=Controls(("zz", "mchen", "controller"), 10_000))
-    assert set(one_more["entry_id"]) == set(base.loc[base["test_id"] == "JET-12", "entry_id"])
+    assert len(one_more) and set(one_more["entry_id"]) == set(base.loc[base["test_id"] == "JET-12", "entry_id"])
     assert one_more["reason"].str.contains("(controller, mchen, zz)", regex=False).all()
 
 
 def test_detection_reads_nothing_from_the_generator():
     """The approver list and limit were the generator's constants, imported: every ledger was
-    tested against the synthetic company's controls whatever company it came from."""
+    tested against the synthetic company's controls whatever company it came from. The source
+    names no generator module, and importing detection loads none (``from . import generate``
+    names its module in an alias, not in ``ImportFrom.module``)."""
+    import os
+    import subprocess
+    import sys
+
+    loaded = subprocess.run(
+        [sys.executable, "-c", "import sys, ledgerlens.jets; print('ledgerlens.generate' in sys.modules)"],
+        capture_output=True, text=True, env=dict(os.environ), check=True).stdout.strip()
+    assert loaded == "False"
     import ast
     from pathlib import Path
 
@@ -264,3 +274,32 @@ def test_detection_reads_nothing_from_the_generator():
     modules |= {alias.name for node in ast.walk(tree) if isinstance(node, ast.Import)
                 for alias in node.names}
     assert not [m for m in modules if m.split(".")[-1] == "generate"], modules
+
+
+
+def _entry_at(ledger, amount, created_by=None):
+    """The default ledger's first two-line entry, its amount (and keying user) set by hand."""
+    first = ledger["entry_id"].iloc[0]
+    lines = ledger[ledger["entry_id"] == first].copy()
+    assert len(lines) == 2 and (lines["debit"] > 0).sum() == 1
+    lines["debit"] = [amount if d > 0 else 0.0 for d in lines["debit"]]
+    lines["credit"] = [amount if c > 0 else 0.0 for c in lines["credit"]]
+    if created_by is not None:
+        lines["created_by"] = created_by
+        lines["source"] = "Manual"
+    return lines
+
+
+def test_jet06_counts_from_the_bottom_of_its_window_up_to_but_not_the_limit(ledger):
+    from ledgerlens.controls import Controls
+
+    controls = Controls(("controller",), 10_000)  # 3% below it is 9,700.00 exactly in a float
+    for amount, flagged in ((9_699.99, False), (9_700.0, True), (9_999.99, True), (10_000.0, False)):
+        raised = jets.run_all(_entry_at(ledger, amount), only=["JET-06"], controls=controls)
+        assert (len(raised) == 1) is flagged, amount
+
+
+def test_an_approver_matches_the_user_name_case_included(ledger):
+    """The README says names match as written, case included: "Controller" is not "controller"."""
+    assert jets.run_all(_entry_at(ledger, 50.0, "controller"), only=["JET-12"]).empty
+    assert len(jets.run_all(_entry_at(ledger, 50.0, "Controller"), only=["JET-12"])) == 1

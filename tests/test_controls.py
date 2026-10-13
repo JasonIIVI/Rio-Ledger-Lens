@@ -204,6 +204,20 @@ def test_an_approver_written_in_another_script_is_kept_as_written(tmp_path):
     assert load_controls(ledger).manual_entry_approvers == ("Jos" + chr(0xE9) + " Garc" + chr(0xED) + "a", "controller")
 
 
+def test_a_name_of_exactly_the_longest_length_is_kept():
+    assert Controls(("x" * 64,), 10_000).manual_entry_approvers == ("x" * 64,)
+
+
+@pytest.mark.parametrize(("text", "said"), [
+    ('{"manual_entry_approvers": ["a"], "approval_limit": 5}', "missing key(s): version"),
+    ('{"version": 1, "approval_limit": 5}', "missing key(s): manual_entry_approvers"),
+])
+def test_a_missing_key_is_named_and_nothing_is_said_of_its_absent_value(text, said):
+    with pytest.raises(ControlsError) as caught:
+        parse_controls(text)
+    assert str(caught.value) == said
+
+
 def test_controls_built_in_code_are_checked_the_same_way():
     with pytest.raises(ControlsError, match="above 0"):
         Controls(("controller",), -1.0)

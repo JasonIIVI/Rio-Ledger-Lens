@@ -126,8 +126,10 @@ def _approver_problems(approvers: object) -> list[str]:
             problems.append(f"approver {quote(name)} is longer than {MAX_APPROVER_LENGTH} "
                             "characters")
         elif not _visible(name):
-            problems.append(f"approver {quote(name)} is not one line of visible text (a control "
-                            "or invisible character, or a space at either end or doubled)")
+            # "unassigned": a character newer than this Python's Unicode tables is refused too
+            problems.append(f"approver {quote(name)} is not one line of visible text (a control, "
+                            "invisible or unassigned character, or a space at either end or "
+                            "doubled)")
     names = Counter(name for name in approvers if isinstance(name, str))
     problems += [f"approver {quote(name)} is listed {count} times"
                  for name, count in names.items() if count > 1]

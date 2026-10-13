@@ -653,6 +653,11 @@ def test_the_notes_say_whose_controls_the_tests_ran_against(context, default_con
     own = summary.collect(LedgerContext(small_ledger[0], controls=Controls(
         ("controller",), 10_000, source="x.controls.json")).load())["notes"]
     assert own[0] == summary.TUNING_NOTE and summary.DEFAULT_CONTROLS_NOTE not in own
+    # another ledger whose file restates the defaults: the company said so, so no such note
+    stated = summary.collect(LedgerContext(small_ledger[0], controls=Controls(
+        ("mchen", "controller"), 10_000, source="x.controls.json")).load())
+    assert stated["notes"][0] == summary.TUNING_NOTE and summary.DEFAULT_CONTROLS_NOTE not in stated["notes"]
+    assert "from x.controls.json, the same as the synthetic company's" in flat(summary.render(stated, "text"))
 
 
 
@@ -667,3 +672,14 @@ def test_the_controls_line_never_splits_a_name_or_a_path(payload):
         lines = summary.render(page, "text").splitlines()
         assert any(name in line for line in lines), width
         assert any(source in line for line in lines), width
+
+
+
+def test_a_controls_path_holding_a_control_character_is_printed_on_one_line(payload):
+    """A terminal escape (which textwrap keeps, unlike a newline) and a newline in the path."""
+    page = copy.deepcopy(payload)
+    source = "a\nb\x1b[2J.controls.json"
+    page["controls"].update(source=source, default=False)
+    text = summary.render(page, "text")
+    assert "from a b[2J.controls.json" in flat(text) and "\x1b" not in text
+    assert summary.md_code(source) in summary.render(page, "markdown")

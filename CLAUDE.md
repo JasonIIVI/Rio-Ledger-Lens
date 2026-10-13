@@ -318,7 +318,7 @@ and the MCP SDK, so the two together cover every code path CI will see.
   it is now flagged for (documented; recording the controls on each row is a schema change).
 - **Next** — breaking the circularity in the detection numbers (a held-out ledger of
   archetypes no rule describes, generated once after the code is frozen).
-- 954 tests on 3.9 (1 skipped) / 968 on 3.12 (the fourteen MCP tests need 3.10+), ruff clean.
+- 962 tests on 3.9 (1 skipped) / 976 on 3.12 (the fourteen MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
