@@ -43,12 +43,16 @@ to the wrong company's entry.
 
 ## Scoring
 
-The composite score is a severity-weighted count of distinct tests that fired:
+The composite score is a severity-weighted sum over the flags raised:
 
 ```
-score = Σ weight(severity of each distinct test that fired)
+score = Σ weight(severity of the test that raised each flag)
 weights: High = 3.0, Medium = 2.0, Low = 1.0
 ```
+
+JET-09 and JET-11 judge lines, not entries, so a test that flags two lines of one entry
+counts twice (one entry of the default ledger scores 4.0 for a single JET-11). The
+`n_flags` column beside the score counts distinct tests.
 
 Deliberately simple. A reviewer can reconstruct any score by hand from the flags shown
 next to it. A more sophisticated weighting would buy marginal ranking accuracy at the

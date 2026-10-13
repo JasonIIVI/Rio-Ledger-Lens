@@ -49,7 +49,7 @@ def test_the_results_table_is_what_the_default_ledger_measures(measured):
     assert (f"`benford_drift` {int(drift.caught)} of {int(drift.n)} ({drift.recall:.2f}) and "
             f"`rare_account_pair` {int(pair.caught)} of {int(pair.n)} ({pair.recall:.2f})") in README
     jet12 = measured["by_test"].loc["JET-12"]
-    false_flags = int(jet12["flags"] - jet12["true_positives"])  # .flags is pandas' own
+    false_flags = int(jet12["entries_flagged"] - jet12["true_positives"])
     assert f"{false_flags} of the {m['false_positives']} that were not come from JET-12" in README
     # the caveat is in the table's own rows, not only in the paragraph after it
     assert "and partly circular: nine of the eleven archetypes are injected by the definition" in README
@@ -97,7 +97,7 @@ def test_the_archetype_table_and_the_benford_example_are_what_the_default_ledger
             f"{digits['expected_prop'][1]:.2%})") in README
 
     m, jet12 = measured["metrics"], measured["by_test"].loc["JET-12"]
-    false_flags = int(jet12["flags"] - jet12["true_positives"])
+    false_flags = int(jet12["entries_flagged"] - jet12["true_positives"])
     assert f"JET-12 produces {false_flags} of the {m['false_positives']} false positives" in README
     assert m["false_positives"] - false_flags == 1  # "exactly **one** false positive" without it
     assert f"exactly **one** false positive across {m['population']:,} entries" in README
@@ -109,7 +109,7 @@ def test_the_prose_repeats_the_tables_figures_and_computes_its_counts(measured, 
     m = measured["metrics"]
     drift, pair = measured["recall"].loc["benford_drift"], measured["recall"].loc["rare_account_pair"]
     jet12 = measured["by_test"].loc["JET-12"]
-    false_flags = int(jet12["flags"] - jet12["true_positives"])
+    false_flags = int(jet12["entries_flagged"] - jet12["true_positives"])
     rate = m["true_anomalies"] / m["population"]
     assert f"({m['population']:,} entries, {m['true_anomalies']} injected anomalies at {rate:.1%}):" in README
     assert f"**Benford drift: {drift.recall:.2f} recall.**" in README

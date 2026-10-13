@@ -37,7 +37,7 @@ from .connectors.tokens import (
 )
 from .env import load_dotenv
 from .generate import generate_ledger
-from .ingest import IdentityError, ledger_identity, load_csv, load_labels
+from .ingest import IdentityError, ledger_identity, load_csv, load_labels, quote
 from .ledger_context import LedgerContext
 from .model import combine, score_ledger
 from .narrate import DEFAULT_EFFORT, DEFAULT_MAX_TOKENS, DEFAULT_MODEL, NarrativeError, Narrator
@@ -135,6 +135,16 @@ def _expand_home(text: str) -> Path:
 
 
 def cmd_test(args: argparse.Namespace) -> int:
+    only: list[str] | None = None
+    if args.only is not None:  # checked before the ledger is read: run_all raised a KeyError
+        # once each: a repeated id ran its test twice, doubling every flag and score
+        only = list(dict.fromkeys(part.strip() for part in args.only.split(",")))
+        unknown = [part for part in only if part not in jets.REGISTRY]
+        if unknown:
+            known = list(jets.REGISTRY)
+            print("error: unknown test id(s): {} (known: {} to {})".format(
+                ", ".join(quote(part) for part in unknown), known[0], known[-1]))
+            return 2
     df, problem = _load_ledger(args.ledger)
     if problem:
         print(problem)
@@ -145,7 +155,6 @@ def cmd_test(args: argparse.Namespace) -> int:
         if problem:
             print(problem)
             return 2
-    only: list[str] | None = args.only.split(",") if args.only else None
     flags = jets.run_all(df, only=only)
 
     print("Ran {} test(s) over {:,} entries".format(
@@ -901,7 +910,9 @@ def build_parser() -> argparse.ArgumentParser:
     sc = sub.add_parser("score", help="run both tiers and compare them")
     sc.add_argument("ledger", help="path to a GL csv")
     sc.add_argument("--labels", help="ground-truth csv, enables tier comparison")
-    sc.add_argument("--contamination", type=float, default=0.02)
+    sc.add_argument("--contamination", type=float, default=0.02,
+                    help="sklearn's expected outlier share; recorded, but the 0-1 score does "
+                         "not depend on it (the share flagged is --model-top-pct)")
     sc.add_argument("--model-top-pct", type=float, default=0.02,
                     help="proportion of the population the model may flag")
     sc.add_argument("--out", help="write combined scores to this csv")

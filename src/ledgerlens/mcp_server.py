@@ -17,6 +17,7 @@ Run it with ``ledgerlens-mcp`` (stdio, the transport Claude Desktop speaks) or
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sys
 from pathlib import Path
@@ -28,7 +29,6 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from .env import load_dotenv
-from .ingest import IdentityError
 from .ledger_context import (
     DEFAULT_LEDGER,
     DEFAULT_REVIEW_DB,
@@ -83,12 +83,16 @@ def _ctx() -> LedgerContext:
 
 def _call(method: str, **kwargs: Any) -> dict[str, Any]:
     """Run one context method; a review database the store refuses (a file from a newer
-    version, or not a review database at all), or an identity sidecar that names no ledger,
-    becomes a tool error whose text reaches the client, rather than an unexpected exception
-    the SDK reports without its message."""
+    version, or not a review database at all), a ledger path that cannot be read, an identity
+    sidecar that names no ledger, a ledger with a cell no test can read, or a population the
+    model cannot be fitted on, becomes a tool error whose text reaches the client, rather than
+    an unexpected exception the SDK reports without its message. The catch is broad (any
+    ValueError), so the traceback goes to the server's log first: a programming error that
+    raises one is then still visible to whoever runs the server."""
     try:
         return getattr(_ctx(), method)(**kwargs)
-    except (RuntimeError, IdentityError) as exc:
+    except (RuntimeError, OSError, ValueError) as exc:  # IdentityError and SchemaError are ValueErrors
+        logging.getLogger(__name__).exception("tool %s failed", "ledgerlens_" + method)
         raise ToolError(str(exc)) from exc
 
 

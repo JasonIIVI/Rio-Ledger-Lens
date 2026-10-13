@@ -1537,3 +1537,65 @@ def test_eval_narratives_turns_an_unwritable_report_into_a_message(tmp_path, cap
     printed = capsys.readouterr().out
     assert printed.startswith("error: cannot write the report to") and printed.count("\n") == 1
     assert str(tmp_path / "runs") in printed and (tmp_path / "runs" / "results.jsonl").exists()
+
+
+def test_every_command_refuses_a_blank_account_code_in_one_line(two_ledgers, tmp_path, capsys):
+    """A blank account code on a posting line was a TypeError traceback (jets._entry_pairs)
+    on test, score, report, summary, narrate and eval-narratives: the ledger loaded and the
+    rules fell over it. It is now refused at the load, by column and data row."""
+    import csv
+
+    ledger, _ = _pair(two_ledgers)
+    with open(ledger, newline="", encoding="utf-8") as fh:
+        rows = list(csv.reader(fh))
+    rows[2][rows[0].index("account_code")] = ""
+    bad = tmp_path / "blank-account.csv"
+    with bad.open("w", newline="", encoding="utf-8") as fh:
+        csv.writer(fh).writerows(rows)
+    (tmp_path / "r.sqlite").write_bytes(b"")
+    for argv in (
+        ["test", str(bad)], ["score", str(bad)], ["benford", str(bad)],
+        ["report", str(bad), "--out", str(tmp_path / "wp.xlsx")],
+        ["summary", str(bad)],
+        ["narrate", str(bad), "--db", str(tmp_path / "r.sqlite")],
+        ["adopt-legacy", str(bad), "--db", str(tmp_path / "r.sqlite")],
+        ["eval-narratives", str(bad), "--cases", str(tmp_path / "c.json")],
+    ):
+        capsys.readouterr()
+        assert main(argv) == 2, argv
+        printed = capsys.readouterr().out
+        assert printed.startswith("error: cannot"), (argv, printed)
+        assert printed.count("\n") == 1, (argv, printed)
+        assert "account_code is blank on 1 row, the first is data row 2" in printed, (argv, printed)
+    assert (tmp_path / "r.sqlite").read_bytes() == b""
+    assert not (tmp_path / "wp.xlsx").exists() and not (tmp_path / "c.json").exists()
+
+
+@pytest.mark.parametrize("only, named", [
+    ("JET-99", "'JET-99'"), ("JET-01,", "''"), ("jet-01", "'jet-01'"), ("JET-01,JET-01x", "'JET-01x'"),
+])
+def test_test_only_names_an_id_it_does_not_know_in_one_line(two_ledgers, capsys, only, named):
+    """--only JET-99 was a KeyError traceback from jets.run_all, after the ledger had loaded."""
+    ledger, _ = _pair(two_ledgers)
+    capsys.readouterr()
+    assert main(["test", ledger, "--only", only]) == 2
+    printed = capsys.readouterr().out
+    assert printed.startswith("error: unknown test id") and printed.count("\n") == 1, printed
+    assert named in printed and "JET-01" in printed and "JET-12" in printed
+
+
+def test_test_only_takes_ids_with_spaces_around_the_commas(two_ledgers, capsys):
+    ledger, _ = _pair(two_ledgers)
+    capsys.readouterr()
+    assert main(["test", ledger, "--only", "JET-02, JET-12"]) == 0
+    assert "Ran 2 test(s)" in capsys.readouterr().out
+
+
+def test_test_only_runs_a_repeated_id_once(two_ledgers, capsys):
+    """A repeated id ran its test twice: every flag doubled, and so did each entry's score."""
+    ledger, _ = _pair(two_ledgers)
+    capsys.readouterr()
+    assert main(["test", ledger, "--only", "JET-02"]) == 0
+    once = capsys.readouterr().out
+    assert main(["test", ledger, "--only", "JET-02,JET-02, JET-02"]) == 0
+    assert capsys.readouterr().out == once and "Ran 1 test(s)" in once

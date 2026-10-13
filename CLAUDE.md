@@ -25,10 +25,13 @@ and the MCP SDK, so the two together cover every code path CI will see.
 
 ## Current state
 
-- **v1.0.0** is PR #9 (`week4/automation-and-readme`), tagged after its merge once the weekly
-  run has opened its first Issue. **v0.4.0** was PR #7 (2026-09-29; v0.3.1 was PR #5 on
-  2026-09-25; v0.3.0 was PR #2 on 2026-09-23). Weeks 1–4 complete; weeks 1–3 were:
-  narratives, review loop, dashboard integration, MCP server, narrative eval, `@claude` workflow.
+- **v1.0.0** was PR #9 (`week4/automation-and-readme`, squash-merged 2026-10-07 as `039a3ad`,
+  tagged once the weekly run had opened its first Issue, #10; release notes reviewed against
+  the code). **v0.4.0** was PR #7 (2026-09-29; v0.3.1 was PR #5 on 2026-09-25; v0.3.0 was PR #2
+  on 2026-09-23). Weeks 1–4 complete; weeks 1–3 were: narratives, review loop, dashboard
+  integration, MCP server, narrative eval, `@claude` workflow. Week 5 is three PRs: ledger
+  validation (`week5/ledger-validation`), settable controls for JET-12 and JET-06, and a
+  held-out ledger of archetypes no rule describes (v1.1.0).
 - **Review follow-up on `main`** (PR #4, 2026-09-24) — the first `@claude` review's findings:
   narratives are versioned and each decision records the note it saw (`narrative_id`);
   append-only is enforced by SQLite triggers; the MCP path opens the review database read-only;
@@ -72,7 +75,7 @@ and the MCP SDK, so the two together cover every code path CI will see.
   verification pass over those fixes found four more, also fixed: the start-from-scratch
   choice was keyed by ledger but not by file, a `null` override and a Unicode-digit line key
   got past the case loader, and the draft half of the per-entry keying was untested.
-- **QuickBooks Online connector (`week4/qbo-connector`, no tag)** — `connectors/qbo.py`,
+- **QuickBooks Online connector (PR #8, `week4/qbo-connector`, released in v1.0.0)** — `connectors/qbo.py`,
   standard library only: OAuth 2.0 through the token store (`ledgerlens qbo-auth`, a
   localhost callback that accepts only the expected state), a client that refreshes once on
   a 401, waits out a 429 (60 s unless `Retry-After` says otherwise) and pages queries, and a
@@ -194,12 +197,92 @@ and the MCP SDK, so the two together cover every code path CI will see.
   the sort (JET-07 could flag the original of a same-day re-post instead of the re-post);
   on one day the entry keyed first now stands, then the lower id. `docs/demo.gif` predates
   the fix: the model scores in its queue are the old ones.
-- **Next** — week 5 breaks the circularity in the detection numbers (archetypes no rule
-  describes, both tiers re-measured), and an approver list and approval limit that can be set
-  for JET-12 and JET-06. Also: a blank account code on a posting line makes `ledgerlens
-  test` raise a TypeError in `jets._entry_pairs`; it should be one `error:` line, like
-  any other ledger that cannot be read.
-- 641 tests on 3.9 / 651 on 3.12 (the ten MCP tests need 3.10+), ruff clean.
+- **Ledger validation (week 5, `week5/ledger-validation`)** — `ingest.prepare` refuses a
+  cell no test can read before converting anything: blank or whitespace-only in a column a
+  test keys on (`entry_id`, `line_no`, both dates, `fiscal_year`, `period`, `account_code`,
+  `account_type`, `source`, `created_by`), a date that does not parse or carries a time
+  zone offset, a whole-number column that is not whole, an amount that is not a finite
+  number. One `SchemaError` names every such column with its count and first data row, the
+  cell quoted through `ingest.quote` (the one quoting rule, re-exported as
+  `evaluate._example`). Before, a blank account code was a TypeError in
+  `jets._entry_pairs` on six commands, the dashboard and the MCP server; a blank entered
+  time a TypeError inside the load; a blank entry id dropped its line, so the entry looked
+  unbalanced; `abc` or `1,234.00` in an amount became 0.00 and `inf` was taken as one; a
+  line number of 1.5 became 1. A blank account name, description or amount (0.00) is still
+  allowed. Only an empty field is missing (`load_csv` and `load_labels` read with
+  `keep_default_na=False`): pandas' default list had made a user called `NA` blank and
+  Excel's `#N/A` in an amount 0.00. So a ledger whose text cells hold such a word (a
+  description "N/A") now has another `csv:` identity than under v1.0.0, and its earlier
+  review rows show as another ledger's; "NA" in an amount must be written blank or 0. A
+  date written as a number, or as digits in a text column (one cell of another kind makes a
+  CSV column text; text is counted as written, so a leading zero is a digit), is read by its
+  digits (8, 12 or 14: `%Y%m%d`, plus `%H%M`, plus `%S`) and any other count refused, never
+  guessed (read as a number it was nanoseconds since 1970; left to pandas as text, six-digit
+  YYMMDD was read as DDMMYY); `today`
+  and `now` are refused, not read as the clock. Every date column is read in one format, its
+  first text cell's: pandas' own guess where it makes one (so a ledger pandas reads reads as
+  before), and where it makes none (a two-digit year such as 02/01/24 or 02-Jan-24, an
+  afternoon time or 12 AM, which pandas tries on a 24-hour clock), the guess with the AM or PM
+  set aside and the year widened, named back as written (`_format_of`). A month or weekday in
+  capitals (Oracle's 02-JAN-24, SAS's 02JAN2024) is guessed as Jan or Mon would be; May is
+  `%b` and `%B` alike, so a month-named column with May first is read with `%b` where that
+  reads more of it; " at " in lower case and the h of a 24-hour 09h15 between date and time
+  are allowed (as written: `AT`, `9h15 AM`, or `09h15` after a two-digit year are not). A column
+  padded to a fixed width whose cells differ in width, and a two-digit-year column that
+  mixes spellings, are refused as in more than one format. am, pm, a.m., p.m.,
+  "a. m." and a or p alone are first written AM or PM: pandas wrote a lower-case or dotted one
+  into its format as text beside a 24-hour clock ("2:05 pm" read as 02:05 after "12:30 pm" in
+  row 1), and pandas 2 took the M of "P.M." for a zone. A column no format can be taken from,
+  or whose format would keep a word of the cell as text (pandas 2's `%H:%M:%S ET`, a weekday
+  row 1's date contradicts, `2nd`), is refused rather than read cell by cell: pandas read such a
+  column with dateutil, a day of 12 or under as the month wherever it could, a bare time as
+  the day the ledger was read and "Jan 2024" as the first. Below row 1 pandas reads a weekday
+  without checking it against the date, which is read as written. A cell in another format than the
+  column's is named against the row the format came from, with the format, and a column that
+  reads day first throughout is told so. A day-first ledger whose days are all 12 or under
+  cannot be told from a month-first one, nor a two-digit year written first (24-01-02,
+  24-JAN-02) from a day: write YYYY-MM-DD. A zone is found before pandas sees it, on text (`Z`, a name such as
+  `UTC` or `EST`, `+05:30`, `-0700`, an hour alone, `UTC+1`; after an AM or PM too, and before
+  a year as Java writes one) and on datetime objects; a weekday or `HRS` after the time is not
+  a zone, and any other word of three to five letters there is refused as one rather than
+  dropped. A name written another way (`ET`, `EST.`, `Mon EST`, `, EST`) pandas keeps as text
+  in its format, so the column is refused as having no format, alike on both pandas versions
+  (pandas 2 had dropped the name and loaded the time, pandas 3 refused it; `HRS` likewise),
+  and such a cell below one read in the column's format is in another format (pandas 2) or
+  not a readable date (pandas 3). pandas 2
+  read the machine's own zone name, and once raised an AttributeError on one (now caught too);
+  any zone pandas reads that none of these sees is one "mixes times" problem. pandas' warnings
+  from the parse are not passed on. A review of this work (two reviewers) found eleven
+  problems, a verification of those fixes ten more (one a regression CI in UTC could not see:
+  an AttributeError on the machine's own zone name), a re-check of that under five machine
+  zones five more, a verification of that fix seven more (four caused by it), and a
+  verification of that one, which re-ran a hundred date spellings, ten more: the per-cell
+  reading those fixes had kept was itself the fault, so it is gone. A verification of the
+  one-format reading found no value read wrong in 100,960 loads and nine more: ledgers it
+  refused that earlier commits read (months in capitals, May first, a space after PM), and
+  its speed. Read from a CSV of 500,000 rows it is as fast as `e19d210` or faster on 3.12;
+  on 3.9 ISO and m/d/yy dates read as fast, and digits held as text and AM/PM times about a
+  tenth slower (2.5 to 2.6 s against 2.3 to 2.4 s; digit text in memory on 3.12 too), the
+  price of reading them. A last check of that
+  round found one regression of it, fixed: a column whose first time read " AM" refused rows
+  below written `2:05PM` or `2:05 p.m.`. A QuickBooks pull goes
+  through the same check (a user or an account number of spaces is counted as unknown,
+  not a refused pull). The dashboard shows
+  the reason as text (it quotes a cell) and catches an unreadable path too; the MCP server
+  turns any `OSError` or `ValueError` into a tool error and logs its traceback first;
+  `test --only` refuses an id it does not know in one line and runs a repeated one once.
+  `evaluate.precision_by_test` heads its count `entries_flagged` (it counts entries, beside
+  `test`'s count of flags). The workpaper, the methodology and the README now say the rule score sums the
+  flags (JET-09 and JET-11 judge lines, so one entry of the default ledger scores 4.0 for a
+  single JET-11), and that `--contamination` does not move the 0-1 score (the min-max
+  rescale cancels sklearn's offset); the JET-11 tuning table is per entry. The narration
+  system prompt still says "distinct tests": the grader's hash does not cover it, so a
+  change would date the published eval silently (recorded for `docs/limitations.md`).
+- **Next** — breaking the circularity in the detection numbers (a held-out ledger of
+  archetypes no rule describes, generated once after the code is frozen), and an approver
+  list and approval limit that can be set for JET-12 and JET-06 (a controls file beside the
+  ledger).
+- 816 tests on 3.9 (1 skipped) / 828 on 3.12 (the twelve MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth

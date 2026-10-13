@@ -136,10 +136,14 @@ try:
     df, flags, combined, scores, report, labels, ledger_id, labels_problem = load(
         ledger_path, labels_path,
         (_stamp(ledger_path), _stamp(labels_path), _stamp(str(identity_path(ledger_path)))))
-except ValueError as exc:
-    # A sidecar that names no ledger (never guess which one it is), a file that is not a
-    # ledger, or a population the model cannot be fitted on: a message, not an exception page.
-    st.error(str(exc))
+except (OSError, ValueError) as exc:
+    # A path that cannot be read (a folder exists too), a sidecar that names no ledger (never
+    # guess which one it is), a file that is not a ledger, a cell no test can read, or a
+    # population the model cannot be fitted on: a message, not an exception page.
+    st.error("This ledger cannot be loaded.")
+    # As text, never markdown: the reason quotes the cell it could not read, and an image
+    # written into a ledger cell would be fetched the moment the page drew it.
+    st.text(str(exc))
     st.stop()
 if labels_problem:
     st.sidebar.warning("Labels set aside; detection quality is not shown.")

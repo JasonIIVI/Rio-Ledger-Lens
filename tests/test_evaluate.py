@@ -295,3 +295,15 @@ def test_model_lift_breaks_a_tie_at_the_cut_by_entry_id():
     for order in (scores, scores.iloc[::-1], scores.sample(frac=1, random_state=1)):
         table = evaluate.model_lift(order, labels, tops=(25,)).set_index("top_n")
         assert int(table.loc[25, "true_anomalies"]) == 20
+
+
+def test_precision_by_test_counts_entries_and_says_so(ledger, labels):
+    """Its "flags" column counted entries, while `ledgerlens test` printed a "flags" column
+    counting flags just above it: JET-11 read 8 in one and 7 in the other."""
+    from ledgerlens import jets
+
+    table = evaluate.precision_by_test(jets.run_all(ledger), labels).set_index("test_id")
+    assert list(table.columns) == ["test_name", "entries_flagged", "true_positives", "precision"]
+    assert (table.loc["JET-11", "entries_flagged"], table.loc["JET-11", "true_positives"]) == (7, 6)
+    assert list(evaluate.precision_by_test(jets.run_all(ledger).iloc[:0], labels).columns) == [
+        "test_id", "test_name", "entries_flagged", "true_positives", "precision"]

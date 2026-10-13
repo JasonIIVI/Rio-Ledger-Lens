@@ -492,7 +492,8 @@ and reopen Claude Desktop:
 - **Amounts are lognormal.** That is what makes real ledgers Benford-conformant, so
   the digit test is measured against a legitimate baseline rather than a rigged one.
 - **Severity is assigned per test, not per finding**, and the composite score is a
-  severity-weighted count a reviewer can reconstruct by hand.
+  severity-weighted sum over the flags raised, which a reviewer can reconstruct by hand
+  (a test that flags two lines of one entry counts twice).
 - **A flag is a question, not a finding.** Every `reason` string is worded that way
   on purpose, and so is every narrative.
 - **The LLM never decides anything.** It explains flags and suggests evidence; a named human

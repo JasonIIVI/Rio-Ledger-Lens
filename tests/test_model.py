@@ -88,3 +88,12 @@ def test_model_flag_is_rank_based(ledger):
 
     wider = combine(scored, scores, model_top_pct=0.10)
     assert int(wider["model_flag"].sum()) > int(combined["model_flag"].sum())
+
+
+def test_contamination_does_not_move_the_score(ledger):
+    """sklearn's contamination sets only the offset decision_function subtracts, and the min-max
+    rescale cancels any offset. The describe() line and the --contamination help say so."""
+    a, report = score_ledger(ledger, contamination=0.02)
+    b, _ = score_ledger(ledger, contamination=0.2)
+    pd.testing.assert_series_equal(a, b)
+    assert "the 0-1 score does not depend on it" in report.describe()

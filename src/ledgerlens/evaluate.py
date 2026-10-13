@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from .ingest import plural, quote
 from .schema import AnomalyType
 
 #: The archetypes the generator does not inject by the very rule a test checks,
@@ -52,32 +53,8 @@ class LabelsMismatchError(ValueError):
     """A label file that does not describe the ledger it was given with."""
 
 
-def _count(n: int, one: str, many: str) -> str:
-    return f"{n:,} {one if n == 1 else many}"
-
-
-def _example(value: object) -> str:
-    """An id as it is quoted in a refusal: ``ascii``, cut to a line's worth.
-
-    Whoever wrote the ledger chose this text, and the refusal is shown in a
-    terminal, a CI log and the dashboard. ``ascii`` escapes every character
-    outside ASCII, the control and invisible ones among them, so it shows what
-    the eye would miss: a stray space, a variation selector, an id read as a
-    number beside the same id read as text. ``repr`` would keep an invisible
-    character Python calls printable, and print a code point assigned after
-    this Python's Unicode tables one way and a newer Python's another.
-    """
-    text = ascii(value)
-    if isinstance(value, str) and (len(value) > 48 or len(text) > 60):
-        # Cut the id, then quote it: the quote closes, no escape is cut in half, and the
-        # length says that two ids alike this far are not being called the same. The cut
-        # is by what the escaped text takes up, not by a count of characters: ascii()
-        # writes a Latin-1 letter as four, a CJK character as six and an emoji as ten.
-        prefix = value[:48]
-        while prefix and len(ascii(prefix)) > 50:
-            prefix = prefix[:-1]
-        return f"{ascii(prefix)}... ({len(value)} characters)"
-    return text
+# One quoting rule for every value a message takes from a file (ingest.quote).
+_count, _example = plural, quote
 
 
 def check_labels(labels: pd.DataFrame, all_entry_ids) -> None:
@@ -192,17 +169,19 @@ def precision_by_test(flags: pd.DataFrame, labels: pd.DataFrame) -> pd.DataFrame
     is which before they spend an afternoon on a queue.
     """
     if flags.empty:
-        return pd.DataFrame(columns=["test_id", "test_name", "flags", "true_positives",
+        return pd.DataFrame(columns=["test_id", "test_name", "entries_flagged", "true_positives",
                                      "precision"])
     truth = set(labels.loc[labels["is_anomaly"], "entry_id"])
     work = flags.drop_duplicates(subset=["test_id", "entry_id"]).copy()
     work["hit"] = work["entry_id"].isin(truth)
 
+    # Entries, not flags: a test that flags two lines of one entry (JET-09, JET-11) counts the
+    # entry once here, while `ledgerlens test` prints the flags it raised beside this table.
     out = work.groupby(["test_id", "test_name"]).agg(
-        flags=("entry_id", "count"),
+        entries_flagged=("entry_id", "count"),
         true_positives=("hit", "sum"),
     ).reset_index()
-    out["precision"] = (out["true_positives"] / out["flags"]).round(4)
+    out["precision"] = (out["true_positives"] / out["entries_flagged"]).round(4)
     return out.sort_values("precision", ascending=False).reset_index(drop=True)
 
 

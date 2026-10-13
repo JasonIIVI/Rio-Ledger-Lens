@@ -25,8 +25,11 @@ from sklearn.preprocessing import StandardScaler
 
 from .features import build_features
 
-#: Expected proportion of anomalies. Set slightly above the generator's 1.5%
-#: so the model is not starved, but far below a level that would flag noise.
+#: sklearn's expected share of outliers. It sets only the offset that
+#: decision_function subtracts, and the min-max rescale in AnomalyModel.score
+#: cancels any offset, so the 0-1 score is the same at every value; the share of
+#: entries the model tier flags is combine's top_pct. Kept so the fitted forest
+#: is described as it was built.
 DEFAULT_CONTAMINATION = 0.02
 
 #: Fixed so a given ledger always produces the same scores. A portfolio project
@@ -49,7 +52,7 @@ class ModelReport:
             f"Isolation Forest fitted on {self.n_entries:,} entries",
             f"  features supplied  {self.n_features_in}",
             f"  features used      {self.n_features_used}",
-            f"  contamination      {self.contamination:.3f}",
+            f"  contamination      {self.contamination:.3f} (sklearn's offset; the 0-1 score does not depend on it)",
         ]
         if self.dropped_constant:
             lines.append("  dropped (constant) {}".format(", ".join(self.dropped_constant)))
