@@ -307,3 +307,24 @@ def test_the_summary_says_which_controls_the_tests_ran_against(context):
     assert context.summary()["controls"] == {"source": None, "default": True,
                                              "manual_entry_approvers": ["controller", "mchen"],
                                              "approval_limit": 10_000.0}
+
+
+def test_a_load_that_failed_leaves_no_identity_or_controls_behind(small_ledger, tmp_path):
+    """The MCP server keeps one context: a first call refused over a bad controls file had set
+    the ledger's identity already, so a ledger replaced before the next call was served, and
+    its review rows read, under the old one."""
+    from ledgerlens.controls import controls_path
+    from ledgerlens.ingest import load_csv
+
+    small, _ = small_ledger
+    csv = tmp_path / "books.csv"
+    small[list(REQUIRED_COLUMNS)].to_csv(csv, index=False)
+    controls_path(csv).write_text("{}")
+    context = LedgerContext(csv)
+    with pytest.raises(ValueError):
+        context.load()
+    assert context.ledger_id is None and context.controls is None
+    small[list(REQUIRED_COLUMNS)].iloc[:-2].to_csv(csv, index=False)  # another ledger now
+    controls_path(csv).unlink()
+    context.load()
+    assert context.ledger_id == ledger_identity(load_csv(csv), csv)

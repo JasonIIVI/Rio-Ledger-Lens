@@ -385,7 +385,7 @@ sanitized recording of a real sandbox pull (`pull-qbo --record`, Intuit's sample
 July–September 2026). Its README says what the recording settled about Intuit's responses.
 
 **What the tests make of a pull.** Read a pull's flags as the tool running, not as findings
-about the company: the thresholds were tuned on the synthetic generator, the approver list and
+about the company: the thresholds were set for the synthetic generator, the approver list and
 approval limit are the synthetic company's until a controls file states the company's own, and
 there is no ground truth, so there is no precision or recall for a pull at all (`summary` says
 so in place of the numbers). In the recorded quarter 81 of the 116 entries are flagged, 79 of them
@@ -414,26 +414,40 @@ own in a file beside its ledger, named after it: for `data/qbo-ledger.csv`,
 
 Every command that runs the tests reads it (`test`, `score`, `report`, `summary`, `narrate`,
 `eval-narratives`), and so do the dashboard and the MCP server. There is no flag and no
-environment variable, so no two of them can disagree. A command that used a file says so in
-one line before its output (`summary` names it on the page instead), and the summary, the
-workpaper and the dashboard's sidebar name the approvers, the limit and the file, or say the
-synthetic company's were used because there was none.
+environment variable: every surface reads the same file. The dashboard reads it again when it
+changes; the MCP server reads it, like the ledger, when it first loads, so restart it after
+editing either. A command that used a file says so in one line before its output (`summary`
+names it on the page instead), and the summary, the workpaper and the dashboard's sidebar name
+the approvers, the limit and the file, or say the synthetic company's were used because there
+was none.
 
 - **Refused, never replaced.** A file that is there but cannot be used stops the command with
   one `error:` line naming every problem it finds: for instance a key given twice, an unknown
-  or missing key, a version other than 1, an approver that is empty, listed twice, longer than
-  64 characters, or holds a comma, a space at either end, two spaces together or a character
-  no reader sees, and a limit that is not a positive number of whole cents. Falling back to the
-  synthetic company's list would flag every manual entry the company's own approvers keyed.
-- **Names match exactly.** An approver matches the ledger's `created_by` as written, case
-  included. The list is kept sorted, so JET-12's reason names it in one order everywhere.
-- **Company facts, not thresholds.** The tests' other settings were tuned against labelled
-  data ([docs/tuning.md](docs/tuning.md)); these are what the company's approval policy says,
-  and nothing tunes them. JET-06's window, 3% below the limit, stays the test's own.
+  or missing key, a version other than 1, more than 50 approvers or one that is empty, listed
+  twice, longer than 64 characters, or holds a comma, a space at either end, two spaces
+  together or a character no reader sees, and a limit that is not a positive number of whole
+  cents below a trillion dollars. A file larger than 64 KiB, or one that is not a regular file,
+  is refused unread. Falling back to the synthetic company's list would flag every manual entry
+  the company's own approvers keyed.
+- **Names match exactly.** Write each approver as the ledger's `created_by` column writes the
+  user: as written, case included, with no Unicode normalisation (an accented letter typed as
+  one character does not match the same letter typed as two). A QuickBooks pull writes the
+  company's own user names; the recording the tests replay replaces them with `qbo-user-1`. A
+  name the ledger writes with a space at either end or two together cannot be listed (the
+  file refuses it), so that user's manual entries stay flagged. The list is kept sorted, so
+  JET-12's reason names it in one order everywhere.
+- **Company facts, not thresholds.** The tests' thresholds were set for the synthetic
+  generator (JET-11's by a sweep against labelled data, [docs/tuning.md](docs/tuning.md));
+  the approver list and the limit are neither: they are what the company's approval policy
+  says, and nothing tunes them. JET-06's window, 3% below the limit, stays the test's own.
 - **The model tier does not read them.** No model feature encodes an approver or the limit.
 - **The eval stays on the defaults.** `eval-narratives` refuses other controls on the default
-  synthetic ledger: its committed cases, runs and report were written under the defaults,
-  whose wording is in every prompt.
+  synthetic ledger: its committed cases, runs and report were written under the defaults, and
+  twelve of its seventeen prompts quote them.
+- **Review is filed by ledger, not by controls.** Notes and decisions recorded before the
+  controls changed stay with their entries: `narrate` skips an entry that has a note (`--force`
+  writes it again), and an entry with a decision stays out of the queue even when it is now
+  flagged for something else. Set the controls before review starts.
 
 A controls file can name real people, so git ignores any `*.controls.json` and CI's rule-1
 check fails if one is ever committed.
@@ -581,7 +595,8 @@ and reopen Claude Desktop:
 - A company's controls are one approver list and one approval limit for every entry: no
   approval tiers by amount or account, no limit per user, and no effective dates (a list that
   changed during the year is applied to the whole year). With no controls file beside a
-  ledger they are the synthetic company's.
+  ledger they are the synthetic company's. Review notes and decisions are filed by ledger, not
+  by the controls they were made under.
 - The unsupervised tier cannot see cross-entry patterns such as duplicates, because its
   features are computed per entry.
 - Thresholds are tuned against this generator. Against a real ledger they are a

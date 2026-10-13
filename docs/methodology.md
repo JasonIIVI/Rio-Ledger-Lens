@@ -101,7 +101,7 @@ flag of its own, and the line is marked `entered_at_estimated` so the estimate i
 rather than silent. In the recorded sandbox quarter no line needed it.
 
 What a pull does not have is ground truth. Nothing about a sandbox company is labelled, the
-thresholds are the ones tuned on the generator, the approver list and approval limit are the
+thresholds are the ones set for the generator, the approver list and approval limit are the
 synthetic company's unless a controls file beside the pull states its own (see below), and a
 quarter of a small company is far too
 few entries for the model tier or Benford analysis. Its flags show the tool running on a
@@ -113,11 +113,13 @@ JET-12 asks whether a manual entry was keyed by someone on the approver list, an
 whether an entry sits within 3% beneath the approval limit. The list and the limit are facts
 about a company, read from a `<stem>.controls.json` file beside its ledger; with no file they
 are the synthetic company's (`controller` and `mchen`; $10,000), which the generator's ledger
-was built against. Unlike the tests' thresholds they are not tuned against labelled data, and
-the 3% window stays the test's own. A file that is present but cannot be used is refused
+was built against. They are not thresholds, and nothing tunes them; the 3% window stays the
+test's own. A file that is present but cannot be used is refused
 rather than replaced by the defaults, because testing one company against another's approver
 list raises a flag on every manual entry and explains none of them. Every surface reads the
-same file and names it, and the model tier reads neither the list nor the limit.
+same file and names it, and the model tier reads neither the list nor the limit. Review notes
+and decisions are filed by ledger, not by controls, so the controls are best set before review
+starts: an entry decided under one approver list keeps its decision under the next.
 
 ## References
 

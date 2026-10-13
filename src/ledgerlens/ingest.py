@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import warnings
 from pathlib import Path
@@ -157,8 +158,13 @@ def ledger_digest(lines: pd.DataFrame) -> str:
 
 
 def identity_path(ledger_path: str | Path) -> Path:
-    """Where a ledger's identity sidecar sits: ``data/ledger.identity.json`` beside the CSV."""
-    return Path(ledger_path).with_suffix(IDENTITY_SUFFIX)
+    """Where a ledger's identity sidecar sits: ``data/ledger.identity.json`` beside the CSV.
+
+    A leading ``~`` is expanded as pandas expands it when it reads the ledger: taken
+    literally, ``~/books/qbo.csv`` was read from the home directory while its sidecar was
+    looked for under a directory named ``~``, so the review was filed under the CSV's digest.
+    """
+    return Path(os.path.expanduser(os.fspath(ledger_path))).with_suffix(IDENTITY_SUFFIX)
 
 
 def ledger_identity(lines: pd.DataFrame, path: str | Path | None = None) -> str:

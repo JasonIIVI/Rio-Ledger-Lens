@@ -661,3 +661,18 @@ def test_the_sidebar_names_the_controls_and_draws_a_name_from_the_file_as_code(d
     caption = next(c.value for c in at.sidebar.caption if c.value.startswith("Controls:"))
     assert code_span(name) in caption and code_span(str(own / "ledger.controls.json")) in caption
     assert "\\$2\\,500\\.50" in caption
+
+
+def test_a_link_to_nothing_written_after_the_first_load_is_refused_on_the_next_run(data_dir, tmp_path):
+    """No file and a link to nothing both had no stamp, so the cached defaults stood while every
+    other surface refused the file."""
+    side = tmp_path / "side"
+    side.mkdir()
+    shutil.copy(data_dir / "ledger.csv", side / "ledger.csv")
+    at = _run(side, tmp_path / "review.sqlite")
+    assert not at.error
+    os.symlink(side / "gone.json", side / "ledger.controls.json")
+    at.run()
+    assert not at.exception, at.exception
+    assert [e.value for e in at.error] == ["The controls file beside this ledger cannot be used."]
+    assert any("a link to a file that does not exist" in t.value for t in at.text)

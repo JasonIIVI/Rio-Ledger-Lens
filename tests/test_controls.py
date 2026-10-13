@@ -120,7 +120,7 @@ REFUSED = [
     (_file(("controller", "ann\tlee")), ["'ann\\tlee'", "not one line of visible text"]),
     (_file(("controller", "Lee, Ann")), ["'Lee, Ann'", "holds a comma"]),
     (_file(("controller", "x" * 65)), ["longer than 64 characters"]),
-    (_file(("mchen", "controller", "mchen")), ["'mchen' is listed twice"]),
+    (_file(("mchen", "controller", "mchen")), ["'mchen' is listed 2 times"]),
     (_file(limit="10,000"), ["must be a number of dollars", "'10,000'", 'not "10,000"']),
     (_file(limit=True), ["must be a number of dollars, got True"]),
     (_file(limit=None), ["must be a number of dollars, got None"]),
@@ -130,9 +130,19 @@ REFUSED = [
     (_file().replace("10000", "-0.0"), ["above 0, got -0.0"]),
     (_file().replace("10000", "9999.999"), ["9999.999 is not a whole number of cents"]),
     (_file().replace("10000", "0.001"), ["0.001 is not a whole number of cents"]),
-    (_file().replace("10000", "1e999"), ["1E+999 has more digits than can be compared exactly"]),
+    (_file().replace("10000", "1e999"), ["1E+999 is not below 1,000,000,000,000"]),
     (_file().replace("10000", "12345678901234567.89"),
-     ["12345678901234567.89 has more digits than can be compared exactly"]),
+     ["12345678901234567.89 is not below 1,000,000,000,000"]),
+    (_file().replace("10000", "1000000000000"), ["1000000000000 is not below 1,000,000,000,000"]),
+    (_file().replace("10000", "1e99999999999999999999"),
+     ["approval_limit 1e99999999999999999999 has more digits than a control needs"]),
+    (_file().replace("10000", "9" * 5000), ["approval_limit 99999999999999999999... (5000 characters) "
+                                            "has more digits than a control needs"]),
+    (_file().replace("10000", "0." + "0" * 60 + "1"), ["has more digits than a control needs"]),
+    (_file().replace('"version": 1', '"version": NaN'), ["version must be 1, got NaN"]),
+    (_file(("controller",) * 2 + tuple(f"user{i}" for i in range(49))),
+     ["lists 51 names; at most 50 can be named in JET-12's reason"]),
+    ("[" * 30_000 + "]" * 30_000, ["not JSON a controls file can hold (RecursionError)"]),
 ]
 
 
@@ -153,6 +163,14 @@ def test_every_problem_in_a_file_is_named_at_once(tmp_path):
     ledger = _write(tmp_path, _file(("a,b", "a,b"), 0))
     message = str(pytest.raises(ControlsError, load_controls, ledger).value)
     assert message.count("holds a comma") == 2 and "above 0" in message
+    # nothing stops the parse early: a duplicate key, a NaN and a comma do not hide each other
+    ledger = _write(tmp_path, '{"version": 1, "version": 1, "extra": 1, '
+                              '"manual_entry_approvers": ["a,b", "a,b"], "approval_limit": NaN}')
+    message = str(pytest.raises(ControlsError, load_controls, ledger).value)
+    for said in ("key(s) given twice: 'version'", "unknown key(s): 'extra'", "holds a comma",
+                 "'a,b' is listed 2 times",
+                 "approval_limit NaN is not a number (JSON has no NaN or Infinity)"):
+        assert said in message, (said, message)
     # a key problem does not hide the values' problems behind it
     ledger = _write(tmp_path, _file(("a,b",), "10,000", version=2, limit_usd=5))
     message = str(pytest.raises(ControlsError, load_controls, ledger).value)
@@ -205,8 +223,77 @@ def test_parse_controls_names_no_file():
 def test_a_controls_path_that_is_a_directory_is_refused(tmp_path):
     ledger = tmp_path / "ledger.csv"
     controls_path(ledger).mkdir()
-    with pytest.raises(ControlsError, match="cannot be read"):
+    with pytest.raises(ControlsError, match="not a regular file"):
         load_controls(ledger)
+
+
+def test_a_fifo_at_the_controls_path_is_refused_not_waited_on(tmp_path):
+    """A read of a FIFO waits for a writer forever. The writer here gives up after two
+    seconds, so a loader that reads it gets a valid file instead of hanging the suite."""
+    import errno
+    import threading
+    import time
+
+    ledger = tmp_path / "ledger.csv"
+    fifo = controls_path(ledger)
+    os.mkfifo(fifo)
+
+    def write():
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            try:
+                fd = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
+            except OSError as exc:
+                if exc.errno != errno.ENXIO:  # ENXIO: nobody is reading yet
+                    raise
+                time.sleep(0.02)
+                continue
+            os.write(fd, _file().encode())
+            os.close(fd)
+            return
+
+    writer = threading.Thread(target=write, daemon=True)
+    writer.start()
+    with pytest.raises(ControlsError, match="not a regular file"):
+        load_controls(ledger)
+    writer.join(5)
+
+
+def test_a_file_larger_than_controls_need_is_refused_unread(tmp_path):
+    ledger = _write(tmp_path, _file() + " " * (64 * 1024))
+    with pytest.raises(ControlsError, match="bytes; a controls file is a few lines"):
+        load_controls(ledger)
+
+
+def test_a_file_of_many_keys_is_said_in_a_line(tmp_path):
+    """Every unknown key and every duplicate was listed: 188 KB of message for 20,000 keys."""
+    keys = ", ".join(f'"k{i}": 1, "k{i}": 2' for i in range(2_000))
+    ledger = _write(tmp_path, "{" + keys + "}")
+    message = str(pytest.raises(ControlsError, load_controls, ledger).value)
+    assert message.count("and 1995 more") == 2 and len(message) < 600, len(message)
+
+
+def test_a_limit_up_to_the_ceiling_is_held_and_shown_exactly(tmp_path):
+    ledger = _write(tmp_path, _file().replace("10000", "999999999999.99"))
+    loaded = load_controls(ledger)
+    assert format_limit(loaded.approval_limit) == "$999,999,999,999.99"
+    assert Controls(("controller",), 10_000.0) == Controls(("controller",), 10_000)
+
+
+def test_a_numpy_float_limit_built_in_code_is_read_as_its_value():
+    np = pytest.importorskip("numpy")
+    assert Controls(("controller", "mchen"), np.float64(10_000.0)) == DEFAULT_CONTROLS
+
+
+def test_a_leading_tilde_is_the_home_directory_as_pandas_reads_the_ledger(tmp_path, monkeypatch):
+    """pandas reads `~/books/x.csv` from the home directory; the controls beside it were looked
+    for under a directory named `~`, and the synthetic company's were used instead."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "books").mkdir()
+    (tmp_path / "books" / "x.controls.json").write_text(_file(("qbo-user-1",)))
+    assert controls_path("~/books/x.csv") == tmp_path / "books" / "x.controls.json"
+    assert load_controls("~/books/x.csv").manual_entry_approvers == ("qbo-user-1",)
+    assert identity_path("~/books/x.csv") == tmp_path / "books" / "x.identity.json"
 
 
 def test_a_controls_file_that_is_not_utf8_is_refused(tmp_path):

@@ -1093,3 +1093,16 @@ def test_the_report_dates_a_run_by_its_first_and_last_row_and_discloses_override
     assert f"Run: {rows[0]['graded_at']} to 2099-01-01T00:00:00+00:00" in report
     assert "1 case(s) carry a line-description override (JE-x)" in report
     assert "## Case set notes" in report and "a note about the set" in report
+
+
+def test_the_readme_counts_the_committed_prompts_that_quote_the_default_controls():
+    """The README says why eval-narratives keeps the default ledger on the default controls:
+    so many of its committed prompts quote JET-06's or JET-12's wording of them."""
+    root = Path(__file__).resolve().parents[1]
+    rows = [json.loads(line) for path in sorted((root / "evals" / "narratives" / "runs").glob("*/results.jsonl"))
+            for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    quoting = {r["entry_id"] for r in rows if "the approved list (controller, mchen)." in r["prompt"]
+               or "beneath the $10,000 approval threshold." in r["prompt"]}
+    words = {12: "twelve", 17: "seventeen"}
+    readme = " ".join((root / "README.md").read_text(encoding="utf-8").split())
+    assert f"{words[len(quoting)]} of its {words[len({r['entry_id'] for r in rows})]} prompts quote them" in readme

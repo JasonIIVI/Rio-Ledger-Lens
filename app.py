@@ -44,7 +44,13 @@ def _stamp(path: str) -> tuple | None:
     """
     try:
         status = os.stat(path)
-    except (OSError, ValueError):  # no such file, or a name the filesystem rejects: load says so
+    except FileNotFoundError:
+        try:  # a link to nothing is not "no file": load refuses it, so it keys differently
+            status = os.lstat(path)
+        except (OSError, ValueError):
+            return None
+        return ("link to nothing", status.st_mtime_ns)
+    except (OSError, ValueError):  # a name the filesystem rejects, a loop: load says so
         return None
     return (status.st_mtime_ns, status.st_size)
 

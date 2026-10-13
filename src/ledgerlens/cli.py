@@ -650,7 +650,10 @@ def cmd_pull_qbo(args: argparse.Namespace) -> int:
     if args.start > args.end:
         print(f"error: --start {args.start} is after --end {args.end}")
         return 2
-    out = Path(args.out)
+    # A leading "~" expanded once, here, as pandas expands it when it writes the CSV: the guard
+    # judged the literal path while the ledger went to the home directory, and its identity
+    # and controls are looked for beside the file pandas wrote.
+    out = Path(os.path.expanduser(args.out))
     refusal = _refuse_output(out)
     if refusal:
         print(f"refused: {refusal}")
@@ -826,8 +829,9 @@ def cmd_eval_narratives(args: argparse.Namespace) -> int:
         return 2
     if default_ledger and not controls.is_default:
         # The committed case set, runs and report were built from this ledger under the
-        # synthetic company's controls, and JET-06's and JET-12's reasons are in every
-        # prompt: a run under others would grade notes against prompts no case was written for.
+        # synthetic company's controls, which 12 of the 17 prompts quote (JET-06's or JET-12's
+        # reason), and others can add a JET-12 to any manual entry: a run under them would
+        # grade notes against prompts no case was written for.
         print(f"refused: {one_line(controls.source)} sets controls other than the synthetic "
               "company's on the default synthetic ledger, whose eval cases, runs and report were "
               f"built under {one_line(DEFAULT_CONTROLS.describe())}; move the file aside to "

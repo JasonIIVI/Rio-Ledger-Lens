@@ -294,17 +294,31 @@ and the MCP SDK, so the two together cover every code path CI will see.
   (the committed prompts still rebuild). `jets.run_all(..., controls=)`; read by test, score,
   report, summary, narrate and eval-narratives (one `error: cannot use the controls file`
   line), by `LedgerContext` for a ledger given by path (so the MCP server), and by the
-  dashboard (cache key covers the file). A command that used a file prints "Controls from
-  ..." first; the summary (a `controls` block; `CONTROLS_NOTE`, `DEFAULT_CONTROLS_NOTE`, and
+  dashboard (cache key covers the file; the MCP server reads it at its first load). test,
+  score, report, narrate and eval-narratives print "Controls from ..." first when a file was
+  used (summary names it on the page); the summary (a `controls` block; `CONTROLS_NOTE`, `DEFAULT_CONTROLS_NOTE`, and
   `SEEDED_NOTE` only for the default ledger under the defaults), the workpaper (Summary rows,
   a Methodology block), the dashboard's sidebar and the MCP summary name them.
   `eval-narratives` refuses other controls on the default ledger in every mode. `pull-qbo`
   says when no controls file sits beside the pull; `generate` says when one already sits
   beside the ledger it writes. `*.controls.json` is gitignored and in rule 1's pattern
-  (real approvers are real people).
+  (real approvers are real people). A review (correctness and security, claims, test
+  strength) found no high: fixed were inputs that escaped as a traceback or hung (deep
+  nesting, huge exponents and digit strings, a FIFO), so a file is now read only if it is a
+  regular file of at most 64 KiB, numbers of over 40 characters and NaN or Infinity are named
+  against the key holding them, every problem (duplicate keys included) is named in one
+  message, at most 50 approvers, a limit below $1 trillion; a leading `~` in a ledger path
+  (pandas expands it) is expanded for the controls and identity files too, and by `pull-qbo
+  --out`, so the guard judges the path written; a failed `LedgerContext.load` keeps no identity
+  or controls; a link to nothing keys the dashboard's cache apart from no file; and claims
+  (only JET-11's threshold was swept; 12 of the 17 committed prompts quote the defaults).
+  Names are compared as written (no Unicode normalisation; a ledger name with stray spaces
+  cannot be listed): documented. Open, Jason's to decide: review rows are keyed by ledger,
+  not controls, so after a controls change a decided entry stays out of the queue whatever
+  it is now flagged for (documented; recording the controls on each row is a schema change).
 - **Next** — breaking the circularity in the detection numbers (a held-out ledger of
   archetypes no rule describes, generated once after the code is frozen).
-- 935 tests on 3.9 (1 skipped) / 949 on 3.12 (the fourteen MCP tests need 3.10+), ruff clean.
+- 954 tests on 3.9 (1 skipped) / 968 on 3.12 (the fourteen MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
@@ -463,7 +477,7 @@ unhelpful. Say so wherever the number is quoted.
   through the data-not-instructions rule, a refusal through `ascii` of the id it quotes, the workpaper's string cells written
   as text (openpyxl would store one beginning with `=` as a formula), the CLI's own lines
   through `summary.one_line`, and in the dashboard a flag's reason and an approver's name as
-  code spans (`summary.md_code`) and the note's prose with its markdown escaped (`app.md`: no construct
+  code spans (`summary.code_span`) and the note's prose with its markdown escaped (`app.md`: no construct
   forms, though Streamlit still links a bare URL and redraws `->`); its tables are drawn as
   text. `summary.py` and its tests stay ASCII
   (pinned by a test), because their patterns name characters that could not be reviewed if

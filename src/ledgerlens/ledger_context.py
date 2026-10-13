@@ -123,13 +123,19 @@ class LedgerContext:
             return self
         from_file = not isinstance(self._ledger, pd.DataFrame)
         df = load_csv(self._ledger) if from_file else self._ledger
-        if self.ledger_id is None:
-            self.ledger_id = ledger_identity(df, self._ledger if from_file else None)
-        if self.controls is None:  # a file that cannot be used is an error, never the defaults
-            self.controls = load_controls(self._ledger) if from_file else DEFAULT_CONTROLS
-        flags = jets.run_all(df, controls=self.controls)
+        # Kept in locals until everything has loaded: a load that fails (a controls file that
+        # cannot be used, a population the model cannot fit) must not leave an identity or
+        # controls behind for the next attempt, which may read a ledger replaced meanwhile.
+        ledger_id = self.ledger_id
+        if ledger_id is None:
+            ledger_id = ledger_identity(df, self._ledger if from_file else None)
+        controls = self.controls
+        if controls is None:  # a file that cannot be used is an error, never the defaults
+            controls = load_controls(self._ledger) if from_file else DEFAULT_CONTROLS
+        flags = jets.run_all(df, controls=controls)
         scored = jets.score_entries(df, flags)
         model_scores, report = score_ledger(df)
+        self.ledger_id, self.controls = ledger_id, controls
         self.lines, self.flags = df, flags
         self.combined = combine(scored, model_scores, model_top_pct=self.model_top_pct)
         self.model_report = report

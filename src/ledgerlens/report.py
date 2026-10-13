@@ -167,8 +167,8 @@ def build_workpaper(
             ("", ""),
             ("JET-12 approvers", format_approvers(controls.manual_entry_approvers)),
             ("JET-06 approval limit", format_limit(controls.approval_limit)),
-            # A path is an identifier, kept whole; with no file, short enough to leave the
-            # column at the width of the counts.
+            # With no file, words short enough to keep column B narrow (27), however long the
+            # sentences below it are; a path is measured like any other value.
             ("Controls file", controls.source or "none (synthetic defaults)"),
         ]
         if metrics:

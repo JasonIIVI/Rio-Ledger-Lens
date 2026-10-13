@@ -653,3 +653,17 @@ def test_the_notes_say_whose_controls_the_tests_ran_against(context, default_con
     own = summary.collect(LedgerContext(small_ledger[0], controls=Controls(
         ("controller",), 10_000, source="x.controls.json")).load())["notes"]
     assert own[0] == summary.TUNING_NOTE and summary.DEFAULT_CONTROLS_NOTE not in own
+
+
+
+def test_the_controls_line_never_splits_a_name_or_a_path(payload):
+    """A filler approver slides a hyphenated name and a long path across the 96th column."""
+    name = "-".join(["abcd"] * 12)
+    source = "out/" + "d" * 70 + "/books-2026.controls.json"
+    for width in range(1, 65, 3):
+        page = copy.deepcopy(payload)
+        page["controls"].update(source=source, default=False,
+                                manual_entry_approvers=sorted(["a" * width, "controller", name]))
+        lines = summary.render(page, "text").splitlines()
+        assert any(name in line for line in lines), width
+        assert any(source in line for line in lines), width

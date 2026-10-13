@@ -1757,3 +1757,41 @@ def test_report_score_and_narrate_flag_a_pull_by_its_companys_controls(qbo_env, 
     prompts = [call["messages"][0]["content"] for call in client.calls]
     assert len(prompts) == 3 and any("JET-01" in p for p in prompts)
     assert not any("JET-12" in p or "approved list" in p for p in prompts)
+
+
+def test_a_ledger_named_from_the_home_directory_is_read_with_the_controls_beside_it(
+        two_ledgers, tmp_path, monkeypatch, capsys):
+    """pandas expands a leading "~" when it reads the ledger. The controls file beside it was
+    looked for under a directory named "~", so a quoted path (as an iCloud path with spaces is
+    typed) was tested against the synthetic company's controls, and `test` said nothing."""
+    import shutil
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "books").mkdir()
+    shutil.copy(_pair(two_ledgers)[0], tmp_path / "books" / "acme.csv")
+    (tmp_path / "books" / "acme.controls.json").write_text(json.dumps(
+        {"version": 1, "manual_entry_approvers": ["controller"], "approval_limit": 10000}))
+    capsys.readouterr()
+    assert main(["test", "~/books/acme.csv", "--only", "JET-12"]) == 0
+    assert capsys.readouterr().out.startswith(
+        f"Controls from {tmp_path / 'books' / 'acme.controls.json'}: approvers controller (JET-12)")
+    assert main(["summary", "~/books/acme.csv", "--format", "json"]) == 0
+    assert json.loads(capsys.readouterr().out)["controls"]["manual_entry_approvers"] == ["controller"]
+
+
+def test_pull_qbo_judges_and_writes_one_path_when_out_starts_with_a_tilde(qbo_env, monkeypatch, capsys):
+    """The guard judged the literal "~/..." while pandas wrote the CSV to the home directory;
+    the identity file went beside neither."""
+    home = qbo_env.root / "home"
+    (home / "data").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    assert _replay_to("~/data/qbo-ledger.csv") == 0
+    printed = capsys.readouterr().out
+    assert (home / "data" / "qbo-ledger.csv").exists()
+    assert (home / "data" / "qbo-ledger.identity.json").exists()
+    assert not (qbo_env.root / "~").exists()
+    assert f"Controls: none at {home / 'data' / 'qbo-ledger.controls.json'}" in printed
+    (home / ".git").mkdir()  # the home directory a checkout: only its data/ may hold books
+    assert _replay_to("~/books/qbo-ledger.csv") == 2
+    assert capsys.readouterr().out.startswith("refused: ") and not (home / "books").exists()
