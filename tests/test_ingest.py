@@ -497,13 +497,14 @@ def test_hrs_after_the_time_is_not_taken_for_a_zone(tmp_path):
         str(w.message) for w in caught]
 
 
-@pytest.mark.parametrize("machine", ["UTC", "Europe/Paris"])
+@pytest.mark.parametrize("machine", ["UTC", "Europe/Paris", "America/New_York"])
 @pytest.mark.parametrize("suffix", [" ET", " PT", ", EST", " EST.", " Mon EST"])
 def test_a_zone_the_pattern_does_not_know_is_refused_alike_on_either_pandas(tmp_path, monkeypatch, suffix, machine):
     """A zone the pattern does not see (two letters, after a comma or a weekday, before a dot)
     reached pandas: pandas 2 kept the name as text in the format it guessed and loaded the
     times with no zone, where pandas 3 guessed no format and refused them, so one CSV loaded on
-    3.9 and not on 3.12. A format that keeps a word is not taken, so both refuse it the same way."""
+    3.9 and not on 3.12. A format that keeps a word is not taken, nor one that reads a zone
+    (pandas 2 guesses %Z for EST on a New York machine), so both refuse it the same way."""
     import time
 
     from ledgerlens.ingest import load_csv
@@ -833,3 +834,105 @@ def test_a_label_file_keeps_an_id_pandas_would_read_as_missing(tmp_path):
     path = tmp_path / "labels.csv"
     path.write_text("entry_id,is_anomaly,anomaly_type\nNA,false,\nJE-1,true,round_amount\n", encoding="utf-8")
     assert load_labels(path)["entry_id"].tolist() == ["NA", "JE-1"]
+
+
+@pytest.mark.parametrize("column, fmt", [
+    ("posting_date", "%d-%b-%y"), ("posting_date", "%d%b%Y"), ("posting_date", "%b %d, %Y"),
+    ("entered_at", "%d-%b-%Y %H:%M:%S"),
+], ids=["DD-MON-RR", "DATE9", "MON DD, YYYY", "DD-MON-YYYY HH24:MI:SS"])
+def test_a_month_named_in_capitals_reads_as_in_any_other_case(tmp_path, column, fmt):
+    """Oracle writes 02-JAN-24 and SAS 02JAN2024. pandas guesses a format only from a month
+    written as strftime writes it (Jan), though it reads any case, so ec056ba refused these
+    columns, which every commit before it read."""
+    from ledgerlens.ingest import load_csv
+
+    plain = load_csv(_small_csv(tmp_path))
+    path = _rewrite_column(tmp_path / "ledger.csv", column, lambda v: pd.Timestamp(v).strftime(fmt).upper())
+    assert load_csv(path)[column].tolist() == plain[column].tolist()
+
+
+@pytest.mark.parametrize("fmt", ["%d-%b-%y", "%d-%b-%Y", "%b %d, %Y"])
+def test_a_month_named_column_whose_first_month_is_may_loads(tmp_path, fmt):
+    """May is both %b and %B, and pandas guesses %B, so with May in row 1 every Jun, Jul ...
+    after it was "in a different date format": a ledger starting in May was refused."""
+    import datetime as dt
+
+    from ledgerlens.generate import generate_ledger
+    from ledgerlens.ingest import load_csv
+
+    lines, _ = generate_ledger(start=dt.date(2024, 5, 1), end=dt.date(2024, 6, 30), entries_per_day=2)
+    path = tmp_path / "ledger.csv"
+    lines.to_csv(path, index=False)
+    plain = load_csv(path)
+    _rewrite_column(path, "posting_date", lambda v: pd.Timestamp(v).strftime(fmt))
+    assert load_csv(path)["posting_date"].tolist() == plain["posting_date"].tolist()
+
+
+def test_an_afternoon_in_row_1_with_a_space_after_its_pm_loads(tmp_path):
+    """The PM set aside to guess a format had to end the cell: "2:05 PM " in row 1, which every
+    commit before ec056ba read, was refused as having no format."""
+    from ledgerlens.ingest import load_csv
+
+    plain = load_csv(_small_csv(tmp_path))
+    expected = plain["entered_at"].dt.floor("min").tolist()
+    path = _rewrite_column(tmp_path / "ledger.csv", "entered_at", lambda v: pd.Timestamp(v).strftime("%m/%d/%Y %I:%M %p "))
+    afternoon = plain["entered_at"].iloc[0].replace(hour=14, minute=5, second=0)
+    _damage(path, {(1, "entered_at"): afternoon.strftime("%m/%d/%Y %I:%M %p ")})
+    expected[0] = afternoon
+    assert load_csv(path)["entered_at"].tolist() == expected
+
+
+@pytest.mark.parametrize("first", ["digits", "today"])
+def test_the_am_pm_rewrite_follows_the_row_the_format_comes_from(tmp_path, first):
+    """Whether am and pm were written AM and PM was decided by the first text cell, which a digit
+    date or "today" in row 1 can be: nothing was rewritten, and the column was refused as having
+    no format, naming row 2, which was fine."""
+    from ledgerlens.ingest import load_csv
+
+    plain = load_csv(_small_csv(tmp_path))
+    path = _rewrite_column(tmp_path / "ledger.csv", "entered_at",
+                           lambda v: pd.Timestamp(v).strftime("%m/%d/%Y %I:%M:%S ") + pd.Timestamp(v).strftime("%p").lower())
+    if first == "digits":
+        _damage(path, {(1, "entered_at"): plain["entered_at"].iloc[0].strftime("%Y%m%d%H%M%S")})
+        assert load_csv(path)["entered_at"].tolist() == plain["entered_at"].tolist()
+    else:
+        _damage(path, {(1, "entered_at"): "today"})
+        with pytest.raises(SchemaError) as excinfo:
+            load_csv(path)
+        message = str(excinfo.value)
+        assert "entered_at is not a readable date on 1 row, the first is data row 1 ('today')" in message, message
+        assert "no date format" not in message, message
+
+
+@pytest.mark.parametrize("fmt", ["%d %B %Y at %H:%M", "%Y-%m-%d %Hh%M"], ids=["at", "09h15"])
+def test_a_word_that_only_joins_date_and_time_is_no_reason_to_refuse(tmp_path, fmt):
+    """pandas keeps "at" ("2 January 2024 at 09:15") and the h of 09h15 as text in its format;
+    a literal must match in every cell, so they hide nothing, and ec056ba's refusal of them was
+    a refusal of ledgers every commit before it read."""
+    from ledgerlens.ingest import load_csv
+
+    plain = load_csv(_small_csv(tmp_path))
+    path = _rewrite_column(tmp_path / "ledger.csv", "entered_at", lambda v: pd.Timestamp(v).strftime(fmt))
+    assert load_csv(path)["entered_at"].tolist() == plain["entered_at"].dt.floor("min").tolist()
+
+
+def test_a_fraction_of_a_second_is_not_taken_for_a_two_digit_year(tmp_path):
+    """The two digits widened to guess a two-digit year were the last outside a time of day,
+    which "09:15:00.00" ended with: the year was missed and the column refused."""
+    from ledgerlens.ingest import load_csv
+
+    plain = load_csv(_small_csv(tmp_path))
+    path = _rewrite_column(tmp_path / "ledger.csv", "entered_at", lambda v: pd.Timestamp(v).strftime("%m/%d/%y %H:%M:%S") + ".00")
+    assert load_csv(path)["entered_at"].tolist() == plain["entered_at"].tolist()
+
+
+def test_a_zone_after_an_am_or_pm_written_another_way_is_found(tmp_path):
+    """The pattern sees no zone after "p. m." until the meridiem is written PM, so the zone is
+    looked for again once it is: the column is refused as carrying one, not as a format."""
+    from ledgerlens.ingest import load_csv
+
+    path = _rewrite_column(_small_csv(tmp_path), "entered_at",
+                           lambda v: pd.Timestamp(v).strftime("%m/%d/%Y %I:%M ") + pd.Timestamp(v).strftime("%p")[0].lower() + ". m. EST")
+    with pytest.raises(SchemaError) as excinfo:
+        load_csv(path)
+    assert "entered_at carries a time zone offset on " in str(excinfo.value), str(excinfo.value)

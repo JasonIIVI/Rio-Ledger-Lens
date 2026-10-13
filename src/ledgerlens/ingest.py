@@ -58,9 +58,18 @@ _OFFSET = re.compile(r"\d:\d\d(?::\d\d(?:\.\d+)?)?\s*(?:[AP]\.?M\.?\s*)?"
 #: 24-hour clock ("2:05 pm" read in "%H:%M pm" is 02:05), and pandas 2 takes the M of "P.M."
 #: for a zone.
 _MERIDIEM = re.compile(r"(?<=\d)\s*([AaPp])\.?\s?[Mm]?\.?(?![A-Za-z])")
-#: Two digits standing alone outside a time of day: where a two-digit year can be.
-_TWO_DIGITS = re.compile(r"(?<![\d:])\d\d(?![\d:])")
-#: A letter a guessed format keeps as text, once its directives and ISO's T are set aside.
+#: A time of day, with its seconds and their fraction: where a two-digit year is not.
+_TIME = re.compile(r"\d{1,2}:\d\d(?::\d\d(?:[.,]\d+)?)?")
+#: Two digits standing alone: where a two-digit year can be, once the time is set aside.
+_TWO_DIGITS = re.compile(r"(?<!\d)\d\d(?!\d)")
+#: A word of three letters or more: a month or a weekday, which pandas guesses a format from only
+#: as strftime writes it (Jan), though it reads any case (JAN, jan).
+_LETTERS = re.compile(r"[A-Za-z]{3,}")
+#: AM or PM ending a cell, with any spaces after it.
+_LAST_MERIDIEM = re.compile(r" [AP]M(\s*)$")
+#: What a format may keep as text between its fields: "at" before the time, the h of 09h15.
+_JOINS = re.compile(r" at |(?<=%H)h(?=%M)")
+#: A letter a guessed format keeps as text, once its directives, ISO's T and the joins are set aside.
 _WORD = re.compile(r"[A-Za-z]")
 #: Words pandas reads as the clock: a ledger dated "today" would be dated the day it was read.
 _CLOCK_WORDS = frozenset({"now", "today"})
@@ -261,16 +270,26 @@ def _guess(cell: str, dayfirst: bool = False) -> str | None:
         return guess_datetime_format(cell, dayfirst=dayfirst)
 
 
+def _guess_any_case(cell: str, dayfirst: bool) -> str | None:
+    """pandas' guess, or its guess with each word written Jan, Mon: it takes a format from a
+    month or a weekday only as strftime writes it, and reads any case once given one."""
+    fmt = _guess(cell, dayfirst)
+    if fmt is None:
+        titled = _LETTERS.sub(lambda m: m.group().title(), cell)
+        fmt = _guess(titled, dayfirst) if titled != cell else None
+    return fmt
+
+
 def _short_year(cell: str, dayfirst: bool) -> str | None:
     """The format of a date whose year is two digits (02/01/24, 02-Jan-24), for which pandas
-    guesses none: the last two digits standing alone outside the time are widened to a year
-    and guessed, and the format names them as two digits again."""
-    found = list(_TWO_DIGITS.finditer(cell))
+    guesses none: the last two digits standing alone outside the time of day are widened to a
+    year and guessed, and the format names them as two digits again."""
+    found = list(_TWO_DIGITS.finditer(_TIME.sub(lambda m: "#" * len(m.group()), cell)))
     if not found:
         return None
     two = found[-1]
     wide = cell[:two.start()] + "20" + two.group() + cell[two.end():]
-    fmt = _guess(wide, dayfirst)
+    fmt = _guess_any_case(wide, dayfirst)
     return fmt.replace("%Y", "%y") if fmt is not None and fmt.count("%Y") == 1 else None
 
 
@@ -278,17 +297,20 @@ def _format_of(cell: str, dayfirst: bool = False) -> str | None:
     """The one format a date column is read in, taken from its first cell: pandas' guess, or
     where pandas guesses none, its guess with the AM or PM set aside (it tries a 24-hour clock
     on "2:05 PM" and on 12 AM) or with a two-digit year widened, the format then naming them as
-    written. None where no format can be taken, or the one guessed keeps a word of the cell as
-    text ("%H:%M:%S ET", "Sun %m/%d/%Y", "%b %dnd, %Y"): such a column is refused, where pandas
-    would read it cell by cell, choosing day or month first for each cell and dating a bare
-    time by the day it was read."""
-    fmt = _guess(cell, dayfirst)
+    written; a month or weekday in capitals is guessed as Jan or Mon would be. None where no
+    format can be taken, or the one guessed reads a zone (pandas 2 guesses %Z for the machine's
+    own) or keeps a word of the cell as text ("%H:%M:%S ET", "Sun %m/%d/%Y", "%b %dnd, %Y"):
+    such a column is refused, where pandas would read it cell by cell, choosing day or month
+    first for each cell and dating a bare time by the day it was read."""
+    fmt = _guess_any_case(cell, dayfirst)
     if fmt is None:
-        body, meridiem = (cell[:-3], " %p") if cell.endswith((" AM", " PM")) else (cell, "")
-        fmt = _guess(body, dayfirst) or _short_year(body, dayfirst)
+        end = _LAST_MERIDIEM.search(cell)
+        body, meridiem = (cell[:end.start()], " %p" + end.group(1)) if end else (cell, "")
+        fmt = _guess_any_case(body, dayfirst) or _short_year(body, dayfirst)
         if fmt is not None and meridiem:
             fmt = fmt.replace("%H", "%I") + meridiem if "%H" in fmt else None
-    if fmt is None or _WORD.search(re.sub(r"%[A-Za-z]", "", fmt).replace("T", "")):
+    if (fmt is None or "%Z" in fmt or "%z" in fmt
+            or _WORD.search(re.sub(r"%[A-Za-z]", "", _JOINS.sub("", fmt)).replace("T", ""))):
         return None
     return fmt
 
@@ -304,10 +326,9 @@ def _day_first(column: str, cells: pd.Series, skip: np.ndarray, at: int, fmt: st
 
 
 def _another_format(column: str, raw: pd.Series, cells: pd.Series, skip: np.ndarray,
-                    readable: np.ndarray, at: int) -> list[str]:
+                    readable: np.ndarray, at: int, fmt: str | None) -> list[str]:
     """Cells that are dates, but not in the format the column is read in, the one taken from
     data row ``at``: named against that row, with the format, and the day-first hint."""
-    fmt = _format_of(str(cells.iloc[at]))
     read_as = f", read as {fmt}" if fmt else ""
     found = [_rows(column, f"is in a different date format from data row {at + 1} ({quote(str(raw.iloc[at]))}{read_as})",
                    readable, raw)]
@@ -320,18 +341,35 @@ def _read_dates(column: str, raw: pd.Series, blank: np.ndarray) -> tuple[pd.Seri
     reads reads exactly as before; where it cannot (a two-digit year, an afternoon time, 12 AM),
     it is given the format _format_of takes, and is never left to read the column cell by cell.
     The cell as written is what a message quotes."""
-    sample = next((v for v in raw if isinstance(v, str) and v.strip()), None)
-    cells = raw
-    if sample is not None and _MERIDIEM.search(sample):
-        cells = raw.map(lambda v: _MERIDIEM.sub(lambda m: f" {m.group(1).upper()}M", v) if isinstance(v, str) else v)
-    number = np.array([_is_number(v) for v in cells], dtype=bool)
-    offset = np.array([_has_zone(v) for v in cells], dtype=bool)
-    clock = np.array([isinstance(v, str) and v.strip().lower() in _CLOCK_WORDS for v in cells], dtype=bool)
+    # the cells as Python objects, made once: pandas 3 holds a CSV's text in Arrow, and every
+    # Python loop over the column itself pays to convert each cell again
+    objs = raw.to_numpy(dtype=object)
+    text = np.fromiter((isinstance(v, str) for v in objs), dtype=bool, count=len(objs))
+    number = np.array([_is_number(v) for v in objs], dtype=bool)
+    clock = np.array([isinstance(v, str) and v.strip().lower() in _CLOCK_WORDS for v in objs], dtype=bool)
+
+    # the cell the format comes from: the first text cell that is not blank, a number, a word for
+    # the clock or a time with a zone (only the cells before it are checked for a zone here)
+    candidates = np.flatnonzero(text & ~blank & ~number & ~clock)
+
+    def lead(cells) -> int | None:
+        return next((int(i) for i in candidates if not _has_zone(cells[i])), None)
+
+    cells, final = raw, objs
+    at = lead(objs)
+    # am or pm is written AM or PM when the cell the format comes from has one written otherwise
+    # (pandas reads AM, PM, am and pm alike once given %p); zones are then looked for in the
+    # rewritten cells ("9:15 p. m. EST"), which the rewrite cannot make a number or a clock word
+    meridiem = None if at is None else _MERIDIEM.search(objs[at])
+    if meridiem and meridiem.group() not in (" AM", " PM"):
+        final = [_MERIDIEM.sub(lambda m: f" {m.group(1).upper()}M", v) if isinstance(v, str) else v for v in objs]
+        cells = pd.Series(final, index=raw.index, dtype=object)
+        at = lead(final)
+    offset = np.array([_has_zone(v) for v in final], dtype=bool)
     skip = blank | number | offset | clock
     unreadable = clock
     found: list[str] = []
     values = pd.Series(pd.NaT, index=raw.index, dtype="datetime64[ns]")
-    at = next((int(i) for i in np.flatnonzero(~skip) if isinstance(cells.iat[i], str)), None)
     fmt = None if at is None else _format_of(cells.iloc[at])
     if at is not None and fmt is None:
         found.append(f"{column} is in no date format that can be read from data row {at + 1} "
@@ -341,6 +379,12 @@ def _read_dates(column: str, raw: pd.Series, blank: np.ndarray) -> tuple[pd.Seri
         first = int((~skip).argmax())
         own = at == first and _guess(cells.iloc[at]) == fmt
         parsed = _dates(cells.mask(skip), format=None if own else fmt)
+        if fmt and "%B" in fmt and parsed is not None and parsed.isna().any():
+            # May is %b and %B alike, and pandas takes %B: a Jan, Feb ... column with May in its
+            # first cell is read with %b if that reads more of it
+            short = _dates(cells.mask(skip), format=fmt.replace("%B", "%b"))
+            if short is not None and short.isna().sum() < parsed.isna().sum():
+                parsed, fmt = short, fmt.replace("%B", "%b")
         if parsed is None or isinstance(parsed.dtype, pd.DatetimeTZDtype):
             # a zone pandas read that the checks above did not see, beside naive times or
             # other zones: one problem, not a count of rows
@@ -355,7 +399,8 @@ def _read_dates(column: str, raw: pd.Series, blank: np.ndarray) -> tuple[pd.Seri
                 readable = np.zeros(len(raw), dtype=bool)
                 readable[failed] = False if alone is None else alone.notna().to_numpy()
                 if readable.any():
-                    found.extend(_another_format(column, raw, cells, skip, readable, first if at is None else at))
+                    found.extend(_another_format(column, raw, cells, skip, readable, first if at is None else at,
+                                                 fmt))
                 unreadable = unreadable | (failed & ~readable)
     problems = [_rows(column, "is blank", blank)] if blank.any() else []
     if offset.any():

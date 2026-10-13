@@ -223,7 +223,12 @@ and the MCP SDK, so the two together cover every code path CI will see.
   first text cell's: pandas' own guess where it makes one (so a ledger pandas reads reads as
   before), and where it makes none (a two-digit year such as 02/01/24 or 02-Jan-24, an
   afternoon time or 12 AM, which pandas tries on a 24-hour clock), the guess with the AM or PM
-  set aside and the year widened, named back as written (`_format_of`). am, pm, a.m., p.m.,
+  set aside and the year widened, named back as written (`_format_of`). A month or weekday in
+  capitals (Oracle's 02-JAN-24, SAS's 02JAN2024) is guessed as Jan or Mon would be; May is
+  `%b` and `%B` alike, so a month-named column with May first is read with `%b` where that
+  reads more of it; "at" and the h of 09h15 between date and time are allowed. A column
+  padded to a fixed width whose cells differ in width, and a two-digit-year column that
+  mixes spellings, are refused as in more than one format. am, pm, a.m., p.m.,
   "a. m." and a or p alone are first written AM or PM: pandas wrote a lower-case or dotted one
   into its format as text beside a 24-hour clock ("2:05 pm" read as 02:05 after "12:30 pm" in
   row 1), and pandas 2 took the M of "P.M." for a zone. A column no format can be taken from,
@@ -241,7 +246,8 @@ and the MCP SDK, so the two together cover every code path CI will see.
   dropped. A name written another way (`ET`, `EST.`, `Mon EST`, `, EST`) pandas keeps as text
   in its format, so the column is refused as having no format, alike on both pandas versions
   (pandas 2 had dropped the name and loaded the time, pandas 3 refused it; `HRS` likewise),
-  and such a cell below one read in the column's format is in another format. pandas 2
+  and such a cell below one read in the column's format is in another format (pandas 2) or
+  not a readable date (pandas 3). pandas 2
   read the machine's own zone name, and once raised an AttributeError on one (now caught too);
   any zone pandas reads that none of these sees is one "mixes times" problem. pandas' warnings
   from the parse are not passed on. A review of this work (two reviewers) found eleven
@@ -249,9 +255,12 @@ and the MCP SDK, so the two together cover every code path CI will see.
   an AttributeError on the machine's own zone name), a re-check of that under five machine
   zones five more, a verification of that fix seven more (four caused by it), and a
   verification of that one, which re-ran a hundred date spellings, ten more: the per-cell
-  reading those fixes had kept was itself the fault, so it is gone. A column of digits held as
-  text reads about a fifth slower than when pandas guessed it (half a second on 500,000 rows),
-  the price of reading it. A QuickBooks pull goes
+  reading those fixes had kept was itself the fault, so it is gone. A verification of the
+  one-format reading found no value read wrong in 100,960 loads and nine more: ledgers it
+  refused that earlier commits read (months in capitals, May first, a space after PM), and
+  its speed. At 500,000 rows it reads as fast as `e19d210` or faster on 3.12 and within 3%
+  on 3.9, but for digits held as text, about a tenth slower there (2.6 s against 2.3 s),
+  the price of reading them. A QuickBooks pull goes
   through the same check (a user or an account number of spaces is counted as unknown,
   not a refused pull). The dashboard shows
   the reason as text (it quotes a cell) and catches an unreadable path too; the MCP server
@@ -268,7 +277,7 @@ and the MCP SDK, so the two together cover every code path CI will see.
   archetypes no rule describes, generated once after the code is frozen), and an approver
   list and approval limit that can be set for JET-12 and JET-06 (a controls file beside the
   ledger).
-- 790 tests on 3.9 (1 skipped) / 802 on 3.12 (the twelve MCP tests need 3.10+), ruff clean.
+- 809 tests on 3.9 (1 skipped) / 821 on 3.12 (the twelve MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
