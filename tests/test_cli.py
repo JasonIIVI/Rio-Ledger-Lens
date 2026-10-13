@@ -1734,6 +1734,11 @@ def test_report_score_and_narrate_flag_a_pull_by_its_companys_controls(qbo_env, 
     assert main(["report", str(out), "--no-model", "--out", str(workpaper)]) == 0
     fired = set(pd.read_excel(workpaper, sheet_name="All flags")["test_id"])
     assert "JET-01" in fired and "JET-12" not in fired
+    import openpyxl
+
+    cells = {row[0].value: row[1].value for row in openpyxl.load_workbook(workpaper)["Summary"].iter_rows()
+             if row[0].value}
+    assert (cells["JET-12 approvers"], cells["Controls file"]) == ("qbo-user-1", str(controls_path(out)))
     assert main(["score", str(out), "--out", str(combined)]) == 0
     tests_fired = pd.read_csv(combined)["tests_fired"].fillna("")
     assert tests_fired.str.contains("JET-01").any() and not tests_fired.str.contains("JET-12").any()

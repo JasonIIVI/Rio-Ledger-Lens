@@ -639,3 +639,25 @@ def test_a_controls_file_written_after_the_first_load_is_read_on_the_next_run(da
     at.run()
     assert not at.exception, at.exception
     assert next(m.value for m in at.metric if m.label == "Flags raised") == str(len(jets.run_all(df)) - len(jet12))
+
+
+def test_the_sidebar_names_the_controls_and_draws_a_name_from_the_file_as_code(data_dir, tmp_path):
+    import json
+
+    from ledgerlens.summary import code_span
+
+    at = _run(data_dir, tmp_path / "review.sqlite")
+    # the limit's "$" and "," escaped (app.md), so no pair of dollars can start maths
+    assert ("Controls: approvers `controller`, `mchen` (JET-12) \u00b7 approval limit \\$10\\,000 "
+            "(JET-06) \u00b7 the synthetic company's (no controls file beside the ledger)") in [
+        c.value for c in at.sidebar.caption]
+    own = tmp_path / "own"
+    own.mkdir()
+    shutil.copy(data_dir / "ledger.csv", own / "ledger.csv")
+    name = "[x](http://example.invalid/beacon.png)"
+    (own / "ledger.controls.json").write_text(json.dumps(
+        {"version": 1, "manual_entry_approvers": ["controller", name], "approval_limit": 2500.5}))
+    at = _run(own, tmp_path / "review.sqlite")
+    caption = next(c.value for c in at.sidebar.caption if c.value.startswith("Controls:"))
+    assert code_span(name) in caption and code_span(str(own / "ledger.controls.json")) in caption
+    assert "\\$2\\,500\\.50" in caption

@@ -193,6 +193,9 @@ class LedgerContext:
                 **{name: int(agreement.get(name, 0)) for name in AGREEMENTS},
                 **{str(k): int(v) for k, v in agreement.items() if k not in AGREEMENTS},
             },
+            # What JET-12 and JET-06 were run against, and where it came from (None: no
+            # controls file, so the synthetic company's).
+            "controls": self.controls.as_dict(),
             "model": self.model_report.describe(),
             "review": self.review_status(),
             "caveat": CAVEAT,

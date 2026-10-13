@@ -17,6 +17,7 @@ import pandas as pd
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
+from .controls import DEFAULT_CONTROLS, Controls, format_approvers, format_limit
 from .evaluate import DETECTION_CAVEAT
 from .review import ReviewStore
 
@@ -109,8 +110,14 @@ def build_workpaper(
     model_report: str | None = None,
     top_n: int = 250,
     store: ReviewStore | None = None,
+    controls: Controls | None = None,
 ) -> Path:
-    """Write the exception workpaper and return the path written."""
+    """Write the exception workpaper and return the path written.
+
+    ``controls`` are the ones the flags were raised against (None: the synthetic
+    company's); the Summary sheet says which, and where they came from.
+    """
+    controls = DEFAULT_CONTROLS if controls is None else controls
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -157,6 +164,12 @@ def build_workpaper(
             ("Total flags raised", int(len(flags))),
             ("Distinct tests fired", int(flags["test_id"].nunique()) if not flags.empty else 0),
             ("Shown in this workpaper", int(len(exceptions))),
+            ("", ""),
+            ("JET-12 approvers", format_approvers(controls.manual_entry_approvers)),
+            ("JET-06 approval limit", format_limit(controls.approval_limit)),
+            # A path is an identifier, kept whole; with no file, short enough to leave the
+            # column at the width of the counts.
+            ("Controls file", controls.source or "none (synthetic defaults)"),
         ]
         if metrics:
             # A ratio over nothing is not a figure: said so, as `summary` says it.
@@ -243,6 +256,11 @@ def build_workpaper(
             "  Rule score = severity-weighted sum over the flags raised (High 3, Medium 2, Low 1);",
             "  a test that flags two lines of one entry (JET-09, JET-11) counts twice.",
             "  Model score = Isolation Forest, rescaled to 0-1. Flagged by rank, not by absolute cutoff.",
+            "",
+            "Controls",
+            "  JET-12's approver list and JET-06's approval limit are the company's, read from a",
+            "  <stem>.controls.json file beside the ledger, or the synthetic company's when there is none.",
+            "  They are facts about the company, not thresholds tuned against data.",
             "",
             "Benford's Law",
             "  MAD is reported with Nigrini's conformity bands alongside chi-square. Chi-square rejects",

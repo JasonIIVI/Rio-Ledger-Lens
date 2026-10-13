@@ -301,3 +301,9 @@ def test_a_ledger_read_by_path_is_tested_against_the_controls_beside_it(small_le
     controls_path(csv).write_text("{}")
     with pytest.raises(ControlsError, match="missing key"):
         LedgerContext(csv).load()
+
+
+def test_the_summary_says_which_controls_the_tests_ran_against(context):
+    assert context.summary()["controls"] == {"source": None, "default": True,
+                                             "manual_entry_approvers": ["controller", "mchen"],
+                                             "approval_limit": 10_000.0}

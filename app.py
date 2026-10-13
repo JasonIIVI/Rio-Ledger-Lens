@@ -19,7 +19,7 @@ import streamlit as st
 
 from ledgerlens import evaluate, jets
 from ledgerlens.benford import benford_test
-from ledgerlens.controls import ControlsError, controls_path, load_controls
+from ledgerlens.controls import ControlsError, controls_path, format_limit, load_controls
 from ledgerlens.env import load_dotenv
 from ledgerlens.ingest import identity_path, ledger_identity, load_csv, load_labels
 from ledgerlens.model import combine, score_ledger
@@ -169,6 +169,13 @@ except RuntimeError as exc:  # a file from a newer version, or not a review data
     st.error(str(exc))
     st.stop()
 st.sidebar.caption(f"Review rows keyed by `{ledger_id}`")
+# What JET-12 and JET-06 were run against. Names from a file are drawn as code spans, as
+# a flag's reason is, and the limit's "$" escaped so no pair of them starts maths.
+st.sidebar.caption("Controls: approvers {} (JET-12) · approval limit {} (JET-06) · {}".format(
+    ", ".join(code_span(name) for name in controls.manual_entry_approvers),
+    md(format_limit(controls.approval_limit)),
+    "from " + code_span(controls.source) if controls.source is not None
+    else "the synthetic company's (no controls file beside the ledger)"))
 others = store.other_ledgers()
 if not others.empty:
     # Surfaced, never shown as this ledger's: a file can hold several ledgers' review.

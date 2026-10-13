@@ -239,3 +239,12 @@ async def test_a_controls_file_that_cannot_be_used_is_a_tool_error_the_client_ca
         result = await c.call_tool("ledgerlens_summary", {})
     assert result.is_error and "ledger.controls.json" in result.content[0].text
     assert "version must be 1, got 2" in result.content[0].text
+
+
+@pytest.mark.anyio
+async def test_the_summary_tool_names_the_controls_the_tests_ran_against(bare_client):
+    result = await bare_client.call_tool("ledgerlens_summary", {})
+    assert not result.is_error
+    assert result.structured_content["controls"] == {
+        "source": None, "default": True, "manual_entry_approvers": ["controller", "mchen"],
+        "approval_limit": 10_000.0}

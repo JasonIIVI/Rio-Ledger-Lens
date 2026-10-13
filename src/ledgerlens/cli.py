@@ -362,6 +362,7 @@ def cmd_report(args: argparse.Namespace) -> int:
         scored, flags, args.out,
         benford=segmented_benford(df, by="account_code"),
         metrics=metrics, model_report=model_report, top_n=args.top, store=store,
+        controls=controls,
     )
     print(f"Workpaper written to {path}")
     print("  {:,} entries in population, {:,} flagged".format(

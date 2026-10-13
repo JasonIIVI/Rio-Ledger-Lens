@@ -31,6 +31,7 @@ import sklearn
 
 from . import __version__, evaluate, jets
 from .connectors.qbo import SMALL_LEDGER
+from .controls import format_limit
 from .ledger_context import CAVEAT, ENTRY_COLUMNS, LedgerContext, records
 from .narrative_eval import DEFAULT_LEDGER_SHA256
 from .review import DECISIONS
@@ -41,6 +42,16 @@ FORMATS = ("text", "markdown", "json")
 SEEDED_NOTE = (
     "This is the generator's default ledger. It is seeded, so these numbers move only when the "
     "code or one of its dependencies changes: a regression watch, not new data."
+)
+CONTROLS_NOTE = (
+    "This is the generator's default ledger, tested against an approver list or approval limit "
+    "other than the synthetic company's (see Controls): JET-06 and JET-12, and every figure that "
+    "counts them, can differ from the published ones."
+)
+DEFAULT_CONTROLS_NOTE = (
+    "No controls file sits beside this ledger, so JET-12 and JET-06 test it against the synthetic "
+    "company's approver list and approval limit, not its own: state them in a <stem>.controls.json "
+    "file beside the ledger (see the README)."
 )
 TUNING_NOTE = (
     "This is not the generator's default ledger. The tests' thresholds were tuned against that "
@@ -124,6 +135,9 @@ def collect(
         "ledger": None if ledger is None else str(ledger),
         "ledger_id": context.ledger_id,
         "default_ledger": context.ledger_id == "csv:" + DEFAULT_LEDGER_SHA256,
+        # The approver list JET-12 read and the limit JET-06 read, and the file they came
+        # from (None: there was none, so they are the synthetic company's).
+        "controls": base["controls"],
         "entries": base["entries"],
         "lines": base["lines"],
         "fiscal_years": base["fiscal_years"],
@@ -188,7 +202,12 @@ def collect(
             "by_archetype": by_archetype,
         }
 
-    notes = [SEEDED_NOTE if payload["default_ledger"] else TUNING_NOTE]
+    if payload["default_ledger"]:
+        notes = [SEEDED_NOTE if payload["controls"]["default"] else CONTROLS_NOTE]
+    else:
+        notes = [TUNING_NOTE]
+        if payload["controls"]["source"] is None:
+            notes.append(DEFAULT_CONTROLS_NOTE)
     if labels is None:
         notes.append(NO_LABELS_NOTE)
     if payload["entries"] < SMALL_LEDGER:
@@ -315,6 +334,19 @@ def _read_as(definitional: bool | None) -> str:
     return "definitional" if definitional else "measured"
 
 
+def _controls_sentence(controls: dict, code) -> str:
+    """The controls as one line, every string from a file through ``code``."""
+    if controls["source"] is None:
+        origin = "the synthetic company's (no controls file beside the ledger)"
+    else:
+        origin = "from " + code(controls["source"])
+        if controls["default"]:
+            origin += ", the same as the synthetic company's"
+    return "approvers {} (JET-12); approval limit {} (JET-06); {}".format(
+        ", ".join(code(name) for name in controls["manual_entry_approvers"]),
+        format_limit(controls["approval_limit"]), origin)
+
+
 def _years(payload: dict) -> str:
     return ", ".join(str(year) for year in payload["fiscal_years"]) or "none"
 
@@ -361,6 +393,8 @@ def render_text(payload: dict) -> str:
         "",
         "Ledger      {}".format(one_line(payload["ledger"]) or "(a frame, not a file)"),
         "Identity    {}".format(one_line(payload["ledger_id"])),
+        *textwrap.wrap("Controls    " + _controls_sentence(payload["controls"], one_line), 96,
+                       subsequent_indent=" " * 12),
         "Population  {:,} entries / {:,} lines; fiscal years {}".format(
             payload["entries"], payload["lines"], _years(payload)),
         "",
@@ -429,6 +463,7 @@ def render_markdown(payload: dict) -> str:
         *_table(("", ""), [
             ("Ledger", "{} ({})".format(md_code(payload["ledger"]) or "a frame, not a file",
                                         md_code(payload["ledger_id"]))),
+            ("Controls", _controls_sentence(payload["controls"], md_code)),
             ("Population", "{:,} entries, {:,} lines; fiscal years {}".format(
                 payload["entries"], payload["lines"], _years(payload))),
             ("Flagged by the rule tier", "{:,} entries ({:.2%})".format(
