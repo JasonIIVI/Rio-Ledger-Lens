@@ -226,20 +226,22 @@ and the MCP SDK, so the two together cover every code path CI will see.
   set aside and the year widened, named back as written (`_format_of`). A month or weekday in
   capitals (Oracle's 02-JAN-24, SAS's 02JAN2024) is guessed as Jan or Mon would be; May is
   `%b` and `%B` alike, so a month-named column with May first is read with `%b` where that
-  reads more of it; "at" and the h of 09h15 between date and time are allowed. A column
+  reads more of it; " at " in lower case and the h of a 24-hour 09h15 between date and time
+  are allowed (as written: `AT`, `9h15 AM`, or `09h15` after a two-digit year are not). A column
   padded to a fixed width whose cells differ in width, and a two-digit-year column that
   mixes spellings, are refused as in more than one format. am, pm, a.m., p.m.,
   "a. m." and a or p alone are first written AM or PM: pandas wrote a lower-case or dotted one
   into its format as text beside a 24-hour clock ("2:05 pm" read as 02:05 after "12:30 pm" in
   row 1), and pandas 2 took the M of "P.M." for a zone. A column no format can be taken from,
   or whose format would keep a word of the cell as text (pandas 2's `%H:%M:%S ET`, a weekday
-  the date contradicts, `2nd`), is refused rather than read cell by cell: pandas read such a
+  row 1's date contradicts, `2nd`), is refused rather than read cell by cell: pandas read such a
   column with dateutil, a day of 12 or under as the month wherever it could, a bare time as
-  the day the ledger was read and "Jan 2024" as the first. A cell in another format than the
+  the day the ledger was read and "Jan 2024" as the first. Below row 1 pandas reads a weekday
+  without checking it against the date, which is read as written. A cell in another format than the
   column's is named against the row the format came from, with the format, and a column that
   reads day first throughout is told so. A day-first ledger whose days are all 12 or under
-  cannot be told from a month-first one, nor a two-digit year written first (24-01-02) from a
-  day: write YYYY-MM-DD. A zone is found before pandas sees it, on text (`Z`, a name such as
+  cannot be told from a month-first one, nor a two-digit year written first (24-01-02,
+  24-JAN-02) from a day: write YYYY-MM-DD. A zone is found before pandas sees it, on text (`Z`, a name such as
   `UTC` or `EST`, `+05:30`, `-0700`, an hour alone, `UTC+1`; after an AM or PM too, and before
   a year as Java writes one) and on datetime objects; a weekday or `HRS` after the time is not
   a zone, and any other word of three to five letters there is refused as one rather than
@@ -258,9 +260,12 @@ and the MCP SDK, so the two together cover every code path CI will see.
   reading those fixes had kept was itself the fault, so it is gone. A verification of the
   one-format reading found no value read wrong in 100,960 loads and nine more: ledgers it
   refused that earlier commits read (months in capitals, May first, a space after PM), and
-  its speed. At 500,000 rows it reads as fast as `e19d210` or faster on 3.12 and within 3%
-  on 3.9, but for digits held as text, about a tenth slower there (2.6 s against 2.3 s),
-  the price of reading them. A QuickBooks pull goes
+  its speed. Read from a CSV of 500,000 rows it is as fast as `e19d210` or faster on 3.12;
+  on 3.9 ISO and m/d/yy dates read as fast, and digits held as text and AM/PM times about a
+  tenth slower (2.5 to 2.6 s against 2.3 to 2.4 s; digit text in memory on 3.12 too), the
+  price of reading them. A last check of that
+  round found one regression of it, fixed: a column whose first time read " AM" refused rows
+  below written `2:05PM` or `2:05 p.m.`. A QuickBooks pull goes
   through the same check (a user or an account number of spaces is counted as unknown,
   not a refused pull). The dashboard shows
   the reason as text (it quotes a cell) and catches an unreadable path too; the MCP server
@@ -277,7 +282,7 @@ and the MCP SDK, so the two together cover every code path CI will see.
   archetypes no rule describes, generated once after the code is frozen), and an approver
   list and approval limit that can be set for JET-12 and JET-06 (a controls file beside the
   ledger).
-- 809 tests on 3.9 (1 skipped) / 821 on 3.12 (the twelve MCP tests need 3.10+), ruff clean.
+- 816 tests on 3.9 (1 skipped) / 828 on 3.12 (the twelve MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth

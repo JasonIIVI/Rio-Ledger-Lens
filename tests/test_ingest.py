@@ -707,6 +707,25 @@ def test_am_and_pm_however_written_read_as_the_clock_they_say(tmp_path, date, me
     assert load_csv(path)["entered_at"].tolist() == expected
 
 
+@pytest.mark.parametrize("other", ["2:05PM", "2:05pm", "2:05 p.m.", "2:05 P.M.", "2:05p", "2:05 p. m.", "2:05 PM."])
+def test_an_am_or_pm_written_as_usual_in_row_1_still_rewrites_the_rows_below(tmp_path, other):
+    """a9f476e rewrote am and pm only when the row the format comes from wrote its own another way
+    than " AM" or " PM", so a column whose first row did was refused at every row below written
+    "2:05PM" or "2:05 p.m.", which ec056ba read: one column loaded or not by the order of its rows."""
+    from ledgerlens.ingest import load_csv
+
+    path = _small_csv(tmp_path)
+    plain = load_csv(path)
+    day = plain["entered_at"].iloc[0].normalize()
+    _rewrite_column(path, "entered_at", lambda v: pd.Timestamp(v).strftime("%m/%d/%Y %I:%M %p"))
+    second = plain["entered_at"].iloc[1].normalize()
+    _damage(path, {(1, "entered_at"): day.strftime("%m/%d/%Y") + " 9:15 AM",
+                   (2, "entered_at"): second.strftime("%m/%d/%Y ") + other})
+    loaded = load_csv(path)["entered_at"]
+    assert loaded.iloc[0] == day + pd.Timedelta(hours=9, minutes=15)
+    assert loaded.iloc[1] == second + pd.Timedelta(hours=14, minutes=5)
+
+
 @pytest.mark.parametrize("fmt", ["%m/%d/%y", " %m/%d/%y"], ids=["mm/dd/yy", "leading-space"])
 def test_a_month_first_ledger_with_two_digit_years_still_loads(tmp_path, fmt):
     """The format given to pandas is the first cell's as written: guessed on a stripped copy,

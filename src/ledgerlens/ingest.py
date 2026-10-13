@@ -58,6 +58,9 @@ _OFFSET = re.compile(r"\d:\d\d(?::\d\d(?:\.\d+)?)?\s*(?:[AP]\.?M\.?\s*)?"
 #: 24-hour clock ("2:05 pm" read in "%H:%M pm" is 02:05), and pandas 2 takes the M of "P.M."
 #: for a zone.
 _MERIDIEM = re.compile(r"(?<=\d)\s*([AaPp])\.?\s?[Mm]?\.?(?![A-Za-z])")
+#: An am or pm the rewrite would change: any but " AM" or " PM" then neither a letter nor a dot.
+#: Where a column has none, the rewrite is skipped, which changes nothing but the time it takes.
+_ODD_MERIDIEM = re.compile(r"(?<=\d)(?! [AP]M(?![A-Za-z.]))\s*[AaPp]\.?\s?[Mm]?\.?(?![A-Za-z])")
 #: A time of day, with its seconds and their fraction: where a two-digit year is not.
 _TIME = re.compile(r"\d{1,2}:\d\d(?::\d\d(?:[.,]\d+)?)?")
 #: Two digits standing alone: where a two-digit year can be, once the time is set aside.
@@ -357,11 +360,12 @@ def _read_dates(column: str, raw: pd.Series, blank: np.ndarray) -> tuple[pd.Seri
 
     cells, final = raw, objs
     at = lead(objs)
-    # am or pm is written AM or PM when the cell the format comes from has one written otherwise
-    # (pandas reads AM, PM, am and pm alike once given %p); zones are then looked for in the
-    # rewritten cells ("9:15 p. m. EST"), which the rewrite cannot make a number or a clock word
+    # am or pm is written AM or PM in every cell when the cell the format comes from has one,
+    # however that one is written: %p reads AM and am alike, but not a dot, a missing space or a
+    # or p alone, which a row below may have; zones are then looked for in the rewritten cells
+    # ("9:15 p. m. EST"), which the rewrite cannot make a number or a clock word
     meridiem = None if at is None else _MERIDIEM.search(objs[at])
-    if meridiem and meridiem.group() not in (" AM", " PM"):
+    if meridiem and _ODD_MERIDIEM.search("\n".join(v for v in objs if isinstance(v, str))):
         final = [_MERIDIEM.sub(lambda m: f" {m.group(1).upper()}M", v) if isinstance(v, str) else v for v in objs]
         cells = pd.Series(final, index=raw.index, dtype=object)
         at = lead(final)
