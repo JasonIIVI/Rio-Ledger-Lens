@@ -19,6 +19,7 @@ import argparse
 import os
 import sys
 import textwrap
+import warnings
 import webbrowser
 from datetime import date, datetime
 from pathlib import Path
@@ -36,7 +37,7 @@ from .connectors.tokens import (
     repository_root,
 )
 from .env import load_dotenv
-from .generate import generate_ledger
+from .generate import ArchetypeSkipped, generate_ledger
 from .ingest import IdentityError, ledger_identity, load_csv, load_labels, quote
 from .ledger_context import LedgerContext
 from .model import combine, score_ledger
@@ -59,13 +60,23 @@ def _parse_date(text: str) -> date:
 
 
 def cmd_generate(args: argparse.Namespace) -> int:
-    lines, labels = generate_ledger(
-        start=args.start,
-        end=args.end,
-        entries_per_day=args.entries_per_day,
-        anomaly_rate=args.anomaly_rate,
-        seed=args.seed,
-    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", ArchetypeSkipped)
+        try:
+            lines, labels = generate_ledger(
+                start=args.start,
+                end=args.end,
+                entries_per_day=args.entries_per_day,
+                anomaly_rate=args.anomaly_rate,
+                seed=args.seed,
+            )
+        except ValueError as exc:  # a range with no business day, or impossible parameters
+            print(f"error: {exc}")
+            return 2
+    skipped = [str(w.message) for w in caught if issubclass(w.category, ArchetypeSkipped)]
+    for w in caught:
+        if not issubclass(w.category, ArchetypeSkipped):  # not this command's to word
+            warnings.showwarning(w.message, w.category, w.filename, w.lineno)
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
     ledger_path = out / "ledger.csv"
@@ -78,6 +89,8 @@ def cmd_generate(args: argparse.Namespace) -> int:
     print("Wrote {:,} labels ({} anomalies, {:.2%}) to {}".format(
         len(labels), int(labels["is_anomaly"].sum()),
         labels["is_anomaly"].mean(), labels_path))
+    for note in skipped:
+        print(f"Warning: {note}")
     return 0
 
 
