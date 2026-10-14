@@ -955,3 +955,72 @@ def test_a_zone_after_an_am_or_pm_written_another_way_is_found(tmp_path):
     with pytest.raises(SchemaError) as excinfo:
         load_csv(path)
     assert "entered_at carries a time zone offset on " in str(excinfo.value), str(excinfo.value)
+
+
+
+# --- the identity sidecar: read only if it is a small regular file ------------------
+
+
+def _sidecar_case(tmp_path):
+    from ledgerlens.ingest import identity_path
+
+    ledger = tmp_path / "books.csv"
+    return ledger, identity_path(ledger)
+
+
+def test_an_identity_sidecar_that_is_a_link_to_nothing_is_refused_not_ignored(ledger, tmp_path):
+    """A link to nothing was taken for no sidecar: a QuickBooks ledger's review filed under its digest."""
+    import os
+
+    from ledgerlens.ingest import IdentityError, ledger_identity
+
+    path, sidecar = _sidecar_case(tmp_path)
+    os.symlink(tmp_path / "gone.json", sidecar)
+    with pytest.raises(IdentityError, match="a link to a file that does not exist"):
+        ledger_identity(ledger, path)
+
+
+@pytest.mark.parametrize("payload", [
+    "[" * 30_000 + "]" * 30_000,  # under the size cap, past the decoder's recursion limit
+    '{"ledger_id": "qbo:1"}' + " " * 70_000,  # over the size cap
+], ids=["deep", "large"])
+def test_an_identity_sidecar_too_deep_or_too_large_is_refused_in_a_message(ledger, tmp_path, payload):
+    from ledgerlens.ingest import IdentityError, ledger_identity
+
+    path, sidecar = _sidecar_case(tmp_path)
+    sidecar.write_text(payload)
+    with pytest.raises(IdentityError, match="books.identity.json"):
+        ledger_identity(ledger, path)
+
+
+def test_an_identity_sidecar_that_is_a_fifo_is_refused_not_waited_on(ledger, tmp_path):
+    """The writer gives up after two seconds, so a reader that waits gets a valid sidecar."""
+    import errno
+    import os
+    import threading
+    import time
+
+    from ledgerlens.ingest import IdentityError, ledger_identity
+
+    path, sidecar = _sidecar_case(tmp_path)
+    os.mkfifo(sidecar)
+
+    def write():
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            try:
+                fd = os.open(sidecar, os.O_WRONLY | os.O_NONBLOCK)
+            except OSError as exc:
+                if exc.errno != errno.ENXIO:
+                    raise
+                time.sleep(0.02)
+                continue
+            os.write(fd, b'{"ledger_id": "qbo:123"}')
+            os.close(fd)
+            return
+
+    writer = threading.Thread(target=write, daemon=True)
+    writer.start()
+    with pytest.raises(IdentityError, match="not a small regular file"):
+        ledger_identity(ledger, path)
+    writer.join(5)

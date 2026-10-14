@@ -651,9 +651,10 @@ def cmd_pull_qbo(args: argparse.Namespace) -> int:
         print(f"error: --start {args.start} is after --end {args.end}")
         return 2
     # A leading "~" expanded once, here, as pandas expands it when it writes the CSV: the guard
-    # judged the literal path while the ledger went to the home directory, and its identity
-    # and controls are looked for beside the file pandas wrote.
-    out = Path(os.path.expanduser(args.out))
+    # judged the literal path while the ledger went to the home directory. Then made absolute,
+    # so pandas has nothing left to expand: Path("./~/x.csv") is spelled "~/x.csv", which
+    # pandas would send home too. The path judged is the path written, sidecars beside it.
+    out = Path(os.path.expanduser(args.out)).absolute()
     refusal = _refuse_output(out)
     if refusal:
         print(f"refused: {refusal}")

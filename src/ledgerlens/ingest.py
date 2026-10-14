@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import warnings
 from pathlib import Path
 
@@ -89,6 +90,10 @@ class SchemaError(ValueError):
 
 class IdentityError(ValueError):
     """An identity sidecar exists but cannot be trusted."""
+
+
+#: An identity sidecar holds one short key; a file this size is something else.
+SIDECAR_MAX_BYTES = 64 * 1024
 
 
 def plural(n: int, one: str, many: str) -> str:
@@ -178,10 +183,18 @@ def ledger_identity(lines: pd.DataFrame, path: str | Path | None = None) -> str:
     """
     if path is not None:
         sidecar = identity_path(path)
-        if sidecar.exists():
+        if os.path.lexists(sidecar):  # a link to nothing is a sidecar meant, not none
             try:
+                status = os.stat(sidecar)
+                # a FIFO would wait for a writer forever; a large file is something else
+                if not stat.S_ISREG(status.st_mode) or status.st_size > SIDECAR_MAX_BYTES:
+                    raise IdentityError(f"{sidecar} is not a small regular file")
                 payload = json.loads(sidecar.read_text(encoding="utf-8"))
-            except (OSError, ValueError) as exc:
+            except FileNotFoundError:
+                raise IdentityError(f"{sidecar} is a link to a file that does not exist") from None
+            except (OSError, ValueError, RecursionError) as exc:  # IdentityError passes as is
+                if isinstance(exc, IdentityError):
+                    raise
                 raise IdentityError(f"{sidecar} cannot be read as JSON ({exc})") from exc
             ledger_id = payload.get("ledger_id") if isinstance(payload, dict) else None
             if not isinstance(ledger_id, str) or not _QBO_ID.fullmatch(ledger_id):

@@ -50,7 +50,9 @@ def _stamp(path: str) -> tuple | None:
         except (OSError, ValueError):
             return None
         return ("link to nothing", status.st_mtime_ns)
-    except (OSError, ValueError):  # a name the filesystem rejects, a loop: load says so
+    except OSError as exc:  # a loop, a name too long: load refuses it, so not "no file" either
+        return ("unreadable", exc.errno)
+    except ValueError:  # a NUL in the name: load says so, every time (nothing is cached)
         return None
     return (status.st_mtime_ns, status.st_size)
 

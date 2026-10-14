@@ -328,3 +328,14 @@ def test_a_load_that_failed_leaves_no_identity_or_controls_behind(small_ledger, 
     controls_path(csv).unlink()
     context.load()
     assert context.ledger_id == ledger_identity(load_csv(csv), csv)
+
+
+
+def test_a_model_that_cannot_be_fitted_leaves_no_identity_or_controls_behind(small_ledger, tmp_path):
+    small, _ = small_ledger
+    csv = tmp_path / "one.csv"
+    small[small["entry_id"] == small["entry_id"].iloc[0]][list(REQUIRED_COLUMNS)].to_csv(csv, index=False)
+    context = LedgerContext(csv)
+    with pytest.raises(ValueError, match="cannot be fitted"):
+        context.load()
+    assert context.ledger_id is None and context.controls is None

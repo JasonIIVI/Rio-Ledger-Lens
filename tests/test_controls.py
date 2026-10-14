@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import os
+from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
@@ -139,6 +141,18 @@ REFUSED = [
     (_file().replace("10000", "9" * 5000), ["approval_limit 99999999999999999999... (5000 characters) "
                                             "has more digits than a control needs"]),
     (_file().replace("10000", "0." + "0" * 60 + "1"), ["has more digits than a control needs"]),
+    # Decimal arithmetic rounds to 28 digits: these were taken for whole cents, the last as $0
+    (_file().replace("10000", "10000.000000000000000000000000000000001"),
+     ["10000.000000000000000000000000000000001 is not a whole number of cents"]),
+    (_file().replace("10000", "9999.99000000000000000000000000001"), ["is not a whole number of cents"]),
+    (_file().replace("10000", "1e-1000030"), ["1E-1000030 is not a whole number of cents"]),
+    (_file().replace("10000", "1" * 45), ["approval_limit 11111111111111111111... (45 characters) has more"]),
+    (_file().replace("10000", "1" + "0" * 40), ["has more digits than a control needs"]),  # 41 characters
+    (_file().replace("10000", "[NaN]"), ["must be a number of dollars, got [NaN]"]),
+    (_file().replace("10000", "[" * 900 + "]" * 900), ["must be a number of dollars, got [[[...]]]"]),
+    (_file().replace("10000", "[" + "1, " * 2000 + "1]"), ["must be a number of dollars, got [1, 1, 1, 1, ...]"]),
+    (_file(("a,b",) * 3 + (" x", "y ", "")), ["holds a comma", "2 more problems with approvers"]),
+    (_file(tuple(f"user{i}" for i in range(50)) + ("a,b",)), ["lists 51 names", "'a,b' holds a comma"]),
     (_file().replace('"version": 1', '"version": NaN'), ["version must be 1, got NaN"]),
     (_file(("controller",) * 2 + tuple(f"user{i}" for i in range(49))),
      ["lists 51 names; at most 50 can be named in JET-12's reason"]),
@@ -206,6 +220,20 @@ def test_an_approver_written_in_another_script_is_kept_as_written(tmp_path):
 
 def test_a_name_of_exactly_the_longest_length_is_kept():
     assert Controls(("x" * 64,), 10_000).manual_entry_approvers == ("x" * 64,)
+
+
+def test_exactly_the_most_approvers_and_the_longest_number_are_kept(tmp_path):
+    names = tuple(f"user{i:02d}" for i in range(50))
+    assert Controls(names, 10_000).manual_entry_approvers == names
+    ledger = _write(tmp_path, _file().replace("10000", "10000." + "0" * 34))  # 40 characters
+    assert load_controls(ledger).approval_limit == 10_000.0
+
+
+def test_numpy_numbers_built_in_code_are_read_as_their_value():
+    np = pytest.importorskip("numpy")
+    assert Controls(("controller", "mchen"), np.int64(10_000)) == DEFAULT_CONTROLS
+    with pytest.raises(ControlsError, match="whole number of cents"):
+        Controls(("controller",), Decimal("1e-1000030"))
 
 
 @pytest.mark.parametrize(("text", "said"), [
@@ -306,6 +334,8 @@ def test_a_leading_tilde_is_the_home_directory_as_pandas_reads_the_ledger(tmp_pa
     (tmp_path / "books").mkdir()
     (tmp_path / "books" / "x.controls.json").write_text(_file(("qbo-user-1",)))
     assert controls_path("~/books/x.csv") == tmp_path / "books" / "x.controls.json"
+    assert controls_path(Path("~/books/x.csv")) == tmp_path / "books" / "x.controls.json"
+    assert controls_path("./~/books/x.csv") == Path("~/books/x.controls.json")  # pandas: literal too
     assert load_controls("~/books/x.csv").manual_entry_approvers == ("qbo-user-1",)
     assert identity_path("~/books/x.csv") == tmp_path / "books" / "x.identity.json"
 

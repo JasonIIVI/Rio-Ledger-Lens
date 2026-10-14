@@ -19,7 +19,9 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import numbers
 import os
+import reprlib
 import stat
 from collections import Counter
 from dataclasses import dataclass, field
@@ -61,6 +63,9 @@ class _Unusable:
         self.text = text if len(text) <= 24 else f"{text[:20]}... ({len(text)} characters)"
         self.why = why
 
+    def __repr__(self) -> str:  # inside a list, a message shows what was written
+        return self.text
+
 
 def _number(text: str, kind) -> object:
     if len(text) > 40:
@@ -71,6 +76,12 @@ def _number(text: str, kind) -> object:
         return _Unusable(text, "has more digits than a control needs")
 
 
+#: Containers shown two levels deep: ascii() of a list nested near the decoder's limit
+#: recursed past Python's, inside the message about it.
+_REPR = reprlib.Repr()
+_REPR.maxlevel, _REPR.maxlist, _REPR.maxdict, _REPR.maxstring = 2, 4, 4, 40
+
+
 def _shown(value: object) -> str:
     """A value from the file as a message quotes it: a JSON number as it was written, and
     nothing longer than a line's worth."""
@@ -78,7 +89,13 @@ def _shown(value: object) -> str:
         return value.text
     if isinstance(value, str):
         return quote(value)  # cut to a line's worth already
-    text = str(value) if isinstance(value, Decimal) else ascii(value)
+    if isinstance(value, Decimal):
+        text = str(value)
+    else:
+        try:
+            text = _REPR.repr(value).encode("ascii", "backslashreplace").decode("ascii")
+        except ValueError:  # an int built in code past what str() will print (3.12)
+            text = f"a {type(value).__name__} too long to print"
     return text if len(text) <= 60 else f"{text[:48]}... ({len(text)} characters)"
 
 
@@ -109,11 +126,11 @@ def _approver_problems(approvers: object) -> list[str]:
     if not approvers:
         return ["manual_entry_approvers is empty; name at least one user who may post "
                 "manual entries"]
+    problems = []
     if len(approvers) > MAX_APPROVERS:
         # every name is printed in each JET-12 reason, and so in every prompt that quotes one
-        return [f"manual_entry_approvers lists {len(approvers):,} names; at most "
-                f"{MAX_APPROVERS} can be named in JET-12's reason"]
-    problems = []
+        problems.append(f"manual_entry_approvers lists {len(approvers):,} names; at most "
+                        f"{MAX_APPROVERS} can be named in JET-12's reason")
     for name in approvers:
         if not isinstance(name, str):
             problems.append(f"approver {_shown(name)} is not a string")
@@ -142,19 +159,27 @@ def _limit(value: object) -> tuple[float | None, str | None]:
     """``(the limit in dollars, None)``, or ``(None, why it cannot be used)``."""
     if isinstance(value, _Unusable):
         return None, f"approval_limit {value.text} {value.why}"
-    if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
+    if isinstance(value, bool) or not isinstance(value, (numbers.Real, Decimal)):
         hint = ' (write 10000, not "10,000")' if isinstance(value, str) else ""
         return None, f"approval_limit must be a number of dollars, got {_shown(value)}{hint}"
     # Judged as written: a file's number is read as a Decimal, never rounded through a float
-    # first. float() before repr: a float subclass (numpy's) has a repr of its own.
-    amount = Decimal(repr(float(value))) if isinstance(value, float) else Decimal(value)
+    # first. Through int() or float() first, so numpy's numbers (whose repr is their own) read
+    # as their value.
+    if isinstance(value, Decimal):
+        amount = value
+    elif isinstance(value, numbers.Integral):
+        amount = Decimal(int(value))
+    else:
+        amount = Decimal(repr(float(value)))
     if not amount.is_finite() or amount <= 0:
         return None, f"approval_limit must be a finite number above 0, got {_shown(amount)}"
     if amount >= LIMIT_CEILING:
         return None, (f"approval_limit {_shown(amount)} is not below 1,000,000,000,000; no "
                       "approval limit is that large")
-    cents = amount * 100  # exact: below the ceiling, a whole number of cents has 14 digits
-    if cents != cents.to_integral_value():
+    # Compared, not computed: Decimal arithmetic rounds to 28 digits, so amount * 100 called
+    # 10000.000000000000000000000000000000001 whole cents, and 1e-1000030 a limit of 0.
+    # Below the ceiling the quantized value has at most 14 digits; a comparison is exact.
+    if amount != amount.quantize(Decimal("0.01")):
         return None, f"approval_limit {_shown(amount)} is not a whole number of cents"
     return float(amount), None
 
@@ -294,7 +319,6 @@ def load_controls(ledger_path: str | Path) -> Controls:
     except (OSError, UnicodeDecodeError) as exc:  # no permission, not UTF-8
         raise ControlsError(f"{path}: cannot be read ({exc})") from None
     try:
-        controls = parse_controls(text)
+        return dataclasses.replace(parse_controls(text), source=str(path))
     except ControlsError as exc:
         raise ControlsError(f"{path}: {exc}") from None
-    return dataclasses.replace(controls, source=str(path))

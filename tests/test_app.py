@@ -676,3 +676,16 @@ def test_a_link_to_nothing_written_after_the_first_load_is_refused_on_the_next_r
     assert not at.exception, at.exception
     assert [e.value for e in at.error] == ["The controls file beside this ledger cannot be used."]
     assert any("a link to a file that does not exist" in t.value for t in at.text)
+
+
+
+def test_a_link_loop_written_after_the_first_load_is_refused_on_the_next_run(data_dir, tmp_path):
+    side = tmp_path / "side"
+    side.mkdir()
+    shutil.copy(data_dir / "ledger.csv", side / "ledger.csv")
+    at = _run(side, tmp_path / "review.sqlite")
+    assert not at.error
+    os.symlink("ledger.controls.json", side / "ledger.controls.json")  # points at itself
+    at.run()
+    assert not at.exception, at.exception
+    assert [e.value for e in at.error] == ["The controls file beside this ledger cannot be used."]

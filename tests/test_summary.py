@@ -662,9 +662,10 @@ def test_the_notes_say_whose_controls_the_tests_ran_against(context, default_con
 
 
 def test_the_controls_line_never_splits_a_name_or_a_path(payload):
-    """A filler approver slides a hyphenated name and a long path across the 96th column."""
-    name = "-".join(["abcd"] * 12)
-    source = "out/" + "d" * 70 + "/books-2026.controls.json"
+    """A filler approver slides a name and a long path, hyphens and spaces in both, across the
+    96th column (the path as an iCloud folder spells it)."""
+    name = "-".join(["abcd"] * 8) + " van der berg"
+    source = "out/Mobile Documents/LedgerGen project/" + "d" * 40 + "/books-2026.controls.json"
     for width in range(1, 65, 3):
         page = copy.deepcopy(payload)
         page["controls"].update(source=source, default=False,

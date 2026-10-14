@@ -1839,3 +1839,21 @@ def test_every_command_that_used_a_controls_file_says_so_first_in_one_line(
     assert main(["test", str(ledger)]) == 2
     printed = capsys.readouterr().out
     assert printed.count("\n") == 1 and one_line(controls_path(ledger)) in printed
+
+
+
+def test_pull_qbo_keeps_a_dot_slash_tilde_literal_as_the_shell_does(qbo_env, monkeypatch, capsys):
+    """Path("./~/x.csv") is spelled "~/x.csv", which pandas sends home: the books went into a
+    checkout under the home directory (its synthetic ledger overwritten) past the guard."""
+    home = qbo_env.root / "home"
+    (home / "proj" / ".git").mkdir(parents=True)
+    (home / "proj" / "data").mkdir()
+    (home / "proj" / "data" / "ledger.csv").write_text("synthetic")
+    monkeypatch.setenv("HOME", str(home))
+    assert _replay_to("./~/proj/books.csv") == 0
+    capsys.readouterr()
+    assert (qbo_env.root / "~" / "proj" / "books.csv").exists()
+    assert (qbo_env.root / "~" / "proj" / "books.identity.json").exists()
+    assert not (home / "proj" / "books.csv").exists() and not (home / "proj" / "books.identity.json").exists()
+    assert _replay_to("./~/proj/data/ledger.csv") == 0
+    assert (home / "proj" / "data" / "ledger.csv").read_text() == "synthetic"

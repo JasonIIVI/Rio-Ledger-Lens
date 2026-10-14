@@ -393,10 +393,9 @@ def render_text(payload: dict) -> str:
         "",
         "Ledger      {}".format(one_line(payload["ledger"]) or "(a frame, not a file)"),
         "Identity    {}".format(one_line(payload["ledger_id"])),
-        # wrapped between words only: a path or a hyphenated name is never split
-        *textwrap.wrap("Controls    " + _controls_sentence(payload["controls"], one_line), 96,
-                       subsequent_indent=" " * 12, break_long_words=False,
-                       break_on_hyphens=False),
+        # one line, as the ledger's is: a name or a path (spaces and hyphens included) is
+        # never split
+        "Controls    " + _controls_sentence(payload["controls"], one_line),
         "Population  {:,} entries / {:,} lines; fiscal years {}".format(
             payload["entries"], payload["lines"], _years(payload)),
         "",

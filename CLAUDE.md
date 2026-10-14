@@ -312,13 +312,22 @@ and the MCP SDK, so the two together cover every code path CI will see.
   --out`, so the guard judges the path written; a failed `LedgerContext.load` keeps no identity
   or controls; a link to nothing keys the dashboard's cache apart from no file; and claims
   (only JET-11's threshold was swept; 12 of the 17 committed prompts quote the defaults).
+  A verification of those fixes found a medium (`pull-qbo --out ./~/x.csv`: a Path drops the
+  `./`, and pandas then expanded the `~`; the path is now made absolute too) and two
+  regressions of them (Decimal arithmetic rounds to 28 digits, so 10000.000…001 passed as
+  whole cents and 1e-1000030 as a $0 limit: now compared with `quantize`; a NaN inside a
+  list printed an object's address), plus a value nested near the decoder's limit that
+  crashed the message (containers now shown through `reprlib`, two levels), a link loop keyed
+  like no file in the dashboard's cache, the Controls line split at a space (now one line,
+  as the Ledger line is), and the identity sidecar's own FIFO, depth and dangling-link
+  defects (on `main` before this branch; it is now read as the controls file is).
   Names are compared as written (no Unicode normalisation; a ledger name with stray spaces
-  cannot be listed): documented. Open, Jason's to decide: review rows are keyed by ledger,
+  cannot be listed): documented. Open (the maintainer's call): review rows are keyed by ledger,
   not controls, so after a controls change a decided entry stays out of the queue whatever
   it is now flagged for (documented; recording the controls on each row is a schema change).
 - **Next** — breaking the circularity in the detection numbers (a held-out ledger of
   archetypes no rule describes, generated once after the code is frozen).
-- 962 tests on 3.9 (1 skipped) / 976 on 3.12 (the fourteen MCP tests need 3.10+), ruff clean.
+- 981 tests on 3.9 (1 skipped) / 995 on 3.12 (the fourteen MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
