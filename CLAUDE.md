@@ -278,11 +278,22 @@ and the MCP SDK, so the two together cover every code path CI will see.
   rescale cancels sklearn's offset); the JET-11 tuning table is per entry. The narration
   system prompt still says "distinct tests": the grader's hash does not cover it, so a
   change would date the published eval silently (recorded for `docs/limitations.md`).
+- **Short generator ranges (`fix/generate-short-range`)** — `generate --start 2024-01-01
+  --end 2024-01-10` was an `IndexError` from `random.choice`: every one of the eleven
+  injectors drew from a day list a short range can leave empty. Each injector is now handed
+  its days. A range with no Saturday or Sunday, no federal holiday on a weekday, or none of
+  a month's last three days leaves that archetype out with an `ArchetypeSkipped` warning
+  (a `Warning:` line from the CLI), and the other archetypes keep their counts; a range
+  with no business day is refused (`ValueError`; one `error:` line, exit 2, nothing
+  written), as is `--end` before `--start`. The draws for a range that holds every
+  archetype are unchanged: the default ledger's two CSVs are byte-identical on 3.9 and
+  3.12. Not changed: a duplicate's re-post lands one to three days after its original and
+  so can fall after `end` (the default ledger's does not).
 - **Next** — breaking the circularity in the detection numbers (a held-out ledger of
   archetypes no rule describes, generated once after the code is frozen), and an approver
   list and approval limit that can be set for JET-12 and JET-06 (a controls file beside the
   ledger).
-- 816 tests on 3.9 (1 skipped) / 828 on 3.12 (the twelve MCP tests need 3.10+), ruff clean.
+- 826 tests on 3.9 (1 skipped) / 838 on 3.12 (the twelve MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth

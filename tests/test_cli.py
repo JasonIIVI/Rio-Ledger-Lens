@@ -17,6 +17,48 @@ def test_generate_writes_both_files(tmp_path):
     assert (tmp_path / "labels.csv").exists()
 
 
+def test_generate_says_which_archetype_a_short_range_left_out(tmp_path, capsys):
+    code = main(["generate", "--start", "2024-01-01", "--end", "2024-01-10",
+                 "--out-dir", str(tmp_path)])
+    assert code == 0
+    out = capsys.readouterr().out
+    (warning,) = [line for line in out.splitlines() if line.startswith("Warning:")]
+    assert "period_end_manual_revenue" in warning
+    assert (tmp_path / "ledger.csv").exists()
+    assert (tmp_path / "labels.csv").exists()
+
+
+def test_generate_passes_on_a_warning_that_is_not_its_own(tmp_path, capsys, monkeypatch):
+    import warnings
+
+    from ledgerlens import cli
+
+    real = cli.generate_ledger
+
+    def warns_too(**kwargs):
+        warnings.warn("from a dependency", FutureWarning, stacklevel=1)
+        return real(**kwargs)
+
+    monkeypatch.setattr(cli, "generate_ledger", warns_too)
+    with pytest.warns(FutureWarning, match="from a dependency"):
+        code = main(["generate", "--start", "2024-01-01", "--end", "2024-01-10",
+                     "--out-dir", str(tmp_path)])
+    assert code == 0
+    assert "from a dependency" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("start, end", [
+    ("2024-01-13", "2024-01-15"),  # Saturday to MLK Day: no business day
+    ("2024-01-10", "2024-01-01"),
+])
+def test_generate_refuses_a_range_it_cannot_fill_in_one_line(tmp_path, capsys, start, end):
+    code = main(["generate", "--start", start, "--end", end, "--out-dir", str(tmp_path / "out")])
+    assert code == 2
+    out = capsys.readouterr().out
+    assert out.startswith("error: ") and out.count("\n") == 1
+    assert not (tmp_path / "out").exists()
+
+
 def test_test_command_runs_against_generated_data(tmp_path, capsys):
     main(["generate", "--start", "2024-01-01", "--end", "2024-06-30",
           "--out-dir", str(tmp_path)])
