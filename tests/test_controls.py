@@ -149,6 +149,7 @@ REFUSED = [
     (_file().replace("10000", "1" * 45), ["approval_limit 11111111111111111111... (45 characters) has more"]),
     (_file().replace("10000", "1" + "0" * 40), ["has more digits than a control needs"]),  # 41 characters
     (_file().replace("10000", "[NaN]"), ["must be a number of dollars, got [NaN]"]),
+    (_file().replace("10000", "[2.5, 1e-1000030]"), ["must be a number of dollars, got [2.5, 1E-1000030]"]),
     (_file().replace("10000", "[" * 900 + "]" * 900), ["must be a number of dollars, got [[[...]]]"]),
     (_file().replace("10000", "[" + "1, " * 2000 + "1]"), ["must be a number of dollars, got [1, 1, 1, 1, ...]"]),
     (_file(("a,b",) * 3 + (" x", "y ", "")), ["holds a comma", "2 more problems with approvers"]),

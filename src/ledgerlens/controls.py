@@ -78,7 +78,12 @@ def _number(text: str, kind) -> object:
 
 #: Containers shown two levels deep: ascii() of a list nested near the decoder's limit
 #: recursed past Python's, inside the message about it.
-_REPR = reprlib.Repr()
+class _Repr(reprlib.Repr):
+    def repr_Decimal(self, value: Decimal, level: int) -> str:  # a JSON number as written
+        return str(value)
+
+
+_REPR = _Repr()
 _REPR.maxlevel, _REPR.maxlist, _REPR.maxdict, _REPR.maxstring = 2, 4, 4, 40
 
 
