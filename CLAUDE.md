@@ -352,7 +352,8 @@ and the MCP SDK, so the two together cover every code path CI will see.
     population), and the tests check it on four development seeds (no flag on a held-out
     entry, no other entry's (entry, test) flag counts moved); on other seeds the held-out lines
     can move another entry's JET-11 flag (`docs/limitations.md`). `--held-out` without `--seed` uses
-    `HELD_OUT_SEED`; `tests/conftest.py` fails any test that generates with it.
+    `HELD_OUT_SEED`; until the measurement `tests/conftest.py` failed any test that generated
+    with it (removed in the measurement's commit).
   - **The surfaces.** `evaluate.budget_recall_by_archetype` and `held_out_budget` (the
     model's budget against chance, n x B / P), printed by `score --labels` and on the
     dashboard's tier tab; the summary reads held-out rows as "held out" with `HELD_OUT_NOTE`;

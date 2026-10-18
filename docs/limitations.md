@@ -128,10 +128,11 @@ from it.
   - both: 22 entries, 22 anomalies;
   - neither: 4,968 entries, 38 anomalies.
 
-So on these five recipes the model tier is a detector of one thing no rule describes, an
-amount of a dollar or two on an ordinary pair, and of nothing else. That is a measurement on
-patterns written for this project, not on real fraud. Any later change that moves these
-figures labels the new ones "re-measured, no longer held out" (CLAUDE.md, rule 10).
+So, by the registered reading, the model tier catches one of the five, `token_amount`, an
+amount under three dollars on an ordinary pair, which `log_amount` sees by design, and none
+of the other four. That is one ledger, one seed and 43 entries of patterns written for this
+project, not real fraud. Any later change that moves these figures labels the new ones
+"re-measured, no longer held out" (CLAUDE.md, rule 10).
 
 **As printed.** The environments (one `python -c` line each, beside `git rev-parse HEAD`):
 
@@ -378,7 +379,7 @@ duplicate archetype on the default ledger.
 - **Tie order in two printed tables, found after the freeze.** `test` prints its "Recall by
   archetype" and "Precision by test" tables sorted on one key with pandas' default sort, which
   is not stable. So rows that tie print in another order on CI's Linux runners than on the Mac
-  that made the measurement: the five held-out archetypes at 0.0000 and the eight at 1.0000,
+  that made the measurement: the five held-out archetypes at 0.0000 and the nine at 1.0000,
   and on Python 3.9 JET-10 and JET-11 at 1.0000. Every row's values are the same, and `score`'s
   output, the model's figures included, is the same byte for byte. The sorts are in `src/`, so
   by rule 10 the defect is disclosed here and not fixed until the measurement is merged;

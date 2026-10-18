@@ -285,9 +285,10 @@ All six are token amounts. By the reading registered beforehand (at least half o
 archetype's entries in the budget), the model catches `token_amount`, six of eight, and
 none of the other four. It misses the unfamiliar user, although `user_freq` sees one. It
 also misses the three patterns that exist only between entries: the split purchase, the
-round trip and the drip. So on these five recipes the model tier detects one thing no rule
-describes, an amount of a dollar or two on an ordinary pair, and nothing else. That is a
-measurement on patterns written for this project, not on real fraud.
+round trip and the drip. So the model tier catches one of the five, an amount under three
+dollars on an ordinary pair, which its `log_amount` feature sees by design, and none of the
+other four. That is one ledger, one seed and 43 entries of patterns written for this project,
+not real fraud.
 
 ## The narrative layer and the human loop
 
