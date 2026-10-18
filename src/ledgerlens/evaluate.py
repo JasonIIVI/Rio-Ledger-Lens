@@ -222,6 +222,35 @@ def attribution(flags: pd.DataFrame, labels: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=columns)
 
 
+def sweep(run, values, labels: pd.DataFrame, test_id: str | None = None) -> pd.DataFrame:
+    """One test at several settings: what it raises there, and how much of that is anomalous.
+
+    ``run(value)`` gives the test's flags at that setting; the caller runs the test, so
+    detection never sees the labels (rule 2). Precision is per entry, as everywhere
+    else. When ``test_id`` is the test written for an archetype (``INTENDED_TEST``),
+    ``intended_caught`` counts that archetype's entries it flags, of
+    ``intended_n``; otherwise both are None.
+    """
+    truth = set(labels.loc[labels["is_anomaly"], "entry_id"])
+    archetype = next((a for a, t in INTENDED_TEST.items() if t and t == test_id), None)
+    intended = (set(labels.loc[labels["anomaly_type"] == archetype, "entry_id"])
+                if archetype else None)
+    rows = []
+    for value in values:
+        flags = run(value)
+        flagged = set(flags["entry_id"]) if not flags.empty else set()
+        rows.append({
+            "value": value,
+            "flags_raised": len(flags),
+            "entries_flagged": len(flagged),
+            "true_positives": len(flagged & truth),
+            "precision": round(_safe_div(len(flagged & truth), len(flagged)), 4),
+            "intended_caught": None if intended is None else len(flagged & intended),
+            "intended_n": None if intended is None else len(intended),
+        })
+    return pd.DataFrame(rows)
+
+
 def precision_by_test(flags: pd.DataFrame, labels: pd.DataFrame) -> pd.DataFrame:
     """How trustworthy each individual test is.
 
