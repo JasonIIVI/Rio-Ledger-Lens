@@ -165,6 +165,28 @@ def test_the_archetype_order_is_the_summarys_own_not_recalls(context, small_ledg
     assert [r["definitional"] for r in rows] == [False, False, False, True, True]
 
 
+def test_held_out_archetypes_are_read_as_held_out_and_lead_the_table(context, small_ledger):
+    labels = small_ledger[1].copy()
+    labels.loc[labels.index[labels["is_anomaly"]][:2], "anomaly_type"] = "token_amount"
+    built = summary.collect(context, labels=labels, today=TODAY)
+    rows = built["detection"]["by_archetype"]
+    assert rows[0]["anomaly_type"] == "token_amount"
+    assert rows[0]["held_out"] is True and rows[0]["definitional"] is None
+    assert all(r["held_out"] is False for r in rows[1:])
+    assert summary.HELD_OUT_NOTE in built["notes"]
+    assert "| held out |" in summary.render(built, "markdown")
+    assert "  held out" in summary.render(built, "text")
+    plain = summary.collect(context, labels=small_ledger[1], today=TODAY)
+    assert summary.HELD_OUT_NOTE not in plain["notes"]
+    assert not any(r["held_out"] for r in plain["detection"]["by_archetype"])
+
+
+def test_the_default_controls_note_holds_for_a_generated_ledger_too():
+    """A ledger the generator made is the synthetic company's: its controls are its own."""
+    assert "not its own" not in summary.DEFAULT_CONTROLS_NOTE
+    assert "If this ledger is another company's, state its own" in summary.DEFAULT_CONTROLS_NOTE
+
+
 def test_an_archetype_the_generator_does_not_know_is_not_called_definitional(context, small_ledger):
     labels = small_ledger[1].copy()
     labels.loc[labels["is_anomaly"], "anomaly_type"] = "made_up_scheme"

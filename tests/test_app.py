@@ -389,6 +389,13 @@ def test_every_measured_number_sits_beside_its_caveat(data_dir, tmp_path):
     assert captions.index(evaluate.DETECTION_CAVEAT) < captions.index(evaluate.MODEL_TIER_CAVEAT)
 
 
+def test_the_tabs_say_which_test_caught_what_and_what_the_budget_holds(data_dir, tmp_path):
+    at = _run(data_dir, tmp_path / "review.sqlite")
+    headings = [m.value for m in at.markdown]
+    assert "**Caught by the test written for each archetype, or by others**" in headings
+    assert "**Each archetype against the model's budget**" in headings
+
+
 def test_a_ratio_over_nothing_reads_undefined_on_the_quality_tab(data_dir, tmp_path):
     """Labels that mark no anomaly gave Recall 0.000 and F1 0.000: figures that are not figures."""
     folder = tmp_path / "ledger"

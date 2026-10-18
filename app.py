@@ -411,6 +411,9 @@ with tab_tiers:
         st.markdown("**Which anomaly types the model can perceive**")
         st.dataframe(evaluate.score_by_archetype(scores, labels),
                      width="stretch", hide_index=True)
+        st.markdown("**Each archetype against the model's budget**")
+        st.dataframe(evaluate.budget_recall_by_archetype(combined, labels),
+                     width="stretch", hide_index=True)
         st.info(
             "Entry-level features cannot see a duplicate - that only exists by comparison with "
             "another entry - so a low score there is a design consequence, not a failure."
@@ -452,6 +455,9 @@ with tab_quality:
         st.warning(evaluate.DETECTION_CAVEAT)
         st.markdown("**Recall by archetype**")
         st.dataframe(evaluate.recall_by_archetype(flags, labels),
+                     width="stretch", hide_index=True)
+        st.markdown("**Caught by the test written for each archetype, or by others**")
+        st.dataframe(evaluate.attribution(flags, labels),
                      width="stretch", hide_index=True)
         st.markdown("**Precision by test**")
         st.dataframe(evaluate.precision_by_test(flags, labels),

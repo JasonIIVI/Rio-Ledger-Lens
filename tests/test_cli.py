@@ -1814,6 +1814,29 @@ def test_generate_says_when_a_controls_file_already_sits_beside_the_new_ledger(t
     assert "Note: " in capsys.readouterr().out
 
 
+def test_score_puts_each_archetype_against_the_models_budget(tmp_path, capsys):
+    """Normal entries relabelled as held out stand in for the real ones: no test scores a
+    held-out recipe before the measurement."""
+    import pandas as pd
+
+    from ledgerlens import evaluate
+
+    main(["generate", "--start", "2024-01-01", "--end", "2024-06-30", "--out-dir", str(tmp_path)])
+    labels = pd.read_csv(tmp_path / "labels.csv", keep_default_na=False)
+    normal = labels.index[~labels["is_anomaly"]][:5]
+    labels.loc[normal, ["is_anomaly", "anomaly_type"]] = [True, "token_amount"]
+    labels.to_csv(tmp_path / "relabelled.csv", index=False)
+    capsys.readouterr()
+    assert main(["score", str(tmp_path / "ledger.csv"), "--labels", str(tmp_path / "relabelled.csv")]) == 0
+    out = capsys.readouterr().out
+    table = out.split("--- each archetype against the model's budget ---\n", 1)[1]
+    assert table.splitlines()[0].split() == [
+        "anomaly_type", "n", "rule_caught", "model_in_budget", "chance", "model_recall"]
+    assert table.splitlines()[1].split()[:2] == ["token_amount", "5"]  # held out first
+    assert "Held-out archetypes, which no test describes: " in out
+    assert out.index(evaluate.MODEL_TIER_CAVEAT[:40]) < out.index("--- each archetype against")
+
+
 def test_report_score_and_narrate_flag_a_pull_by_its_companys_controls(qbo_env, capsys, monkeypatch, llm):
     """The rule tier's flags reach the workpaper, the tier comparison and the narration prompt,
     and each has to have been raised against the company's controls."""

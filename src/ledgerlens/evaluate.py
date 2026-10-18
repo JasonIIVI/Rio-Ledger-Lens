@@ -22,7 +22,7 @@ from __future__ import annotations
 import pandas as pd
 
 from .ingest import plural, quote
-from .schema import AnomalyType
+from .schema import AnomalyType, HeldOutType
 
 #: The test written to find each archetype, in the generator's order. Benford drift
 #: has none: Benford analysis is reported beside the queue, never raised as a flag.
@@ -68,7 +68,9 @@ DETECTION_CAVEAT = (
 MODEL_TIER_CAVEAT = (
     "The same circularity applies to the model tier: these anomalies were defined as rule "
     "violations, so almost every anomaly the model ranks highly, the rules had already caught. "
-    "Read the lift as re-ranking of the rule tier's queue, not as independent detection."
+    "Read the lift as re-ranking of the rule tier's queue, not as independent detection. Only "
+    "the held-out archetypes, which no rule describes, measure it as a detector: how many of "
+    "them its budget holds, against chance."
 )
 
 
@@ -329,6 +331,64 @@ def model_lift(
             "lift_vs_random": round(_safe_div(precision, base_rate), 1),
         })
     return pd.DataFrame(rows)
+
+
+def _archetype_order(present) -> list[str]:
+    """Held-out archetypes, then the generator's, each in its own order, then any other by name."""
+    present = set(present)
+    known = [a for a in (*HeldOutType.ALL, *AnomalyType.ALL) if a in present]
+    return known + sorted(present - set(known))
+
+
+def budget_recall_by_archetype(combined: pd.DataFrame, labels: pd.DataFrame) -> pd.DataFrame:
+    """Each archetype against the model tier's budget, and against chance.
+
+    The model tier flags a fixed share of the entries by rank, its budget: B of P.
+    An archetype of n entries puts n * B / P of them there by chance alone, so
+    ``chance`` is the count to beat. Only an archetype no rule describes measures
+    the model as a detector; ``rule_caught`` stands beside it to say which those
+    are. Rows: held-out archetypes first, then the generator's, then any other.
+    """
+    columns = ["anomaly_type", "n", "rule_caught", "model_in_budget", "chance", "model_recall"]
+    budget, population = int(combined["model_flag"].sum()), len(combined)
+    tiers = combined.set_index("entry_id")[["rule_flag", "model_flag"]]
+    anomalies = labels[labels["is_anomaly"]]
+    rows = []
+    for archetype in _archetype_order(anomalies["anomaly_type"]):
+        ids = anomalies.loc[anomalies["anomaly_type"] == archetype, "entry_id"]
+        hit = tiers.reindex(ids)  # an id the ledger lacks is in neither tier: eq(True) is False
+        n, in_budget = len(ids), int(hit["model_flag"].eq(True).sum())
+        rows.append({
+            "anomaly_type": archetype,
+            "n": n,
+            "rule_caught": int(hit["rule_flag"].eq(True).sum()),
+            "model_in_budget": in_budget,
+            "chance": round(_safe_div(n * budget, population), 2),
+            "model_recall": round(_safe_div(in_budget, n), 4),
+        })
+    return pd.DataFrame(rows, columns=columns)
+
+
+def held_out_budget(combined: pd.DataFrame, labels: pd.DataFrame) -> dict | None:
+    """The held-out archetypes together against the model's budget; None if the labels have none.
+
+    ``lift`` is how many times chance the budget holds (0.0 when chance is nothing).
+    """
+    held = labels[labels["is_anomaly"] & labels["anomaly_type"].isin(HeldOutType.ALL)]
+    if held.empty:
+        return None
+    budget, population = int(combined["model_flag"].sum()), len(combined)
+    in_budget = int(combined.loc[combined["entry_id"].isin(set(held["entry_id"])), "model_flag"].sum())
+    chance = _safe_div(len(held) * budget, population)
+    return {
+        "n": len(held),
+        "in_budget": in_budget,
+        "chance": round(chance, 2),
+        "recall": round(_safe_div(in_budget, len(held)), 4),
+        "lift": round(_safe_div(in_budget, chance), 1),
+        "budget": budget,
+        "population": population,
+    }
 
 
 def score_by_archetype(model_scores: pd.Series, labels: pd.DataFrame) -> pd.DataFrame:

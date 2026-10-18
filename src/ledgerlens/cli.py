@@ -333,6 +333,14 @@ def cmd_score(args: argparse.Namespace) -> int:
         print("\n--- which archetypes the model can perceive ---")
         print(_inert(evaluate.score_by_archetype(model_scores, labels), "anomaly_type")
               .to_string(index=False))
+        print("\n--- each archetype against the model's budget ---")
+        print(_inert(evaluate.budget_recall_by_archetype(combined, labels), "anomaly_type")
+              .to_string(index=False))
+        held = evaluate.held_out_budget(combined, labels)
+        if held is not None:
+            print("Held-out archetypes, which no test describes: {in_budget} of {n} in the "
+                  "budget ({budget:,} of {population:,} entries), against {chance:.2f} by "
+                  "chance ({lift:.1f}x).".format(**held))
     return 0
 
 

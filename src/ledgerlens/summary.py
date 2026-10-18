@@ -35,7 +35,7 @@ from .controls import format_limit
 from .ledger_context import CAVEAT, ENTRY_COLUMNS, LedgerContext, records
 from .narrative_eval import DEFAULT_LEDGER_SHA256
 from .review import DECISIONS
-from .schema import AnomalyType
+from .schema import AnomalyType, HeldOutType
 
 FORMATS = ("text", "markdown", "json")
 
@@ -50,8 +50,13 @@ CONTROLS_NOTE = (
 )
 DEFAULT_CONTROLS_NOTE = (
     "No controls file sits beside this ledger, so JET-12 and JET-06 test it against the synthetic "
-    "company's approver list and approval limit, not its own: state them in a <stem>.controls.json "
-    "file beside the ledger (see the README)."
+    "company's approver list and approval limit. If this ledger is another company's, state its own "
+    "in a <stem>.controls.json file beside it (see the README)."
+)
+HELD_OUT_NOTE = (
+    "The labels mark held-out archetypes, which no test describes: the rule tier catches none of "
+    "them by construction, so its recall on them measures nothing. What measures the model tier "
+    "is how many of them its budget holds, against chance (ledgerlens score --labels)."
 )
 TUNING_NOTE = (
     "This is not the generator's default ledger. The tests' thresholds were tuned against that "
@@ -98,8 +103,8 @@ def _definitional(anomaly_type: str) -> bool | None:
     """Whether the generator injects this archetype by the definition its test checks.
 
     False for the three caught mostly by tests written for something else
-    (``evaluate.NOT_DEFINITIONAL``). None for a type the generator does not know:
-    nothing can be claimed about it.
+    (``evaluate.NOT_DEFINITIONAL``). None for a held-out type, which no test was
+    written for, and for a type the generator does not know: nothing can be claimed.
     """
     if anomaly_type not in AnomalyType.ALL:
         return None
@@ -191,9 +196,11 @@ def collect(
         by_archetype = records(evaluate.recall_by_archetype(context.flags, labels))
         for row in by_archetype:
             row["definitional"] = _definitional(row["anomaly_type"])
-        # The archetypes that are not definitional first, then by name: recall ties have no
-        # order of their own.
-        by_archetype.sort(key=lambda r: (r["definitional"] is not False, r["anomaly_type"]))
+            row["held_out"] = row["anomaly_type"] in HeldOutType.ALL
+        # Held out first, then the archetypes that are not definitional, then by name: recall
+        # ties have no order of their own.
+        by_archetype.sort(key=lambda r: (not r["held_out"], r["definitional"] is not False,
+                                         r["anomaly_type"]))
         metrics = evaluate.evaluate(context.flags, labels, context.lines["entry_id"].unique())
         flagged, truth = metrics["flagged"] > 0, metrics["true_anomalies"] > 0
         payload["detection_caveat"] = evaluate.DETECTION_CAVEAT  # first: read before the figures
@@ -213,6 +220,8 @@ def collect(
             notes.append(DEFAULT_CONTROLS_NOTE)
     if labels is None:
         notes.append(NO_LABELS_NOTE)
+    elif labels["anomaly_type"].isin(HeldOutType.ALL).any():
+        notes.append(HELD_OUT_NOTE)
     if payload["entries"] < SMALL_LEDGER:
         notes.append(SMALL_NOTE.format(entries=payload["entries"]))
     if "review" in payload and not payload["review"]["exists"]:
@@ -331,10 +340,12 @@ def _metric_rows(detection: dict) -> list[tuple[str, str]]:
     ]
 
 
-def _read_as(definitional: bool | None) -> str:
-    if definitional is None:
+def _read_as(row: dict) -> str:
+    if row.get("held_out"):
+        return "held out"
+    if row["definitional"] is None:
         return "not a generator archetype"
-    return "definitional" if definitional else "not definitional"
+    return "definitional" if row["definitional"] else "not definitional"
 
 
 def _controls_sentence(controls: dict, code) -> str:
@@ -427,7 +438,7 @@ def render_text(payload: dict) -> str:
             caught = "{:,} of {:,}".format(row["caught"], row["n"])
             out.append("    {:<28}{:>12}  {:.3f}  {}".format(
                 one_line(row["anomaly_type"]), caught, row["recall"],
-                _read_as(row["definitional"])))
+                _read_as(row)))
 
     top = payload["top_exceptions"]
     out += ["", f"Top {len(top)} by rule score (the model score only breaks ties)"]
@@ -512,7 +523,7 @@ def render_markdown(payload: dict) -> str:
         if payload["detection"]["by_archetype"]:
             out += _table(("Archetype", "Caught", "Recall", "Read as"), [
                 (md_code(row["anomaly_type"]), "{:,} of {:,}".format(row["caught"], row["n"]),
-                 "{:.3f}".format(row["recall"]), _read_as(row["definitional"]))
+                 "{:.3f}".format(row["recall"]), _read_as(row))
                 for row in payload["detection"]["by_archetype"]
             ], right=(1, 2))
         else:

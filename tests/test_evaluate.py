@@ -351,3 +351,44 @@ def test_precision_by_test_counts_entries_and_says_so(ledger, labels):
     assert (table.loc["JET-11", "entries_flagged"], table.loc["JET-11", "true_positives"]) == (7, 6)
     assert list(evaluate.precision_by_test(jets.run_all(ledger).iloc[:0], labels).columns) == [
         "test_id", "test_name", "entries_flagged", "true_positives", "precision"]
+
+
+def _tiers_and_labels():
+    combined = pd.DataFrame({
+        "entry_id": list("ABCDEFGHIJ"),
+        "rule_flag": [True] + [False] * 9,
+        "model_flag": [False, True, True] + [False] * 7,
+    })
+    labels = pd.DataFrame({
+        "entry_id": list("ABCDEFGHIJ"),
+        "is_anomaly": [True, True, True, True] + [False] * 6,
+        "anomaly_type": ["round_amount", "token_amount", "token_amount", "made_up"] + [""] * 6,
+    })
+    return combined, labels
+
+
+def test_budget_recall_counts_each_archetype_against_chance():
+    combined, labels = _tiers_and_labels()
+    table = evaluate.budget_recall_by_archetype(combined, labels).set_index("anomaly_type")
+    assert list(table.index) == ["token_amount", "round_amount", "made_up"]  # held out first
+    # a budget of 2 of 10 entries: an archetype of n puts n * 2 / 10 there by chance
+    assert table.loc["token_amount"].to_dict() == {
+        "n": 2, "rule_caught": 0, "model_in_budget": 2, "chance": 0.4, "model_recall": 1.0}
+    assert table.loc["round_amount", ["rule_caught", "model_in_budget", "chance"]].tolist() == [1, 0, 0.2]
+    assert table.loc["made_up", ["n", "model_in_budget", "model_recall"]].tolist() == [1, 0, 0.0]
+
+
+def test_the_held_out_archetypes_together_against_the_budget():
+    combined, labels = _tiers_and_labels()
+    assert evaluate.held_out_budget(combined, labels) == {
+        "n": 2, "in_budget": 2, "chance": 0.4, "recall": 1.0, "lift": 5.0, "budget": 2,
+        "population": 10}
+    none_held_out = labels.assign(anomaly_type=labels["anomaly_type"].replace("token_amount", "made_up"))
+    assert evaluate.held_out_budget(combined, none_held_out) is None
+    empty_budget = combined.assign(model_flag=False)
+    assert evaluate.held_out_budget(empty_budget, labels)["lift"] == 0.0  # chance of nothing
+
+
+def test_the_model_tier_caveat_says_what_measures_it_as_a_detector():
+    assert ("Only the held-out archetypes, which no rule describes, measure it as a detector"
+            in evaluate.MODEL_TIER_CAVEAT)
