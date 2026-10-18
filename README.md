@@ -248,6 +248,20 @@ One honest false-positive pattern: the model repeatedly flags system-posted depr
 because `system` is a rare `created_by` value. Structurally unusual, operationally boring - the
 kind of flag a reviewer dismisses in seconds.
 
+### The held-out ledger
+
+Measuring the model as a detector needs anomalies no rule describes.
+`ledgerlens generate --held-out` writes a second ledger, `heldout-ledger.csv` (with
+`heldout-labels.csv`; `ledger.csv` is left alone), that adds five archetypes written so that no
+test fires on them: a token amount, an unfamiliar user, a purchase split across three entries,
+a round trip of cash, and a drip of small payments to a near-miss vendor name. The rule tier
+catches none of them by construction, so what is measured is how many of them the model's
+budget holds, against chance (`ledgerlens score --labels` prints it).
+
+That ledger is generated once, after the code is frozen at the tag `held-out-freeze`, with a
+seed nothing had generated with before, and what is reported was written down before it
+existed: [docs/limitations.md](docs/limitations.md). Its result goes here once measured.
+
 ## The narrative layer and the human loop
 
 Week 3 added the part 2026 audit recruiters actually screen for: reading and questioning
@@ -606,10 +620,14 @@ and reopen Claude Desktop:
       ledger is loaded, and a company's approver list and approval limit are read from a
       controls file beside its ledger, so JET-12 and JET-06 test a QuickBooks company
       against its own controls
-- [ ] **Next** — break the circularity: inject archetypes no rule describes and re-measure
-      both tiers against them
+- [ ] **Week 5, last part** — break the circularity: which test caught each archetype, every
+      setting swept, and a held-out ledger of archetypes no rule describes, generated once
+      after the code is frozen, to measure the model tier against chance (v1.1.0)
 
 ## Limitations
+
+[docs/limitations.md](docs/limitations.md) says what the published numbers can carry, how
+the held-out measurement was registered before it was made, and what was seen before it.
 
 - Synthetic data cannot capture adaptive behaviour: real fraud adjusts to the controls
   looking for it.
@@ -623,8 +641,9 @@ and reopen Claude Desktop:
   by the controls they were made under.
 - The unsupervised tier cannot see cross-entry patterns such as duplicates, because its
   features are computed per entry.
-- Thresholds are tuned against this generator. Against a real ledger they are a
-  starting point, not a configuration.
+- Only JET-11's threshold was chosen against this generator; every other setting was swept
+  on it and left alone ([docs/tuning.md](docs/tuning.md)). Against a real ledger every
+  setting is a starting point, not a configuration.
 - The narrative eval grades properties (grounded, specific, non-assertive), not insight. A
   note can pass every check and still be unhelpful.
 - The QuickBooks pull handles single-currency companies only (a report without debit and

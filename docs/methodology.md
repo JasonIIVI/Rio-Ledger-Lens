@@ -88,6 +88,24 @@ entries, which land on rarely used accounts rather than on ones that went quiet;
 catches three of the seven rare pairs. `evaluate.attribution` counts this, and
 `ledgerlens test --labels` prints it. Measuring detection needs anomalies no rule describes.
 
+## The held-out ledger
+
+Five archetypes no test describes (`schema.HeldOutType`) are injected only into an opt-in
+ledger, `generate_ledger(held_out=True)`. They draw from their own random streams and are
+numbered after every other entry, so the rest of that ledger is exactly the one the same seed
+gives without them, and the default ledger does not change at all. Each is built to be
+rule-silent: a business day and hour, a common pair whose source is neither Manual nor
+System, cents, nothing in the 3% beneath the approval limit, balanced. The tests check, on four
+development seeds, that no rule fires on a held-out entry and that every other entry keeps the
+flags it had.
+
+So the rule tier's recall on them is zero by design and measures nothing. The model tier is
+measured as a share of its budget: an archetype of n entries puts n x B / P of them in a
+budget of B entries out of P by chance (`evaluate.budget_recall_by_archetype`,
+`evaluate.held_out_budget`). The ledger is generated once, from the commit tagged
+`held-out-freeze`, with `HELD_OUT_SEED`, which no code had used before; what is reported was
+registered in `docs/limitations.md` before it existed.
+
 ## The QuickBooks connector
 
 A pull is not a second pipeline. `pull-qbo` maps a period of a QuickBooks Online company into

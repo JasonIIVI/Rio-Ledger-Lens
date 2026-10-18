@@ -59,8 +59,9 @@ HELD_OUT_NOTE = (
     "is how many of them its budget holds, against chance (ledgerlens score --labels)."
 )
 TUNING_NOTE = (
-    "This is not the generator's default ledger. The tests' thresholds were tuned against that "
-    "one (docs/tuning.md); here they are a starting point, not a configuration."
+    "This is not the generator's default ledger. The tests' settings were measured against that "
+    "one, and only JET-11's was chosen there (docs/tuning.md); here they are a starting point, "
+    "not a configuration."
 )
 NO_LABELS_NOTE = "No labels were given, so detection quality was not measured for this ledger."
 MODEL_TIER_NOTE = (

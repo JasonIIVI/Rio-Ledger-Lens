@@ -333,12 +333,41 @@ and the MCP SDK, so the two together cover every code path CI will see.
   as the Ledger line is), and the identity sidecar's own FIFO, depth and dangling-link
   defects (on `main` before this branch; it is now read as the controls file is).
   Names are compared as written (no Unicode normalisation; a ledger name with stray spaces
-  cannot be listed): documented. Open (the maintainer's call): review rows are keyed by ledger,
-  not controls, so after a controls change a decided entry stays out of the queue whatever
-  it is now flagged for (documented; recording the controls on each row is a schema change).
-- **Next** — breaking the circularity in the detection numbers (a held-out ledger of
-  archetypes no rule describes, generated once after the code is frozen).
-- 992 tests on 3.9 (1 skipped) / 1006 on 3.12 (the fourteen MCP tests need 3.10+), ruff clean.
+  cannot be listed): documented. Review rows are keyed by ledger, not controls, so after a
+  controls change a decided entry stays out of the queue whatever it is now flagged for; the
+  maintainer decided on 2026-10-18 to keep that documented rather than record the controls on
+  each row (a schema change).
+- **Breaking the circularity (week 5, `week5/held-out`, before the freeze)** — four steps.
+  - **Attribution.** `evaluate.attribution` counts which test caught each archetype: eight
+    are caught wholly by the test written for them, and `benford_drift`, `dormant_account` and
+    `rare_account_pair` mostly by others (`NOT_DEFINITIONAL`, replacing
+    `NON_CIRCULAR_ARCHETYPES`). The caveat says "eight of eleven"; the README carries the
+    table and three corrected bullets; `test --labels` prints it; the summary reads those
+    three as "not definitional" (was "measured").
+  - **The held-out ledger.** `schema.HeldOutType` (five archetypes, 43 entries,
+    `generate.HELD_OUT_MIX`), injected only by `generate_ledger(held_out=True)` /
+    `generate --held-out` (`heldout-ledger.csv`, never `ledger.csv`), from their own streams and
+    numbered last, so the rest of that ledger is the one the seed gives alone. Each is
+    rule-silent by construction, and the tests check it on four development seeds (no flag on a
+    held-out entry, no other entry's flags moved). `--held-out` without `--seed` uses
+    `HELD_OUT_SEED`; `tests/conftest.py` fails any test that generates with it.
+  - **The surfaces.** `evaluate.budget_recall_by_archetype` and `held_out_budget` (the
+    model's budget against chance, n x B / P), printed by `score --labels` and on the
+    dashboard's tier tab; the summary reads held-out rows as "held out" with `HELD_OUT_NOTE`;
+    `DEFAULT_CONTROLS_NOTE` no longer tells a generated ledger the synthetic company's
+    controls are "not its own"; `MODEL_TIER_CAVEAT` says only the held-out archetypes measure
+    the model as a detector.
+  - **The sweep.** `evaluate.sweep` and `docs/tuning.md`: every test with a setting swept on
+    the default ledger, pinned by `tests/test_tuning.py`, no default changed (JET-08 at 5
+    would catch all seven rare pairs, because four drew the same pair; JET-09 catches no
+    dormant entry at any setting). `TUNING_NOTE`, the workpaper and the README no longer say
+    the thresholds were tuned: only JET-11's was chosen. `docs/limitations.md` registers the
+    measurement before it is made. Version 1.1.0.
+- **Next** — the freeze (tag `held-out-freeze` on the green head), then the one measurement:
+  `generate --held-out`, `test` and `score` with its labels, pasted verbatim into
+  `docs/limitations.md` and the README, with no commit touching `src/` or `app.py` after the
+  tag. Then v1.1.0.
+- 1018 tests on 3.9 (1 skipped) / 1032 on 3.12 (the fourteen MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
@@ -363,16 +392,16 @@ ledger CSV ──▶ ingest ──┼──▶ Isolation Forest ─────�
 
 | Module | Role |
 |---|---|
-| `schema.py` | column contract, 11 anomaly archetypes, US holiday calculator |
+| `schema.py` | column contract, 11 anomaly archetypes, the 5 held-out ones (`HeldOutType`), US holiday calculator |
 | `coa.py` | chart of accounts for the fictional test company |
-| `generate.py` | labelled synthetic GL generator |
+| `generate.py` | labelled synthetic GL generator; `held_out=True` adds the held-out archetypes from their own streams (`HELD_OUT_SEED` used once, after the freeze) |
 | `ingest.py` | validation + derived columns; `entry_level()` collapses lines to entries; `ledger_digest()` / `ledger_identity()`, the review-store key (`csv:<sha256>`, or `qbo:<realm>` from a `.identity.json` sidecar) |
 | `controls.py` | a company's approver list (JET-12) and approval limit (JET-06) from `<stem>.controls.json` beside the ledger; `DEFAULT_CONTROLS` (the synthetic company's) when there is none; a file that cannot be used is refused, never replaced |
 | `jets.py` | 12 deterministic tests + severity-weighted risk score; JET-06 and JET-12 read a `Controls` |
 | `benford.py` | first-digit test, MAD (Nigrini bands) + chi-square |
 | `features.py` | 16 engineered per-entry features for the model tier |
 | `model.py` | Isolation Forest, rank-based flagging, tier comparison |
-| `evaluate.py` | precision/recall, by archetype, by test, tier comparison, model lift; `check_labels` (labels must cover exactly the ledger's entries) and the two caveat constants |
+| `evaluate.py` | precision/recall, by archetype, by test, tier comparison, model lift; `attribution` (which test caught each archetype), `budget_recall_by_archetype` / `held_out_budget` (the model's budget against chance), `sweep`; `check_labels` (labels must cover exactly the ledger's entries) and the two caveat constants |
 | `report.py` | 5-tab Excel workpaper |
 | `review.py` | append-only SQLite store keyed by ledger (`ledger_id`; schema version 4 via `PRAGMA user_version`, numbered migrations from frozen DDL): decisions and versioned narratives, enforced by triggers; `read_only()` opener; `ledgers()` / `adopt_legacy()` |
 | `narrate.py` | Claude narratives: structured-output JSON contract, cacheable system prompt, usage accounting |
@@ -436,6 +465,12 @@ ledger CSV ──▶ ingest ──┼──▶ Isolation Forest ─────�
    narrated only after that commit is pushed. A case's `overrides` are part of the prompt its
    note answered, so a narrated case's override is frozen: new text means a fresh runs
    directory (or another entry's case), never a re-grade, and the eval refuses to cross it.
+10. **The held-out figures are the ones measured at the freeze.** The held-out ledger is
+    generated once, from the commit tagged `held-out-freeze`, with `HELD_OUT_SEED`, and nothing
+    is tuned on it. No test generates with that seed before the measurement (the conftest
+    guard). After the tag no commit touches `src/` or `app.py` until the measurement is merged;
+    a defect found then is disclosed in `docs/limitations.md`, not fixed. A later change that
+    moves the held-out figures labels the new ones "re-measured, no longer held out".
 
 ## The honest framing of the results
 
@@ -452,8 +487,9 @@ Same pattern in the model tier: it is a strong re-ranker (top-25 precision 0.60,
 random) but a weak independent detector — the "model only" segment sits at the base rate, because
 these anomalies were *defined* as rule violations.
 
-**Breaking that circularity is the single most valuable remaining task** (planned for week 5:
-inject archetypes no rule describes, then re-measure both tiers). Do not quietly report the
+**Breaking that circularity is the single most valuable remaining task.** Week 5 adds a held-out
+ledger of archetypes no rule describes, measured once at the freeze, against chance, with what
+is reported registered first in `docs/limitations.md` (rule 10). Do not quietly report the
 flattering number.
 
 The narrative eval has the same shape of caveat: it grades properties (grounded, specific,
@@ -472,6 +508,9 @@ unhelpful. Say so wherever the number is quoted.
 - Run `ruff check src tests app.py` and both venvs' test suites before every commit.
 - The Claude API is never called from a test: `tests/conftest.py` has the fake client
   (`llm` fixture) shaped like the real responses, thinking block included.
+- No test generates with `HELD_OUT_SEED`, and none computes a model score on a held-out
+  recipe: held-out tests use `DEV_SEEDS`, and a test of what `score` prints for held-out labels
+  relabels normal entries.
 - No test touches the network: QuickBooks responses are replayed from `tests/fixtures/qbo/`
   (`RecordedTransport`), and a recording is made only with `pull-qbo --record` against a
   sandbox company, sanitized on the way to disk.

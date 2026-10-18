@@ -181,6 +181,12 @@ def test_held_out_archetypes_are_read_as_held_out_and_lead_the_table(context, sm
     assert not any(r["held_out"] for r in plain["detection"]["by_archetype"])
 
 
+def test_the_tuning_note_claims_only_the_threshold_that_was_chosen():
+    """docs/tuning.md sweeps every setting; only JET-11's was chosen on the default ledger."""
+    assert "were tuned" not in summary.TUNING_NOTE
+    assert "only JET-11's was chosen there (docs/tuning.md)" in summary.TUNING_NOTE
+
+
 def test_the_default_controls_note_holds_for_a_generated_ledger_too():
     """A ledger the generator made is the synthetic company's: its controls are its own."""
     assert "not its own" not in summary.DEFAULT_CONTROLS_NOTE

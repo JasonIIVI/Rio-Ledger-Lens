@@ -275,6 +275,21 @@ def test_the_development_held_out_ledger_is_pinned(held_out_pairs):
     assert ledger_digest(prepare(lines.copy())) == DEV_HELD_OUT_SHA256
 
 
+def test_the_limitations_list_each_held_out_archetype_with_its_entries():
+    """docs/limitations.md registers the measurement; its counts are the generator's."""
+    from pathlib import Path
+
+    from ledgerlens.generate import HELD_OUT_MIX
+
+    doc = (Path(__file__).resolve().parents[1] / "docs" / "limitations.md").read_text(encoding="utf-8")
+    per_group = {"split_purchase": 3, "round_trip": 2, "shell_vendor_drip": 5}
+    entries = {kind: n * per_group.get(kind, 1) for kind, n in HELD_OUT_MIX.items()}
+    assert list(entries) == list(HeldOutType.ALL) and sum(entries.values()) == 43
+    for kind, n in entries.items():
+        assert doc.count(f"| `{kind}` | {n} |") == 2, kind  # the recipe table and the registered one
+    assert "| all held-out | 43 |" in doc and "how many of 43 the budget holds" in doc
+
+
 def test_nothing_generates_with_the_held_out_seed_before_the_measurement():
     with pytest.raises(pytest.fail.Exception, match="HELD_OUT_SEED"):
         generate_ledger(start=date(2024, 1, 1), end=date(2024, 1, 31), seed=HELD_OUT_SEED)
