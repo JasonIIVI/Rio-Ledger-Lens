@@ -2,10 +2,21 @@ import calendar
 import warnings
 from datetime import date, timedelta
 
+import pandas as pd
 import pytest
 
-from ledgerlens.generate import generate_ledger
-from ledgerlens.schema import AnomalyType, is_us_holiday
+from ledgerlens import jets
+from ledgerlens.coa import COMMON_PAIRS
+from ledgerlens.generate import _VENDORS, HELD_OUT_SEED, ArchetypeSkipped, generate_ledger
+from ledgerlens.ingest import prepare
+from ledgerlens.schema import AnomalyType, HeldOutType, is_us_holiday
+
+#: Seeds the held-out recipes may be developed and tested on: any but HELD_OUT_SEED.
+#: The first is the default ledger's.
+DEV_SEEDS = (20260922, 101, 202, 303)
+
+#: The default ledger with the held-out rows, generated on DEV_SEEDS[0]: pins the recipes.
+DEV_HELD_OUT_SHA256 = "d5182b57029fb7d7dfc3d2b6d0ea6bb34d7779a7fda7189b35cfeca9bc24c94d"
 
 
 def test_generation_is_deterministic():
@@ -131,3 +142,139 @@ def test_every_one_and_three_day_range_of_a_year_generates_or_is_refused():
             injected = set(labels.loc[labels["is_anomaly"], "anomaly_type"])
             assert injected == set(AnomalyType.ALL) - _lacking(start, end), (start, end)
             assert len(notes) == len(_lacking(start, end)), (start, end)
+
+
+# --- the held-out ledger ---------------------------------------------------------
+# Every test here generates on DEV_SEEDS: HELD_OUT_SEED is generated with once, after the
+# code is frozen (conftest fails any test that tries).
+
+
+@pytest.fixture(scope="module")
+def held_out_pairs():
+    """For each development seed: the default-range ledger with and without the held-out rows."""
+    pairs = {}
+    for seed in DEV_SEEDS:
+        pairs[seed] = (generate_ledger(seed=seed, held_out=True), generate_ledger(seed=seed))
+    return pairs
+
+
+def _held_out_ids(labels):
+    return set(labels.loc[labels["anomaly_type"].isin(HeldOutType.ALL), "entry_id"])
+
+
+def test_the_development_seeds_are_not_the_held_out_one():
+    assert HELD_OUT_SEED not in DEV_SEEDS and len(set(DEV_SEEDS)) == 4
+    assert HeldOutType.ALL and not set(HeldOutType.ALL) & set(AnomalyType.ALL)
+
+
+def test_without_its_held_out_rows_the_ledger_is_the_one_the_seed_gives_alone(held_out_pairs):
+    for seed, ((lines, labels), (plain_lines, plain_labels)) in held_out_pairs.items():
+        ids = _held_out_ids(labels)
+        assert len(ids) == 43, seed
+        rest = lines[~lines["entry_id"].isin(ids)].reset_index(drop=True)
+        pd.testing.assert_frame_equal(rest, plain_lines)
+        pd.testing.assert_frame_equal(
+            labels[~labels["entry_id"].isin(ids)].reset_index(drop=True), plain_labels)
+        # the held-out ids come after every other entry's
+        number = lines["entry_id"].str[-6:].astype(int)
+        assert number[lines["entry_id"].isin(ids)].min() > number[~lines["entry_id"].isin(ids)].max()
+
+
+def test_the_held_out_rows_draw_from_their_own_streams():
+    """A different anomaly rate moves every main draw; the held-out entries stay as they were."""
+    def held_out_rows(rate):
+        lines, labels = generate_ledger(start=date(2024, 1, 1), end=date(2024, 6, 30),
+                                        anomaly_rate=rate, seed=DEV_SEEDS[1], held_out=True)
+        rows = lines[lines["entry_id"].isin(_held_out_ids(labels))]
+        return rows.drop(columns="entry_id").sort_values(
+            ["posting_date", "entered_at", "line_no"]).reset_index(drop=True)
+
+    pd.testing.assert_frame_equal(held_out_rows(0.015), held_out_rows(0.04))
+
+
+def test_no_rule_fires_on_a_held_out_entry_or_moves_on_any_other(held_out_pairs):
+    """Rule silence, the premise of the held-out measurement: zero flags on the held-out
+    entries, and the same (entry, test) flags on every other entry as without them."""
+    for seed, ((lines, labels), (plain_lines, _)) in held_out_pairs.items():
+        flags = jets.run_all(prepare(lines.copy()))
+        ids = _held_out_ids(labels)
+        on_held_out = flags[flags["entry_id"].isin(ids)]
+        assert on_held_out.empty, (seed, sorted(set(on_held_out["test_id"])))
+        plain = jets.run_all(prepare(plain_lines.copy()))
+        assert (set(zip(flags["entry_id"], flags["test_id"]))
+                == set(zip(plain["entry_id"], plain["test_id"]))), seed
+
+
+def test_the_held_out_recipes_hold_their_bands(held_out_pairs):
+    for seed, ((lines, labels), _) in held_out_pairs.items():
+        kinds = labels.set_index("entry_id")["anomaly_type"]
+        rows = lines[lines["entry_id"].isin(_held_out_ids(labels))].copy()
+        rows["kind"] = rows["entry_id"].map(kinds)
+        entries = rows[rows["line_no"] == 1].set_index("entry_id")
+        credits = rows[rows["line_no"] == 2].set_index("entry_id")
+        assert (entries["debit"] == credits["credit"]).all()  # balanced
+        counts = entries["kind"].value_counts().to_dict()
+        assert counts == {"token_amount": 8, "unfamiliar_user": 8, "split_purchase": 9,
+                          "round_trip": 8, "shell_vendor_drip": 10}, seed
+        amount = entries["debit"]
+        assert ((amount * 100).round() % 100 != 0).all()  # cents on every one
+        assert not ((amount >= 9_700) & (amount < 10_000)).any()
+        assert not entries["source"].isin(["Manual", "System"]).any()
+        pairs = set(zip(rows.loc[rows["line_no"] == 1, "account_code"],
+                        rows.loc[rows["line_no"] == 2, "account_code"]))
+        assert pairs <= set(COMMON_PAIRS)
+        stamp = pd.to_datetime(entries["entered_at"])
+        assert stamp.dt.hour.between(8, 17).all()
+        days = pd.to_datetime(entries["posting_date"]).dt.date
+        assert all(d.weekday() < 5 and not is_us_holiday(d) for d in days)
+        assert (stamp.dt.date == days).all()
+
+        kind = entries["kind"]
+        assert amount[kind == "token_amount"].between(0.50, 2.99).all()
+        assert entries.loc[kind == "unfamiliar_user", "created_by"].isin(
+            ["temp01", "temp02", "svc_import", "admin2"]).all()
+        assert not entries.loc[kind != "unfamiliar_user", "created_by"].isin(
+            ["temp01", "temp02", "svc_import", "admin2"]).any()
+        splits = entries[kind == "split_purchase"]
+        for _, group in splits.groupby([splits["posting_date"], splits["description"].str.split(" - vendor ").str[1]]):
+            assert len(group) == 3 and group["debit"].nunique() == 3
+            assert 10_050 <= group["debit"].sum() <= 10_800 and (group["debit"] < 9_700).all()
+        trips = entries[kind == "round_trip"].sort_values("posting_date")
+        business = [d for d in pd.date_range("2024-01-01", "2025-12-31").date
+                    if d.weekday() < 5 and not is_us_holiday(d)]
+        ins = trips[trips["account_code"] == "1000"]
+        outs = trips[trips["account_code"] == "6500"]
+        assert len(ins) == len(outs) == 4
+        for _, leg in ins.iterrows():
+            back = business[business.index(pd.Timestamp(leg["posting_date"]).date()) + 3]
+            match = outs[(pd.to_datetime(outs["posting_date"]).dt.date == back) & (outs["debit"] == leg["debit"])]
+            assert len(match) >= 1
+        drips = entries[kind == "shell_vendor_drip"]
+        assert drips["debit"].between(150, 450).all()
+        for vendor, group in drips.groupby(drips["description"]):
+            dates = sorted(pd.to_datetime(group["posting_date"]).dt.date)
+            assert len(dates) == 5 and vendor.split(" - ")[1] not in _VENDORS
+            assert all(13 <= (b - a).days <= 17 for a, b in zip(dates, dates[1:]))
+
+
+def test_a_short_range_leaves_out_a_held_out_archetype_it_has_no_room_for():
+    with pytest.warns(ArchetypeSkipped) as caught:
+        lines, labels = generate_ledger(start=date(2024, 1, 2), end=date(2024, 1, 4),
+                                        seed=DEV_SEEDS[2], held_out=True)
+    said = " ".join(str(w.message) for w in caught)
+    assert "round_trip" in said and "shell_vendor_drip" in said
+    kinds = set(labels["anomaly_type"]) & set(HeldOutType.ALL)
+    assert kinds == {"token_amount", "unfamiliar_user", "split_purchase"}
+
+
+def test_the_development_held_out_ledger_is_pinned(held_out_pairs):
+    """Any change to a held-out recipe before the freeze moves this, and says so."""
+    from ledgerlens.ingest import ledger_digest
+
+    (lines, _), _ = held_out_pairs[DEV_SEEDS[0]]
+    assert ledger_digest(prepare(lines.copy())) == DEV_HELD_OUT_SHA256
+
+
+def test_nothing_generates_with_the_held_out_seed_before_the_measurement():
+    with pytest.raises(pytest.fail.Exception, match="HELD_OUT_SEED"):
+        generate_ledger(start=date(2024, 1, 1), end=date(2024, 1, 31), seed=HELD_OUT_SEED)

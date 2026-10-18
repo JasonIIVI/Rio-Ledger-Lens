@@ -93,6 +93,30 @@ class AnomalyType:
     )
 
 
+class HeldOutType:
+    """Archetypes no test describes, injected only into the opt-in held-out ledger.
+
+    Kept out of ``AnomalyType.ALL``: the default ledger, its digest and every figure
+    published from it stay as they are. The rule tier catches none of these by
+    construction, so they measure the model tier as a detector, once, on a ledger
+    generated after the code was frozen.
+    """
+
+    TOKEN_AMOUNT = "token_amount"
+    UNFAMILIAR_USER = "unfamiliar_user"
+    SPLIT_PURCHASE = "split_purchase"
+    ROUND_TRIP = "round_trip"
+    SHELL_VENDOR_DRIP = "shell_vendor_drip"
+
+    ALL = (
+        TOKEN_AMOUNT,
+        UNFAMILIAR_USER,
+        SPLIT_PURCHASE,
+        ROUND_TRIP,
+        SHELL_VENDOR_DRIP,
+    )
+
+
 # --- US federal holidays ----------------------------------------------------
 # Computed rather than hardcoded so the generator works for any year, and
 # without pulling in a holiday package for eleven dates.

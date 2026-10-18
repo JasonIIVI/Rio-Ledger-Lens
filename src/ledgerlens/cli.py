@@ -38,13 +38,14 @@ from .connectors.tokens import (
 )
 from .controls import DEFAULT_CONTROLS, Controls, ControlsError, controls_path, load_controls
 from .env import load_dotenv
-from .generate import ArchetypeSkipped, generate_ledger
+from .generate import DEFAULT_SEED, HELD_OUT_SEED, ArchetypeSkipped, generate_ledger
 from .ingest import IdentityError, ledger_identity, load_csv, load_labels, quote
 from .ledger_context import LedgerContext
 from .model import combine, score_ledger
 from .narrate import DEFAULT_EFFORT, DEFAULT_MAX_TOKENS, DEFAULT_MODEL, NarrativeError, Narrator
 from .report import build_workpaper
 from .review import LEGACY_LEDGER_ID, ReviewStore
+from .schema import HeldOutType
 from .summary import FORMATS as SUMMARY_FORMATS
 from .summary import collect as collect_summary
 from .summary import one_line
@@ -61,6 +62,8 @@ def _parse_date(text: str) -> date:
 
 
 def cmd_generate(args: argparse.Namespace) -> int:
+    # --held-out with no --seed is the held-out ledger itself, generated once, after the freeze.
+    seed = args.seed if args.seed is not None else (HELD_OUT_SEED if args.held_out else DEFAULT_SEED)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always", ArchetypeSkipped)
         try:
@@ -69,7 +72,8 @@ def cmd_generate(args: argparse.Namespace) -> int:
                 end=args.end,
                 entries_per_day=args.entries_per_day,
                 anomaly_rate=args.anomaly_rate,
-                seed=args.seed,
+                seed=seed,
+                held_out=args.held_out,
             )
         except ValueError as exc:  # a range with no business day, or impossible parameters
             print(f"error: {exc}")
@@ -80,16 +84,19 @@ def cmd_generate(args: argparse.Namespace) -> int:
             warnings.showwarning(w.message, w.category, w.filename, w.lineno)
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    ledger_path = out / "ledger.csv"
-    labels_path = out / "labels.csv"
+    prefix = "heldout-" if args.held_out else ""  # never over the default ledger
+    ledger_path = out / f"{prefix}ledger.csv"
+    labels_path = out / f"{prefix}labels.csv"
     lines.to_csv(ledger_path, index=False)
     labels.to_csv(labels_path, index=False)
 
     print("Wrote {:,} lines / {:,} entries to {}".format(
         len(lines), lines["entry_id"].nunique(), ledger_path))
-    print("Wrote {:,} labels ({} anomalies, {:.2%}) to {}".format(
+    held = ", {} of them held out".format(
+        int(labels["anomaly_type"].isin(HeldOutType.ALL).sum())) if args.held_out else ""
+    print("Wrote {:,} labels ({} anomalies, {:.2%}{}) to {}".format(
         len(labels), int(labels["is_anomaly"].sum()),
-        labels["is_anomaly"].mean(), labels_path))
+        labels["is_anomaly"].mean(), held, labels_path))
     for note in skipped:
         print(f"Warning: {note}")
     beside = controls_path(ledger_path)
@@ -984,7 +991,11 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--end", type=_parse_date, default=date(2025, 12, 31))
     g.add_argument("--entries-per-day", type=int, default=10)
     g.add_argument("--anomaly-rate", type=float, default=0.015)
-    g.add_argument("--seed", type=int, default=20260922)
+    g.add_argument("--seed", type=int, default=None,
+                   help=f"default {DEFAULT_SEED}, or {HELD_OUT_SEED} with --held-out")
+    g.add_argument("--held-out", action="store_true",
+                   help="also inject the archetypes no test describes, into heldout-ledger.csv "
+                        "and heldout-labels.csv (ledger.csv is left alone)")
     g.add_argument("--out-dir", default="data")
     g.set_defaults(func=cmd_generate)
 

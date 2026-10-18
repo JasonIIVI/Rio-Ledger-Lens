@@ -19,6 +19,40 @@ def test_generate_writes_both_files(tmp_path):
     assert (tmp_path / "labels.csv").exists()
 
 
+def test_generate_held_out_writes_its_own_files_and_leaves_the_ledger_alone(tmp_path, capsys):
+    import pandas as pd
+
+    from ledgerlens.schema import HeldOutType
+
+    (tmp_path / "ledger.csv").write_text("left alone\n")
+    code = main(["generate", "--held-out", "--seed", "101", "--start", "2024-01-01",
+                 "--end", "2024-03-31", "--out-dir", str(tmp_path)])
+    assert code == 0
+    assert (tmp_path / "ledger.csv").read_text() == "left alone\n"
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        "heldout-labels.csv", "heldout-ledger.csv", "ledger.csv"]
+    labels = pd.read_csv(tmp_path / "heldout-labels.csv", keep_default_na=False)
+    assert set(HeldOutType.ALL) <= set(labels["anomaly_type"])
+    out = capsys.readouterr().out
+    assert str(tmp_path / "heldout-ledger.csv") in out and ", 43 of them held out) to " in out
+
+
+def test_generate_held_out_without_a_seed_is_the_measurement_and_no_test_may_run_it(tmp_path):
+    """Without --seed, --held-out generates with HELD_OUT_SEED: the conftest guard stops it."""
+    with pytest.raises(pytest.fail.Exception, match="HELD_OUT_SEED"):
+        main(["generate", "--held-out", "--start", "2024-01-01", "--end", "2024-01-31",
+              "--out-dir", str(tmp_path)])
+    assert not any(tmp_path.iterdir())
+
+
+def test_generate_without_held_out_still_uses_the_default_seed(tmp_path):
+    for name, seed in (("plain", []), ("seeded", ["--seed", "20260922"])):
+        main(["generate", "--start", "2024-01-01", "--end", "2024-01-31", *seed,
+              "--out-dir", str(tmp_path / name)])
+    for name in ("ledger.csv", "labels.csv"):
+        assert (tmp_path / "plain" / name).read_bytes() == (tmp_path / "seeded" / name).read_bytes()
+
+
 def test_generate_says_which_archetype_a_short_range_left_out(tmp_path, capsys):
     code = main(["generate", "--start", "2024-01-01", "--end", "2024-01-10",
                  "--out-dir", str(tmp_path)])
