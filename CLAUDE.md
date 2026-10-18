@@ -374,11 +374,16 @@ and the MCP SDK, so the two together cover every code path CI will see.
     pinned whole, and four tests that could not fail were tightened; the docs say where rule
     silence rests on construction and where on seeds, and close three gaps in the
     registration (the environment and versions, no controls file, the old archetypes' total).
+    A verification of those fixes (one agent) found nothing the stop rule covers; its findings
+    were fixed too: the registration runs every command from a checkout of the tag with
+    `PYTHONPATH` set (the venvs' editable install is another checkout's 1.0.0 code), generates
+    once and records both files' sha256, and the summary lists held-out rows in
+    `HeldOutType`'s order.
 - **Next** — the freeze (tag `held-out-freeze` on the green head), then the one measurement:
   `generate --held-out`, `test` and `score` with its labels, pasted verbatim into
   `docs/limitations.md` and the README, with no commit touching `src/` or `app.py` after the
   tag. Then v1.1.0.
-- 1019 tests on 3.9 (1 skipped) / 1033 on 3.12 (the fourteen MCP tests need 3.10+), ruff clean.
+- 1020 tests on 3.9 (1 skipped) / 1034 on 3.12 (the fourteen MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth

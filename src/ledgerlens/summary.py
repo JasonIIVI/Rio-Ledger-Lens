@@ -103,9 +103,10 @@ def _decision_kind(value: object) -> str | None:
 def _definitional(anomaly_type: str) -> bool | None:
     """Whether the generator injects this archetype by the definition its test checks.
 
-    False for the three caught mostly by tests written for something else
-    (``evaluate.NOT_DEFINITIONAL``). None for a held-out type, which no test was
-    written for, and for a type the generator does not know: nothing can be claimed.
+    False for the three it does not inject by exactly that definition, so which test
+    catches them depends on the draw (``evaluate.NOT_DEFINITIONAL``). None for a held-out
+    type, which no test was written for, and for a type the generator does not know:
+    nothing can be claimed.
     """
     if anomaly_type not in AnomalyType.ALL:
         return None
@@ -198,10 +199,13 @@ def collect(
         for row in by_archetype:
             row["definitional"] = _definitional(row["anomaly_type"])
             row["held_out"] = row["anomaly_type"] in HeldOutType.ALL
-        # Held out first, then the archetypes that are not definitional, then by name: recall
-        # ties have no order of their own.
-        by_archetype.sort(key=lambda r: (not r["held_out"], r["definitional"] is not False,
-                                         r["anomaly_type"]))
+        # Held out first, in the generator's order as in evaluate's tables, then the archetypes
+        # that are not definitional, then by name: recall ties have no order of their own.
+        by_archetype.sort(key=lambda r: (
+            not r["held_out"],
+            HeldOutType.ALL.index(r["anomaly_type"]) if r["held_out"] else 0,
+            r["definitional"] is not False,
+            r["anomaly_type"]))
         metrics = evaluate.evaluate(context.flags, labels, context.lines["entry_id"].unique())
         flagged, truth = metrics["flagged"] > 0, metrics["true_anomalies"] > 0
         payload["detection_caveat"] = evaluate.DETECTION_CAVEAT  # first: read before the figures

@@ -43,7 +43,7 @@ INTENDED_TEST = {
 #: The archetypes the generator does not inject by exactly the definition their test
 #: checks (benford_drift has none), so which test catches them depends on the draw. On
 #: the default ledger the test written for them catches half of them or fewer and tests
-#: written for something else catch the rest; on another seed JET-08 can catch every rare
+#: written for something else catch most of the others; on another seed JET-08 can catch every rare
 #: pair. Their recall is incidental either way: not the definition read back, and not a
 #: measure of detection.
 NOT_DEFINITIONAL = (

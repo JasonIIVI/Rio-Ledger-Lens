@@ -82,7 +82,7 @@ README rather than buried, because the alternative — quoting an unqualified 0.
 The other three (Benford drift, dormant accounts, rare account pairs) are not definitional,
 but they do not measure the rule layer either. Which test catches them depends on the draw
 (on seed 101 JET-08 catches all seven rare pairs). On the default ledger the test written for
-each catches half of them or fewer, and tests written for something else catch the rest: JET-12 catches the
+each catches half of them or fewer, and tests written for something else catch most of the others: JET-12 catches the
 Benford-drift entries keyed outside the approver list (the injector picks the keyer at
 random), and no test reads their amounts; JET-09 catches none of the dormant-account
 entries, which land on rarely used accounts rather than on ones that went quiet; JET-08
@@ -100,7 +100,7 @@ System, cents, nothing in the 3% beneath the approval limit, balanced. That sile
 06, 10 and 12 by construction; JET-07, 08, 09 and 11 read the population, so the tests check,
 on four development seeds, that no rule fires on a held-out entry and that every other entry
 keeps the flags it had (on other seeds the held-out lines can move another entry's JET-11
-flag: `docs/limitations.md`).
+flag, and on a tiny ledger JET-08's: `docs/limitations.md`).
 
 So the rule tier is built to catch none of them, and its recall on them measures nothing. The model tier is
 measured as a share of its budget: an archetype of n entries puts n x B / P of them in a

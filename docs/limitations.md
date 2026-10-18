@@ -29,9 +29,9 @@ same in one sentence (`evaluate.DETECTION_CAVEAT`, `evaluate.MODEL_TIER_CAVEAT`)
 
 Only one threshold was chosen on this ledger, JET-11's. Every other setting was swept on it
 and left alone (`docs/tuning.md`): JET-01 and JET-10 are flat across the whole range swept;
-JET-03, 05, 06 and 07 are flat over most of it, the default at or inside the edge of the
-injector's own definition; JET-08 and JET-09 move, for reasons the generator explains, not a
-ledger.
+JET-03, 05 and 07 are flat over most of it, and JET-06 only from 0.03 to 0.05, each with the
+default at or inside the edge of the injector's own definition; JET-08 and JET-09 move, for
+reasons the generator explains, not a ledger.
 
 ## The held-out measurement: registered before it was made
 
@@ -55,21 +55,25 @@ seven more seeds at the default size showed no flag on a held-out entry either. 
 found and are kept in view. The held-out lines join JET-11's per-account baselines, so on
 some seeds another entry's JET-11 flag moves (seed 606: three round-amount entries lose it;
 seed 808: one normal entry gains it). And on a ledger of a few dozen entries JET-08 fires on
-held-out entries. So the measured ledger's figures for the eleven old archetypes include
+held-out entries, and moves other entries' JET-08 flags too. So the measured ledger's figures for the eleven old archetypes include
 whatever its held-out lines do to JET-11, and the measurement is of the model tier: how many
 of the held-out entries its budget (the top 2% of entries by rank, ties included) holds,
 against chance.
 
 **How it is made, once.** The code was frozen at the commit tagged `held-out-freeze`.
-From that commit, `ledgerlens generate --held-out --out-dir data` (seed `HELD_OUT_SEED`,
-never generated with before; the tests use other seeds, and fail if anything generates
-with it), then `ledgerlens test` and `ledgerlens score`, each with
-`--labels data/heldout-labels.csv`. No `heldout-ledger.controls.json` sits beside it (`test`
-would print a "Controls from" line): it is measured against the synthetic company's
-controls. It runs in the Python 3.12 environment and again in the 3.9 one; both outputs are
-pasted below as printed, with the freeze commit, the date and the versions (Python, numpy,
-pandas, scikit-learn and ledgerlens, printed by one `python -c` line in each), and if the two
-differ in any figure, that is said rather than one of them chosen. Nothing is tuned on it afterwards: a later change
+Every command runs from a checkout of that tag with `PYTHONPATH` set to the checkout's `src`
+(the development environments install another checkout's code), and one `python -c` line in
+each environment prints `ledgerlens.__file__`, `ledgerlens.__version__` (1.1.0), Python,
+numpy, pandas and scikit-learn, beside `git rev-parse HEAD`. The ledger is generated once, in
+the Python 3.12 environment: `ledgerlens generate --held-out --out-dir data` (seed
+`HELD_OUT_SEED`, never generated with before; the tests use other seeds, and fail if
+anything generates with it), and the sha256 of `heldout-ledger.csv` and `heldout-labels.csv`
+is recorded. Then `ledgerlens test` and `ledgerlens score`, each with
+`--labels data/heldout-labels.csv`, run on those same two files in the 3.12 environment and
+again in the 3.9 one. No `heldout-ledger.controls.json` sits beside the ledger (`test` would
+print a "Controls from" line): it is measured against the synthetic company's controls. Both
+environments' outputs are pasted below as printed, with the date, and if the two differ in
+any figure, that is said rather than one of them chosen. Nothing is tuned on it afterwards: a later change
 that moves these figures labels the new ones "re-measured, no longer held out". A defect in
 the code found after the freeze is disclosed here, not fixed before the measurement.
 

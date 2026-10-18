@@ -17,7 +17,7 @@ import pytest
 from ledgerlens import evaluate, jets, summary
 from ledgerlens.ledger_context import AGREEMENTS, CAVEAT, ENTRY_COLUMNS, LedgerContext
 from ledgerlens.review import DECISIONS, Decision, ReviewStore
-from ledgerlens.schema import AnomalyType
+from ledgerlens.schema import AnomalyType, HeldOutType
 
 TODAY = date(2001, 2, 3)  # never the day the suite runs: a run dated by the clock must differ
 ZWSP = "\u200b"
@@ -185,6 +185,18 @@ def test_held_out_archetypes_are_read_as_held_out_and_lead_the_table(context, sm
     # what the rule tier catches of them it catches by accident: never claimed to be none
     assert "by construction" not in summary.HELD_OUT_NOTE and "by accident" in summary.HELD_OUT_NOTE
     assert not any(r["held_out"] for r in plain["detection"]["by_archetype"])
+
+
+def test_every_held_out_archetype_is_read_as_held_out_in_the_generators_order(context, small_ledger):
+    labels = small_ledger[1].copy()
+    anomalous = labels.index[labels["is_anomaly"]]
+    kinds = list(reversed(HeldOutType.ALL))  # assigned out of order: the summary puts them in order
+    for i, kind in enumerate(kinds):
+        labels.loc[anomalous[i], "anomaly_type"] = kind
+    rows = summary.collect(context, labels=labels, today=TODAY)["detection"]["by_archetype"]
+    held = [r for r in rows if r["held_out"]]
+    assert [r["anomaly_type"] for r in held] == list(HeldOutType.ALL)
+    assert rows[:len(held)] == held and all(r["definitional"] is None for r in held)
 
 
 def test_the_tuning_note_claims_only_the_threshold_that_was_chosen():

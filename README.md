@@ -140,7 +140,7 @@ achievement.
 
 The other three are not circular, but they are not measurements of detection either:
 which test catches them depends on the draw, and on this ledger the test written for each
-catches half of them or fewer, and tests written for something else catch the rest. Which test caught what (`ledgerlens test --labels` prints this table;
+catches half of them or fewer, and tests written for something else catch most of the others. Which test caught what (`ledgerlens test --labels` prints this table;
 "by other tests" counts entries any other test flagged, the intended one too or not):
 
 | Archetype | Test written for it | Caught | By that test | By other tests |
