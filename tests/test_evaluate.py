@@ -67,6 +67,50 @@ def test_recall_by_archetype_covers_all_injected_types(ledger, labels):
     assert (table["caught"] + table["missed"] == table["n"]).all()
 
 
+def test_attribution_says_which_test_caught_each_archetype():
+    labels = pd.DataFrame({
+        "entry_id": ["A", "B", "C", "D", "E", "F"],
+        "is_anomaly": [True, True, True, True, True, False],
+        "anomaly_type": ["round_amount", "round_amount", "weekend_entry", "benford_drift",
+                         "made_up", ""],
+    })
+    flags = pd.DataFrame({
+        "entry_id": ["A", "A", "A", "B", "C", "D", "F"],
+        "test_id": ["JET-01", "JET-01", "JET-12", "JET-12", "JET-12", "JET-12", "JET-01"],
+    })
+    table = evaluate.attribution(flags, labels).set_index("anomaly_type")
+    # the generator's archetypes in their own order, then any other type by name
+    assert list(table.index) == ["round_amount", "weekend_entry", "benford_drift", "made_up"]
+    assert table.loc["round_amount"].to_dict() == {
+        "intended_test": "JET-01", "n": 2, "caught": 2, "by_intended_test": 1,
+        "by_other_tests": 2, "only_by_other_tests": 1, "missed": 0}
+    assert table.loc["weekend_entry", "intended_test"] == "JET-02"
+    assert table.loc["weekend_entry", ["caught", "by_intended_test", "only_by_other_tests"]].tolist() == [1, 0, 1]
+    # no test was written for benford_drift, or for a type the generator does not know
+    assert table.loc["benford_drift", "intended_test"] == ""
+    assert table.loc["benford_drift", ["by_intended_test", "only_by_other_tests"]].tolist() == [0, 1]
+    assert table.loc["made_up", ["intended_test", "caught", "missed"]].tolist() == ["", 0, 1]
+    # a flag on an entry the labels call normal is no archetype's
+    assert table["by_other_tests"].sum() == 4
+    empty = evaluate.attribution(pd.DataFrame(columns=["entry_id", "test_id"]), labels)
+    assert empty["caught"].sum() == 0 and empty["missed"].sum() == 5
+
+
+def test_eight_archetypes_are_caught_by_their_own_test_and_three_mostly_by_others(ledger, labels):
+    """What DETECTION_CAVEAT says, measured on the default ledger."""
+    from ledgerlens.schema import AnomalyType
+
+    assert list(evaluate.INTENDED_TEST) == list(AnomalyType.ALL)
+    assert {t for t in evaluate.INTENDED_TEST.values() if t} <= set(jets.REGISTRY)
+    table = evaluate.attribution(jets.run_all(ledger), labels).set_index("anomaly_type")
+    for archetype, row in table.iterrows():
+        if archetype in evaluate.NOT_DEFINITIONAL:
+            assert row.by_intended_test * 2 <= row.caught, archetype  # half or less of them
+            assert row.by_other_tests == row.caught > row.by_intended_test, archetype
+        else:
+            assert row.by_intended_test == row.caught == row.n, archetype
+
+
 def test_precision_by_test_is_bounded(ledger, labels):
     flags = jets.run_all(ledger)
     table = evaluate.precision_by_test(flags, labels)
@@ -167,11 +211,11 @@ def test_duplicates_are_invisible_to_entry_level_features(ledger, labels):
 def test_the_detection_caveat_counts_the_archetypes_it_names():
     from ledgerlens.schema import AnomalyType
 
-    circular = len(AnomalyType.ALL) - len(evaluate.NON_CIRCULAR_ARCHETYPES)
-    assert (circular, len(AnomalyType.ALL)) == (9, 11)  # the text says "nine of eleven"
-    assert "nine of eleven" in evaluate.DETECTION_CAVEAT
-    assert set(evaluate.NON_CIRCULAR_ARCHETYPES) <= set(AnomalyType.ALL)
-    for name in evaluate.NON_CIRCULAR_ARCHETYPES:
+    circular = len(AnomalyType.ALL) - len(evaluate.NOT_DEFINITIONAL)
+    assert (circular, len(AnomalyType.ALL)) == (8, 11)  # the text says "eight of eleven"
+    assert "eight of eleven" in evaluate.DETECTION_CAVEAT
+    assert set(evaluate.NOT_DEFINITIONAL) <= set(AnomalyType.ALL)
+    for name in evaluate.NOT_DEFINITIONAL:
         assert name in evaluate.DETECTION_CAVEAT
     # Neither caveat carries a figure: the numbers beside it move with the ledger.
     for text in (evaluate.DETECTION_CAVEAT, evaluate.MODEL_TIER_CAVEAT):

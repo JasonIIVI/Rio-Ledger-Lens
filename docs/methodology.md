@@ -74,13 +74,19 @@ tool after week one.
 
 ## Known circularity
 
-Nine of the eleven archetypes are injected using the same definition the corresponding
+Eight of the eleven archetypes are injected using the same definition the corresponding
 test looks for, so their recall is near-tautological. This is stated plainly in the
 README rather than buried, because the alternative — quoting an unqualified 0.97 recall
 — would be misleading.
 
-The archetypes where detection is *not* definitional (Benford drift, rare account
-pairs) score 0.75 and 0.86 respectively, and are the honest measure of the rule layer.
+The other three (Benford drift, dormant accounts, rare account pairs) are not definitional,
+but they do not measure the rule layer either. The test written for each catches half of
+them or fewer, and tests written for something else catch the rest: JET-12 catches the
+Benford-drift entries keyed outside the approver list (the injector picks the keyer at
+random), and no test reads their amounts; JET-09 catches none of the dormant-account
+entries, which land on rarely used accounts rather than on ones that went quiet; JET-08
+catches three of the seven rare pairs. `evaluate.attribution` counts this, and
+`ledgerlens test --labels` prints it. Measuring detection needs anomalies no rule describes.
 
 ## The QuickBooks connector
 

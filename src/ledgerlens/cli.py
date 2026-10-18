@@ -232,6 +232,10 @@ def cmd_test(args: argparse.Namespace) -> int:
         print(evaluate.format_report(metrics))
         print("\nRecall by archetype:")
         print(_inert(evaluate.recall_by_archetype(flags, labels), "anomaly_type").to_string(index=False))
+        print("\nCaught by the test written for each archetype, or by others:")
+        shares = evaluate.attribution(flags, labels)
+        shares["intended_test"] = shares["intended_test"].replace("", "none")
+        print(_inert(shares, "anomaly_type").to_string(index=False))
         print("\nPrecision by test:")
         print(evaluate.precision_by_test(flags, labels).to_string(index=False))
     return 0

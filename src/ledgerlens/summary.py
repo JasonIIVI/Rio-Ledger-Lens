@@ -95,13 +95,15 @@ def _decision_kind(value: object) -> str | None:
 
 
 def _definitional(anomaly_type: str) -> bool | None:
-    """Whether the generator injects this archetype by the rule that detects it.
+    """Whether the generator injects this archetype by the definition its test checks.
 
-    None for a type the generator does not know: nothing can be claimed about it.
+    False for the three caught mostly by tests written for something else
+    (``evaluate.NOT_DEFINITIONAL``). None for a type the generator does not know:
+    nothing can be claimed about it.
     """
     if anomaly_type not in AnomalyType.ALL:
         return None
-    return anomaly_type not in evaluate.NON_CIRCULAR_ARCHETYPES
+    return anomaly_type not in evaluate.NOT_DEFINITIONAL
 
 
 def collect(
@@ -189,7 +191,8 @@ def collect(
         by_archetype = records(evaluate.recall_by_archetype(context.flags, labels))
         for row in by_archetype:
             row["definitional"] = _definitional(row["anomaly_type"])
-        # Measured archetypes first, then by name: recall ties have no order of their own.
+        # The archetypes that are not definitional first, then by name: recall ties have no
+        # order of their own.
         by_archetype.sort(key=lambda r: (r["definitional"] is not False, r["anomaly_type"]))
         metrics = evaluate.evaluate(context.flags, labels, context.lines["entry_id"].unique())
         flagged, truth = metrics["flagged"] > 0, metrics["true_anomalies"] > 0
@@ -331,7 +334,7 @@ def _metric_rows(detection: dict) -> list[tuple[str, str]]:
 def _read_as(definitional: bool | None) -> str:
     if definitional is None:
         return "not a generator archetype"
-    return "definitional" if definitional else "measured"
+    return "definitional" if definitional else "not definitional"
 
 
 def _controls_sentence(controls: dict, code) -> str:

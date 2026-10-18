@@ -126,21 +126,24 @@ def test_detection_and_its_caveat_come_together_or_not_at_all(context, payload):
     assert summary.NO_LABELS_NOTE in unlabelled["notes"]
     for fmt in summary.FORMATS:
         text = summary.render(unlabelled, fmt)
-        assert "Precision" not in text and "Recall" not in text and "nine of eleven" not in text
+        assert "Precision" not in text and "Recall" not in text and "eight of eleven" not in text
 
 
-def test_archetypes_are_listed_measured_first_and_marked(default_context, labels):
+def test_archetypes_are_listed_not_definitional_first_and_marked(default_context, labels):
     built = summary.collect(default_context, labels=labels, today=TODAY)
     rows = built["detection"]["by_archetype"]
     assert {r["anomaly_type"] for r in rows} == set(AnomalyType.ALL)
-    measured = [r["anomaly_type"] for r in rows if r["definitional"] is False]
-    assert measured == sorted(evaluate.NON_CIRCULAR_ARCHETYPES)
-    assert [r["anomaly_type"] for r in rows[:len(measured)]] == measured  # they lead the table
-    rest = [r["anomaly_type"] for r in rows[len(measured):]]
-    assert rest == sorted(rest) and all(r["definitional"] is True for r in rows[len(measured):])
+    incidental = [r["anomaly_type"] for r in rows if r["definitional"] is False]
+    assert incidental == sorted(evaluate.NOT_DEFINITIONAL)
+    assert [r["anomaly_type"] for r in rows[:len(incidental)]] == incidental  # they lead the table
+    rest = [r["anomaly_type"] for r in rows[len(incidental):]]
+    assert rest == sorted(rest) and all(r["definitional"] is True for r in rows[len(incidental):])
     assert all(r["caught"] + r["missed"] == r["n"] for r in rows)
     markdown = summary.render(built, "markdown")
-    assert markdown.count("| measured |") == 2 and markdown.count("| definitional |") == 9
+    # "measured" claimed more than the attribution shows: these are caught by other tests
+    assert "measured |" not in markdown
+    assert markdown.count("| not definitional |") == 3 and markdown.count("| definitional |") == 8
+    assert summary.render(built, "text").count("  not definitional") == 3
     for row in rows:  # caught/n is printed beside every recall: 0.750 of four is not 0.750 of 400
         assert "{:,} of {:,}".format(row["caught"], row["n"]) in markdown
 
@@ -150,15 +153,16 @@ def test_the_archetype_order_is_the_summarys_own_not_recalls(context, small_ledg
     import pandas as pd
 
     table = pd.DataFrame({
-        "anomaly_type": ["weekend_entry", "benford_drift", "round_amount", "rare_account_pair"],
-        "n": [10, 4, 8, 7], "caught": [1, 4, 4, 7], "missed": [9, 0, 4, 0],
-        "recall": [0.1, 1.0, 0.5, 1.0],
+        "anomaly_type": ["weekend_entry", "dormant_account", "benford_drift", "round_amount",
+                         "rare_account_pair"],
+        "n": [10, 4, 4, 8, 7], "caught": [1, 4, 4, 4, 7], "missed": [9, 0, 0, 4, 0],
+        "recall": [0.1, 1.0, 1.0, 0.5, 1.0],
     })
     monkeypatch.setattr(evaluate, "recall_by_archetype", lambda flags, labels: table)
     rows = summary.collect(context, labels=small_ledger[1], today=TODAY)["detection"]["by_archetype"]
     assert [r["anomaly_type"] for r in rows] == [
-        "benford_drift", "rare_account_pair", "round_amount", "weekend_entry"]
-    assert [r["definitional"] for r in rows] == [False, False, True, True]
+        "benford_drift", "dormant_account", "rare_account_pair", "round_amount", "weekend_entry"]
+    assert [r["definitional"] for r in rows] == [False, False, False, True, True]
 
 
 def test_an_archetype_the_generator_does_not_know_is_not_called_definitional(context, small_ledger):

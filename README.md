@@ -128,22 +128,46 @@ Against the default two-year synthetic ledger (5,085 entries, 77 injected anomal
 | Metric | Value | How to read it |
 |---|---|---|
 | Precision | **0.843** | 75 of the 89 flagged entries were injected anomalies. 13 of the 14 that were not come from JET-12, which describes the control environment rather than the entry. |
-| Recall | **0.974** | 75 of 77 found, and partly circular: nine of the eleven archetypes are injected by the definition their test looks for. The two that are measured: `benford_drift` 3 of 4 (0.75) and `rare_account_pair` 6 of 7 (0.86). |
+| Recall | **0.974** | 75 of 77 found, and partly circular: eight of the eleven archetypes are injected by the definition their test looks for. The other three are caught mostly by tests written for something else (the table below). |
 | F1 | **0.904** | The harmonic mean of the two above, so it inherits the circularity. |
 | Flag rate | 1.75% of population | 89 of 5,085 entries. How much review the rule tier asks for, not how good it is. |
 
-**Read those numbers sceptically, because they are partly circular.** For nine of the
+**Read those numbers sceptically, because they are partly circular.** For eight of the
 eleven anomaly archetypes, the generator injects the anomaly using the same definition
 the test looks for. Weekend entries are injected as weekend entries, and the weekend
 test finds weekend entries. Recall near 1.0 on those archetypes is a tautology, not an
 achievement.
 
-The parts that are *not* circular, and are therefore the parts worth discussing:
+The other three are not circular, but they are not measurements of detection either:
+the test written for each catches half of them or fewer, and tests written for something
+else catch the rest. Which test caught what (`ledgerlens test --labels` prints this table;
+"by other tests" counts entries any other test flagged, the intended one too or not):
 
-- **Benford drift: 0.75 recall.** Nothing defines these entries as anomalous except
-  the statistical shape of their amounts. One of four slipped through.
-- **Rare account pairs: 0.86 recall.** The baseline is learned from the population,
-  not hardcoded, so the test can genuinely miss.
+| Archetype | Test written for it | Caught | By that test | By other tests |
+|---|---|---|---|---|
+| `round_amount` | JET-01 | 11 of 11 | 11 | 7 |
+| `weekend_entry` | JET-02 | 10 of 10 | 10 | 6 |
+| `after_hours_entry` | JET-03 | 9 of 9 | 9 | 7 |
+| `holiday_entry` | JET-04 | 4 of 4 | 4 | 0 |
+| `period_end_manual_revenue` | JET-05 | 8 of 8 | 8 | 4 |
+| `just_under_threshold` | JET-06 | 8 of 8 | 8 | 4 |
+| `duplicate_entry` | JET-07 | 10 of 10 | 10 | 3 |
+| `rare_account_pair` | JET-08 | 6 of 7 | 3 | 6 |
+| `dormant_account` | JET-09 | 4 of 4 | 0 | 4 |
+| `benford_drift` | none | 3 of 4 | — | 3 |
+| `unbalanced_entry` | JET-10 | 2 of 2 | 2 | 2 |
+
+- **Benford drift: 0.75 recall, all of it JET-12's.** The injector keys each of these as
+  a manual entry by a user picked at random, and JET-12 flags those keyed by someone
+  outside the approver list. No test reads the shape of the amounts: Benford analysis is
+  reported beside the queue, never raised as a flag. The one it missed was keyed by an
+  approver.
+- **Rare account pairs: 0.86 recall, half of it JET-08's.** JET-08's baseline is learned
+  from the population, not hardcoded, so it can genuinely miss: it caught three of the
+  seven, and JET-09 and JET-12 caught three more.
+- **Dormant accounts: 1.00 recall, none of it JET-09's.** The injector posts to an account
+  the ledger rarely uses, not to one that was active and then quiet for 120 days, which is
+  what JET-09 looks for. JET-08 and JET-12 catch them instead.
 - **JET-12 produces 13 of the 14 false positives.** Excluding it, the rule layer
   generates exactly **one** false positive across 5,085 entries. That is not a bug:
   JET-12 describes the *control environment* rather than any individual entry, and a
@@ -470,7 +494,7 @@ It scores nothing itself, and three rules shape what it prints:
 - **A number never travels without its caveat.** "A flag is a question, not a finding" is in
   every format. Precision and recall appear only with labels, under the heading "rule tier
   only", after the circularity caveat, with each archetype shown as caught-of-n and marked
-  *measured* or *definitional*. A ratio over nothing reads "undefined", not 0.000. The two
+  *not definitional* or *definitional*. A ratio over nothing reads "undefined", not 0.000. The two
   tiers get separate sections and are never added together; the model's count is called what
   it is, a budget (the top 2% by rank, ties included). The JSON carries the same caveats as
   fields, the detection caveat ahead of the figures, and says which ratios are defined, since

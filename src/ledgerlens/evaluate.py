@@ -24,9 +24,31 @@ import pandas as pd
 from .ingest import plural, quote
 from .schema import AnomalyType
 
-#: The archetypes the generator does not inject by the very rule a test checks,
-#: so their recall is a measurement rather than the definition read back.
-NON_CIRCULAR_ARCHETYPES = (AnomalyType.BENFORD_DRIFT, AnomalyType.RARE_ACCOUNT_PAIR)
+#: The test written to find each archetype, in the generator's order. Benford drift
+#: has none: Benford analysis is reported beside the queue, never raised as a flag.
+INTENDED_TEST = {
+    AnomalyType.ROUND_AMOUNT: "JET-01",
+    AnomalyType.WEEKEND_ENTRY: "JET-02",
+    AnomalyType.AFTER_HOURS_ENTRY: "JET-03",
+    AnomalyType.HOLIDAY_ENTRY: "JET-04",
+    AnomalyType.PERIOD_END_MANUAL_REVENUE: "JET-05",
+    AnomalyType.JUST_UNDER_THRESHOLD: "JET-06",
+    AnomalyType.DUPLICATE_ENTRY: "JET-07",
+    AnomalyType.RARE_ACCOUNT_PAIR: "JET-08",
+    AnomalyType.DORMANT_ACCOUNT: "JET-09",
+    AnomalyType.BENFORD_DRIFT: None,
+    AnomalyType.UNBALANCED_ENTRY: "JET-10",
+}
+
+#: The archetypes the generator does not inject by the definition their test checks,
+#: so the test written for them catches half of them or fewer and tests written for
+#: something else catch the rest. Their recall is incidental: not the definition read
+#: back, and not a measure of detection either.
+NOT_DEFINITIONAL = (
+    AnomalyType.BENFORD_DRIFT,
+    AnomalyType.DORMANT_ACCOUNT,
+    AnomalyType.RARE_ACCOUNT_PAIR,
+)
 
 #: Printed beside every rule-tier precision or recall the tool shows: `test`,
 #: `score` (whose segment table's "rules only" and "both" rows are the rule tier's
@@ -34,10 +56,11 @@ NON_CIRCULAR_ARCHETYPES = (AnomalyType.BENFORD_DRIFT, AnomalyType.RARE_ACCOUNT_P
 #: gate. It carries no figure: the numbers beside it move with the ledger, the
 #: reason to distrust them does not.
 DETECTION_CAVEAT = (
-    "Read these sceptically. For nine of eleven archetypes the generator injects the anomaly "
+    "Read these sceptically. For eight of eleven archetypes the generator injects the anomaly "
     "using the same definition the test looks for, so recall on those is close to "
-    "tautological. The honest figures are the archetypes where detection is not definitional: "
-    "benford_drift and rare_account_pair."
+    "tautological. The other three, benford_drift, dormant_account and rare_account_pair, are "
+    "caught mostly by tests written for something else: their recall says how they happened "
+    "to be injected, not how well anything detects them."
 )
 
 #: The same caveat for the model tier's segment and lift tables: `score` and the
@@ -158,6 +181,43 @@ def recall_by_archetype(flags: pd.DataFrame, labels: pd.DataFrame) -> pd.DataFra
     out["missed"] = out["n"] - out["caught"]
     out["recall"] = (out["caught"] / out["n"]).round(4)
     return out.sort_values("recall").reset_index(drop=True)
+
+
+def attribution(flags: pd.DataFrame, labels: pd.DataFrame) -> pd.DataFrame:
+    """Which tests caught each archetype: the one written for it, or others.
+
+    Recall cannot tell a test doing its job from one written for something else
+    that happened to fire. ``by_other_tests`` counts the entries any other test
+    flagged, whether or not the intended one did too; ``only_by_other_tests``
+    the caught entries the intended test missed. ``intended_test`` is "" where
+    no test was written for the type. Rows follow the generator's archetypes,
+    then any other type by name.
+    """
+    columns = ["anomaly_type", "intended_test", "n", "caught", "by_intended_test",
+               "by_other_tests", "only_by_other_tests", "missed"]
+    anomalies = labels[labels["is_anomaly"]]
+    if flags.empty:  # no flags may also mean no columns
+        flags = pd.DataFrame(columns=["entry_id", "test_id"])
+    rows = []
+    present = set(anomalies["anomaly_type"])
+    for archetype in [a for a in INTENDED_TEST if a in present] + sorted(present - set(INTENDED_TEST)):
+        ids = set(anomalies.loc[anomalies["anomaly_type"] == archetype, "entry_id"])
+        intended = INTENDED_TEST.get(archetype) or ""
+        hit = flags[flags["entry_id"].isin(ids)]
+        caught = set(hit["entry_id"])
+        mine = set(hit.loc[hit["test_id"] == intended, "entry_id"]) if intended else set()
+        other = set(hit.loc[hit["test_id"] != intended, "entry_id"])
+        rows.append({
+            "anomaly_type": archetype,
+            "intended_test": intended,
+            "n": len(ids),
+            "caught": len(caught),
+            "by_intended_test": len(mine),
+            "by_other_tests": len(other),
+            "only_by_other_tests": len(caught - mine),
+            "missed": len(ids - caught),
+        })
+    return pd.DataFrame(rows, columns=columns)
 
 
 def precision_by_test(flags: pd.DataFrame, labels: pd.DataFrame) -> pd.DataFrame:

@@ -440,9 +440,13 @@ ledger CSV ──▶ ingest ──┼──▶ Isolation Forest ─────�
 ## The honest framing of the results
 
 Headline: precision 0.843, recall 0.974 over 5,085 entries. **These are partly circular** — for
-nine of eleven archetypes the generator injects the anomaly using the same definition the test
-looks for, so recall on those is near-tautological. The non-circular numbers are `benford_drift`
-(0.75) and `rare_account_pair` (0.86).
+eight of eleven archetypes the generator injects the anomaly using the same definition the test
+looks for, so recall on those is near-tautological. The other three are not measurements either:
+`benford_drift` (0.75) is all JET-12's (the injector picks the keyer at random), JET-09 catches
+none of `dormant_account` (1.00 by JET-08 and JET-12), and JET-08 three of seven
+`rare_account_pair` (0.86). `evaluate.attribution` counts which test caught what. (Until week 5
+the caveat said "nine of eleven" and called benford_drift and rare_account_pair the honest
+figures.)
 
 Same pattern in the model tier: it is a strong re-ranker (top-25 precision 0.60, 40x lift over
 random) but a weak independent detector — the "model only" segment sits at the base rate, because

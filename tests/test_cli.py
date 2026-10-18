@@ -71,6 +71,13 @@ def test_test_command_runs_against_generated_data(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "Precision" in out
     assert "Recall by archetype" in out
+    # recall alone cannot say whether the test written for an archetype is what caught it
+    table = out.split("Caught by the test written for each archetype, or by others:\n", 1)[1]
+    header = table.splitlines()[0].split()
+    assert header == ["anomaly_type", "intended_test", "n", "caught", "by_intended_test",
+                      "by_other_tests", "only_by_other_tests", "missed"]
+    benford = next(line.split() for line in table.splitlines() if line.split()[:1] == ["benford_drift"])
+    assert benford[1] == "none"  # no test was written for it, said in a word, not left blank
 
 
 def test_test_command_can_run_a_single_test(tmp_path, capsys):
@@ -1034,8 +1041,8 @@ def test_summary_prints_one_page_whose_numbers_are_the_test_commands(two_ledgers
                     "Tier agreement", "not a measure of quality",
                     "Detection against the labels (rule tier only)", "Top 10 by rule score", "Notes"):
         assert heading in page
-    assert "a question, not a finding" in page and "nine of eleven" in page
-    assert page.index("nine of eleven") < page.index("Precision")
+    assert "a question, not a finding" in page and "eight of eleven" in page
+    assert page.index("eight of eleven") < page.index("Precision")
 
 
 @pytest.mark.parametrize("extra", [[], ["--db", "no-such-review.sqlite"]])
@@ -1172,7 +1179,7 @@ def test_summary_of_a_quickbooks_pull_measures_nothing_and_says_why(qbo_env, cap
         assert main(["summary", str(out), "--format", fmt]) == 0
         page = capsys.readouterr().out
         assert "qbo:sandbox-fixtures" in page
-        assert "Precision" not in page and "nine of eleven" not in page
+        assert "Precision" not in page and "eight of eleven" not in page
         assert "Detection against" not in page and '"detection"' not in page
         assert "No labels were given, so detection quality was not measured" in " ".join(page.split())
         assert "not the generator's default ledger" in " ".join(page.split())
@@ -1364,7 +1371,7 @@ def test_test_and_score_print_the_caveat_ahead_of_the_numbers_it_qualifies(two_l
     # without labels there is no measured number, and so no caveat to print
     assert main(["test", ledger]) == 0 and main(["score", ledger]) == 0
     unlabelled = capsys.readouterr().out
-    assert "nine of eleven" not in unlabelled and "same circularity" not in unlabelled
+    assert "eight of eleven" not in unlabelled and "same circularity" not in unlabelled
 
 
 def test_eval_narratives_judges_and_writes_one_path_tilde_included(tmp_path, monkeypatch, capsys):

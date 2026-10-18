@@ -184,7 +184,7 @@ def test_the_summary_sheet_puts_the_circularity_caveat_beside_precision_and_reca
     bare = build_workpaper(scored, flags, tmp_path / "bare.xlsx")  # no labels: no number, no caveat
     text = " ".join(str(c.value) for row in openpyxl.load_workbook(bare)["Summary"].iter_rows()
                     for c in row if c.value)
-    assert "Precision" not in text and "nine of eleven" not in text
+    assert "Precision" not in text and "eight of eleven" not in text
     # the sentence is wrapped inside its column and does not widen it: the counts stay beside
     # their labels, where a reader of the printed sheet looks for them
     sheet = openpyxl.load_workbook(path)["Summary"]
