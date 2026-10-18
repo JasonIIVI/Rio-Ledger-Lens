@@ -25,7 +25,7 @@ README = " ".join((ROOT / "README.md").read_text(encoding="utf-8").split())
 def _printed(command):
     """The text block the document pastes after the line naming ``command``."""
     pattern = re.escape(f"`ledgerlens {command} data/heldout-ledger.csv --labels data/heldout-labels.csv`")
-    match = re.search(pattern + r"[^\n]*\n[^\n]*\n\n```text\n(.*?)\n```", DOC, re.S)
+    match = re.search(pattern + r"[^`]*?\n\n```text\n(.*?)\n```", DOC, re.S)
     assert match, command
     return match.group(1)
 
@@ -47,9 +47,51 @@ def rerun(held_out_raw, tmp_path_factory):
     return out
 
 
-@pytest.mark.parametrize("command", ["test", "score"])
-def test_the_measurement_prints_again_as_it_was_printed(rerun, command):
-    assert rerun[command] == _printed(command)
+#: `test` prints these two tables sorted on one key with pandas' default sort, which is not
+#: stable: rows that tie print in another order on CI's Linux runners than on the Mac that
+#: made the measurement. Found after the freeze and disclosed in docs/limitations.md; the code
+#: is not changed until the measurement is merged (rule 10).
+TIED_TABLES = ("Recall by archetype:", "Precision by test:")
+
+
+def _ties_unordered(text):
+    """``text`` with the data rows of each table in TIED_TABLES sorted; everything else as it is.
+
+    A table is its title line, its header line, and the rows up to the next blank line.
+    """
+    lines, out, i = text.split("\n"), [], 0
+    while i < len(lines):
+        out.append(lines[i])
+        if lines[i] in TIED_TABLES:
+            out.append(lines[i + 1])  # the header keeps its place
+            end = i + 2
+            while end < len(lines) and lines[end].strip():
+                end += 1
+            out.extend(sorted(lines[i + 2:end]))
+            i = end
+            continue
+        i += 1
+    return "\n".join(out)
+
+
+def test_the_tie_order_is_set_aside_in_the_two_tables_and_nowhere_else():
+    printed = _printed("test")
+    assert all(title in printed.split("\n") for title in TIED_TABLES)
+    swapped = printed.replace("JET-01 ", "JET-XX ").replace("JET-02 ", "JET-01 ").replace("JET-XX ", "JET-02 ")
+    assert swapped != printed and _ties_unordered(swapped) != _ties_unordered(printed)  # a value moved
+    tied = printed.split("\n")
+    start = tied.index("Recall by archetype:") + 2
+    tied[start], tied[start + 1] = tied[start + 1], tied[start]  # two rows of a tied table swapped
+    assert _ties_unordered("\n".join(tied)) == _ties_unordered(printed)
+    attribution = printed.split("\n")
+    start = attribution.index("Caught by the test written for each archetype, or by others:") + 2
+    attribution[start], attribution[start + 1] = attribution[start + 1], attribution[start]
+    assert _ties_unordered("\n".join(attribution)) != _ties_unordered(printed)  # its order is fixed
+
+
+def test_the_measurement_prints_again_as_it_was_printed(rerun):
+    assert _ties_unordered(rerun["test"]) == _ties_unordered(_printed("test"))
+    assert rerun["score"] == _printed("score")
 
 
 @pytest.fixture(scope="module")

@@ -389,8 +389,13 @@ and the MCP SDK, so the two together cover every code path CI will see.
     the tag touches only docs and tests (`git diff held-out-freeze -- src app.py` is empty): the
     measured ledger is a session fixture pinned by `HELD_OUT_LEDGER_SHA256`, and
     `tests/test_limitations.py` runs `test` and `score` on it again and compares with what was
-    printed, so CI on Linux reproduces the measurement or fails.
-- **Next** — open PR C, merge it, then tag v1.1.0 with release notes (claims-reviewed).
+    printed, so CI on Linux reproduces the measurement or fails. Its first Linux run reproduced
+    every value but printed the tied rows of `test`'s "Recall by archetype" and "Precision by
+    test" tables in another order (one-key unstable sorts in `evaluate`, in `src/`, frozen):
+    disclosed in `docs/limitations.md`, and the test compares those two tables' rows regardless
+    of order.
+- **Next** — open PR C, merge it, then tag v1.1.0 with release notes (claims-reviewed). After the
+  merge, give `recall_by_archetype` and `precision_by_test` a stable tie-break (a follow-up PR).
 - 1025 tests on 3.9 (1 skipped) / 1039 on 3.12 (the fourteen MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
