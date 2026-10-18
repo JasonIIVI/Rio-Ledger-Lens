@@ -92,6 +92,8 @@ def test_attribution_says_which_test_caught_each_archetype():
     assert table.loc["made_up", ["intended_test", "caught", "missed"]].tolist() == ["", 0, 1]
     # a flag on an entry the labels call normal is no archetype's
     assert table["by_other_tests"].sum() == 4
+    held = labels.assign(anomaly_type=labels["anomaly_type"].replace("made_up", "token_amount"))
+    assert list(evaluate.attribution(flags, held)["anomaly_type"])[0] == "token_amount"  # as elsewhere
     empty = evaluate.attribution(pd.DataFrame(columns=["entry_id", "test_id"]), labels)
     assert empty["caught"].sum() == 0 and empty["missed"].sum() == 5
 
@@ -217,6 +219,9 @@ def test_the_detection_caveat_counts_the_archetypes_it_names():
     assert set(evaluate.NOT_DEFINITIONAL) <= set(AnomalyType.ALL)
     for name in evaluate.NOT_DEFINITIONAL:
         assert name in evaluate.DETECTION_CAVEAT
+    # which test catches those three depends on the draw: JET-08 catches every rare pair on
+    # other seeds, so "mostly by other tests" is said of the default ledger only
+    assert "depends on the draw: on the default ledger" in evaluate.DETECTION_CAVEAT
     # Neither caveat carries a figure: the numbers beside it move with the ledger.
     for text in (evaluate.DETECTION_CAVEAT, evaluate.MODEL_TIER_CAVEAT):
         assert not any(ch.isdigit() for ch in text)
@@ -378,11 +383,23 @@ def test_budget_recall_counts_each_archetype_against_chance():
     assert table.loc["made_up", ["n", "model_in_budget", "model_recall"]].tolist() == [1, 0, 0.0]
 
 
+def test_budget_recall_rounds_chance_to_the_cent_and_counts_an_id_the_ledger_lacks_in_neither():
+    combined = pd.DataFrame({"entry_id": ["A", "B", "C"], "rule_flag": [False] * 3,
+                             "model_flag": [True, True, False]})
+    labels = pd.DataFrame({"entry_id": ["A", "Z"], "is_anomaly": [True, True],
+                           "anomaly_type": ["token_amount", "token_amount"]})
+    row = evaluate.budget_recall_by_archetype(combined, labels).iloc[0]
+    assert (row.n, row.rule_caught, row.model_in_budget, row.chance) == (2, 0, 1, 1.33)
+
+
 def test_the_held_out_archetypes_together_against_the_budget():
     combined, labels = _tiers_and_labels()
     assert evaluate.held_out_budget(combined, labels) == {
         "n": 2, "in_budget": 2, "chance": 0.4, "recall": 1.0, "lift": 5.0, "budget": 2,
         "population": 10}
+    # a held-out type on a row the labels call normal is not one of them
+    normal = labels.assign(anomaly_type=labels["anomaly_type"].where(labels["is_anomaly"], "token_amount"))
+    assert evaluate.held_out_budget(combined, normal)["n"] == 2
     none_held_out = labels.assign(anomaly_type=labels["anomaly_type"].replace("token_amount", "made_up"))
     assert evaluate.held_out_budget(combined, none_held_out) is None
     empty_budget = combined.assign(model_flag=False)

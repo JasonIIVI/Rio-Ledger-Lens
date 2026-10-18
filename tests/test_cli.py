@@ -1822,18 +1822,28 @@ def test_score_puts_each_archetype_against_the_models_budget(tmp_path, capsys):
     from ledgerlens import evaluate
 
     main(["generate", "--start", "2024-01-01", "--end", "2024-06-30", "--out-dir", str(tmp_path)])
+    ledger = str(tmp_path / "ledger.csv")
+    assert main(["score", ledger, "--out", str(tmp_path / "combined.csv")]) == 0
+    combined = pd.read_csv(tmp_path / "combined.csv", keep_default_na=False)
     labels = pd.read_csv(tmp_path / "labels.csv", keep_default_na=False)
-    normal = labels.index[~labels["is_anomaly"]][:5]
-    labels.loc[normal, ["is_anomaly", "anomaly_type"]] = [True, "token_amount"]
+    normal = combined.loc[~combined["entry_id"].isin(labels.loc[labels["is_anomaly"], "entry_id"])
+                          & ~combined["rule_flag"]]  # stand-ins for held-out entries: no rule fired
+    picked = list(normal.loc[normal["model_flag"], "entry_id"][:5]) + list(
+        normal.loc[~normal["model_flag"], "entry_id"][:3])  # five in the budget, three not
+    labels.loc[labels["entry_id"].isin(picked), ["is_anomaly", "anomaly_type"]] = [True, "token_amount"]
     labels.to_csv(tmp_path / "relabelled.csv", index=False)
     capsys.readouterr()
-    assert main(["score", str(tmp_path / "ledger.csv"), "--labels", str(tmp_path / "relabelled.csv")]) == 0
+    assert main(["score", ledger, "--labels", str(tmp_path / "relabelled.csv")]) == 0
     out = capsys.readouterr().out
     table = out.split("--- each archetype against the model's budget ---\n", 1)[1]
     assert table.splitlines()[0].split() == [
         "anomaly_type", "n", "rule_caught", "model_in_budget", "chance", "model_recall"]
-    assert table.splitlines()[1].split()[:2] == ["token_amount", "5"]  # held out first
-    assert "Held-out archetypes, which no test describes: " in out
+    assert table.splitlines()[1].split()[:4] == ["token_amount", "8", "0", "5"]  # held out first
+    budget, population = int(combined["model_flag"].sum()), len(combined)
+    chance = 8 * budget / population
+    assert ("Held-out archetypes, which no test describes: 5 of 8 in the budget "
+            f"({budget:,} of {population:,} entries), against {chance:.2f} by chance "
+            f"({5 / chance:.1f}x).") in out
     assert out.index(evaluate.MODEL_TIER_CAVEAT[:40]) < out.index("--- each archetype against")
 
 

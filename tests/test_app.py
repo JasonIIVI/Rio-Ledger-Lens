@@ -394,6 +394,10 @@ def test_the_tabs_say_which_test_caught_what_and_what_the_budget_holds(data_dir,
     headings = [m.value for m in at.markdown]
     assert "**Caught by the test written for each archetype, or by others**" in headings
     assert "**Each archetype against the model's budget**" in headings
+    columns = [list(frame.value.columns) for frame in at.dataframe]
+    assert ["anomaly_type", "intended_test", "n", "caught", "by_intended_test", "by_other_tests",
+            "only_by_other_tests", "missed"] in columns
+    assert ["anomaly_type", "n", "rule_caught", "model_in_budget", "chance", "model_recall"] in columns
 
 
 def test_a_ratio_over_nothing_reads_undefined_on_the_quality_tab(data_dir, tmp_path):

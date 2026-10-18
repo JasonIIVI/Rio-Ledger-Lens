@@ -54,9 +54,9 @@ DEFAULT_CONTROLS_NOTE = (
     "in a <stem>.controls.json file beside it (see the README)."
 )
 HELD_OUT_NOTE = (
-    "The labels mark held-out archetypes, which no test describes: the rule tier catches none of "
-    "them by construction, so its recall on them measures nothing. What measures the model tier "
-    "is how many of them its budget holds, against chance (ledgerlens score --labels)."
+    "The labels mark held-out archetypes, which no test describes: whatever the rule tier catches "
+    "of them it catches by accident, so its recall on them measures nothing. What measures the "
+    "model tier is how many of them its budget holds, against chance (ledgerlens score --labels)."
 )
 TUNING_NOTE = (
     "This is not the generator's default ledger. The tests' settings were measured against that "
@@ -221,7 +221,7 @@ def collect(
             notes.append(DEFAULT_CONTROLS_NOTE)
     if labels is None:
         notes.append(NO_LABELS_NOTE)
-    elif labels["anomaly_type"].isin(HeldOutType.ALL).any():
+    elif any(row["held_out"] for row in payload["detection"]["by_archetype"]):  # anomalies only
         notes.append(HELD_OUT_NOTE)
     if payload["entries"] < SMALL_LEDGER:
         notes.append(SMALL_NOTE.format(entries=payload["entries"]))

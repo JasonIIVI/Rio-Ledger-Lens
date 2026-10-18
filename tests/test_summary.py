@@ -178,6 +178,12 @@ def test_held_out_archetypes_are_read_as_held_out_and_lead_the_table(context, sm
     assert "  held out" in summary.render(built, "text")
     plain = summary.collect(context, labels=small_ledger[1], today=TODAY)
     assert summary.HELD_OUT_NOTE not in plain["notes"]
+    # a held-out type on rows the labels call normal marks nothing held out
+    typed = small_ledger[1].copy()
+    typed.loc[typed.index[~typed["is_anomaly"]][:2], "anomaly_type"] = "token_amount"
+    assert summary.HELD_OUT_NOTE not in summary.collect(context, labels=typed, today=TODAY)["notes"]
+    # what the rule tier catches of them it catches by accident: never claimed to be none
+    assert "by construction" not in summary.HELD_OUT_NOTE and "by accident" in summary.HELD_OUT_NOTE
     assert not any(r["held_out"] for r in plain["detection"]["by_archetype"])
 
 

@@ -1,5 +1,6 @@
 import calendar
 import warnings
+from collections import Counter
 from datetime import date, timedelta
 
 import pandas as pd
@@ -201,8 +202,9 @@ def test_no_rule_fires_on_a_held_out_entry_or_moves_on_any_other(held_out_pairs)
         on_held_out = flags[flags["entry_id"].isin(ids)]
         assert on_held_out.empty, (seed, sorted(set(on_held_out["test_id"])))
         plain = jets.run_all(prepare(plain_lines.copy()))
-        assert (set(zip(flags["entry_id"], flags["test_id"]))
-                == set(zip(plain["entry_id"], plain["test_id"]))), seed
+        # counted, not as a set: JET-09 and JET-11 judge lines, and a line can stop firing
+        assert (Counter(zip(flags["entry_id"], flags["test_id"]))
+                == Counter(zip(plain["entry_id"], plain["test_id"]))), seed
 
 
 def test_the_held_out_recipes_hold_their_bands(held_out_pairs):
@@ -254,7 +256,8 @@ def test_the_held_out_recipes_hold_their_bands(held_out_pairs):
         for vendor, group in drips.groupby(drips["description"]):
             dates = sorted(pd.to_datetime(group["posting_date"]).dt.date)
             assert len(dates) == 5 and vendor.split(" - ")[1] not in _VENDORS
-            assert all(13 <= (b - a).days <= 17 for a, b in zip(dates, dates[1:]))
+            # a fortnight, each payment moved to the next business day: 11 to 17 days apart
+            assert all(11 <= (b - a).days <= 17 for a, b in zip(dates, dates[1:]))
 
 
 def test_a_short_range_leaves_out_a_held_out_archetype_it_has_no_room_for():
@@ -291,5 +294,10 @@ def test_the_limitations_list_each_held_out_archetype_with_its_entries():
 
 
 def test_nothing_generates_with_the_held_out_seed_before_the_measurement():
+    from ledgerlens import generate
+
     with pytest.raises(pytest.fail.Exception, match="HELD_OUT_SEED"):
         generate_ledger(start=date(2024, 1, 1), end=date(2024, 1, 31), seed=HELD_OUT_SEED)
+    # the held-out rows depend only on their streams' seed and the business days
+    with pytest.raises(pytest.fail.Exception, match="HELD_OUT_SEED"):
+        generate._HeldOutStreams(HELD_OUT_SEED)

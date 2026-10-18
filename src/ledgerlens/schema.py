@@ -97,9 +97,9 @@ class HeldOutType:
     """Archetypes no test describes, injected only into the opt-in held-out ledger.
 
     Kept out of ``AnomalyType.ALL``: the default ledger, its digest and every figure
-    published from it stay as they are. The rule tier catches none of these by
-    construction, so they measure the model tier as a detector, once, on a ledger
-    generated after the code was frozen.
+    published from it stay as they are. The rule tier is built to catch none of these,
+    so they measure the model tier as a detector, once, on a ledger generated after the
+    code is frozen.
     """
 
     TOKEN_AMOUNT = "token_amount"

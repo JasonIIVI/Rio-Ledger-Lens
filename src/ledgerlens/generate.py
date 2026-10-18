@@ -44,10 +44,10 @@ BUSINESS_END_HOUR = 18
 #: The default ledger's seed: the generator's default, and `ledgerlens generate`'s.
 DEFAULT_SEED = 20260922
 
-#: The held-out ledger's seed. Written down before any held-out code ran, and passed to
-#: the generator for the first time once that code was frozen (the `held-out-freeze`
-#: tag): nothing was tuned on what it gives. The tests use other seeds, and fail if
-#: anything generates with this one.
+#: The held-out ledger's seed, written down in the commit that adds the held-out code and
+#: passed to the generator for the first time only once that code is frozen (the
+#: `held-out-freeze` tag): nothing is tuned on what it gives. The tests use other seeds,
+#: and fail if anything generates with this one.
 HELD_OUT_SEED = 20261019
 
 
@@ -397,10 +397,12 @@ def _period_end_days(start: date, end: date) -> list[date]:
 # day and hour, a common pair whose source is neither Manual (JET-05 and JET-12
 # read only manual entries) nor System, an amount carrying cents (JET-01 reads
 # whole thousands) and outside the 3% beneath the approval limit (JET-06),
-# balanced. So the rule tier catches none of them by construction, and the model
-# tier is the one measured on them. They draw from their own random streams and
-# take their ids after every other entry, so the rest of the ledger is the one the
-# same seed gives without them.
+# balanced. That silences JET-01 to JET-06, JET-10 and JET-12 by construction;
+# JET-07, 08, 09 and 11 read the population, so they are checked on development
+# seeds instead (on a ledger of a few dozen entries JET-08 can fire on one). The
+# model tier is the one measured on them. They draw from their own random streams
+# and take their ids after every other entry, so the rest of the ledger is the one
+# the same seed gives without them.
 
 #: The common pairs a held-out entry may use.
 _HELD_OUT_PAIRS: tuple[tuple[str, str], ...] = tuple(

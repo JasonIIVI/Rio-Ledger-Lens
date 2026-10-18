@@ -40,10 +40,12 @@ INTENDED_TEST = {
     AnomalyType.UNBALANCED_ENTRY: "JET-10",
 }
 
-#: The archetypes the generator does not inject by the definition their test checks,
-#: so the test written for them catches half of them or fewer and tests written for
-#: something else catch the rest. Their recall is incidental: not the definition read
-#: back, and not a measure of detection either.
+#: The archetypes the generator does not inject by exactly the definition their test
+#: checks (benford_drift has none), so which test catches them depends on the draw. On
+#: the default ledger the test written for them catches half of them or fewer and tests
+#: written for something else catch the rest; on another seed JET-08 can catch every rare
+#: pair. Their recall is incidental either way: not the definition read back, and not a
+#: measure of detection.
 NOT_DEFINITIONAL = (
     AnomalyType.BENFORD_DRIFT,
     AnomalyType.DORMANT_ACCOUNT,
@@ -59,8 +61,9 @@ DETECTION_CAVEAT = (
     "Read these sceptically. For eight of eleven archetypes the generator injects the anomaly "
     "using the same definition the test looks for, so recall on those is close to "
     "tautological. The other three, benford_drift, dormant_account and rare_account_pair, are "
-    "caught mostly by tests written for something else: their recall says how they happened "
-    "to be injected, not how well anything detects them."
+    "not injected by exactly that definition, so which test catches them depends on the draw: "
+    "on the default ledger, mostly tests written for something else. Their recall says how "
+    "they happened to be injected, not how well anything detects them."
 )
 
 #: The same caveat for the model tier's segment and lift tables: `score` and the
@@ -192,8 +195,8 @@ def attribution(flags: pd.DataFrame, labels: pd.DataFrame) -> pd.DataFrame:
     that happened to fire. ``by_other_tests`` counts the entries any other test
     flagged, whether or not the intended one did too; ``only_by_other_tests``
     the caught entries the intended test missed. ``intended_test`` is "" where
-    no test was written for the type. Rows follow the generator's archetypes,
-    then any other type by name.
+    no test was written for the type. Rows: held-out archetypes, then the
+    generator's, then any other type by name, as in the budget table.
     """
     columns = ["anomaly_type", "intended_test", "n", "caught", "by_intended_test",
                "by_other_tests", "only_by_other_tests", "missed"]
@@ -201,8 +204,7 @@ def attribution(flags: pd.DataFrame, labels: pd.DataFrame) -> pd.DataFrame:
     if flags.empty:  # no flags may also mean no columns
         flags = pd.DataFrame(columns=["entry_id", "test_id"])
     rows = []
-    present = set(anomalies["anomaly_type"])
-    for archetype in [a for a in INTENDED_TEST if a in present] + sorted(present - set(INTENDED_TEST)):
+    for archetype in _archetype_order(anomalies["anomaly_type"]):
         ids = set(anomalies.loc[anomalies["anomaly_type"] == archetype, "entry_id"])
         intended = INTENDED_TEST.get(archetype) or ""
         hit = flags[flags["entry_id"].isin(ids)]

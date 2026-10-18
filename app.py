@@ -411,13 +411,13 @@ with tab_tiers:
         st.markdown("**Which anomaly types the model can perceive**")
         st.dataframe(evaluate.score_by_archetype(scores, labels),
                      width="stretch", hide_index=True)
-        st.markdown("**Each archetype against the model's budget**")
-        st.dataframe(evaluate.budget_recall_by_archetype(combined, labels),
-                     width="stretch", hide_index=True)
         st.info(
             "Entry-level features cannot see a duplicate - that only exists by comparison with "
             "another entry - so a low score there is a design consequence, not a failure."
         )
+        st.markdown("**Each archetype against the model's budget**")
+        st.dataframe(evaluate.budget_recall_by_archetype(combined, labels),
+                     width="stretch", hide_index=True)
     else:
         st.dataframe(combined["agreement"].value_counts().rename("entries"))
     st.code(report.describe(), language="text")

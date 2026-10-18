@@ -14,27 +14,24 @@ from ledgerlens.generate import generate_ledger
 from ledgerlens.ingest import prepare
 
 
-@pytest.fixture(scope="session", autouse=True)
-def _never_the_held_out_seed():
+def pytest_configure(config):
     """The held-out ledger is generated once, after the code is frozen, and never by a test.
 
-    Every generation builds an ``_EntryBuilder`` from its seed, so the guard sits there and
-    holds for the whole session, its own fixtures included. It goes in the commit that adds
-    the held-out ledger's fixture, after the measurement.
+    Every generation builds an ``_EntryBuilder`` from its seed, and the held-out rows come
+    from ``_HeldOutStreams`` built from the same seed, so the guard sits on both. It is set
+    before collection, so a test module that generates at import is caught too; a test that
+    generates in a subprocess is not (none does). It goes in the commit that adds the held-out
+    ledger's fixture, after the measurement.
     """
     from ledgerlens import generate
 
-    patch = pytest.MonkeyPatch()
-    real = generate._EntryBuilder.__init__
+    for cls in (generate._EntryBuilder, generate._HeldOutStreams):
+        def guarded(self, seed, _real=cls.__init__):
+            if seed == generate.HELD_OUT_SEED:
+                pytest.fail("generated with HELD_OUT_SEED before the held-out measurement")
+            _real(self, seed)
 
-    def guarded(self, seed):
-        if seed == generate.HELD_OUT_SEED:
-            pytest.fail("generated with HELD_OUT_SEED before the held-out measurement")
-        real(self, seed)
-
-    patch.setattr(generate._EntryBuilder, "__init__", guarded)
-    yield
-    patch.undo()
+        cls.__init__ = guarded
 
 
 @pytest.fixture(scope="session")
