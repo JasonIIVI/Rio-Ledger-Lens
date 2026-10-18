@@ -37,12 +37,21 @@ def test_generate_held_out_writes_its_own_files_and_leaves_the_ledger_alone(tmp_
     assert str(tmp_path / "heldout-ledger.csv") in out and ", 43 of them held out) to " in out
 
 
-def test_generate_held_out_without_a_seed_is_the_measurement_and_no_test_may_run_it(tmp_path):
-    """Without --seed, --held-out generates with HELD_OUT_SEED: the conftest guard stops it."""
-    with pytest.raises(pytest.fail.Exception, match="HELD_OUT_SEED"):
-        main(["generate", "--held-out", "--start", "2024-01-01", "--end", "2024-01-31",
-              "--out-dir", str(tmp_path)])
-    assert not any(tmp_path.iterdir())
+def test_generate_held_out_without_a_seed_uses_the_held_out_seed(tmp_path, monkeypatch):
+    """Without --seed, --held-out gives the measured ledger's seed (docs/limitations.md)."""
+    from ledgerlens import cli
+    from ledgerlens.generate import HELD_OUT_SEED
+
+    seen, real = {}, cli.generate_ledger
+
+    def spy(**kwargs):
+        seen.update(kwargs)
+        return real(**kwargs)
+
+    monkeypatch.setattr(cli, "generate_ledger", spy)
+    assert main(["generate", "--held-out", "--start", "2024-01-01", "--end", "2024-01-31",
+                 "--out-dir", str(tmp_path)]) == 0
+    assert seen["seed"] == HELD_OUT_SEED and seen["held_out"] is True
 
 
 def test_generate_without_held_out_still_uses_the_default_seed(tmp_path):

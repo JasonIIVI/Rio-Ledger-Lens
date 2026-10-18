@@ -14,24 +14,17 @@ from ledgerlens.generate import generate_ledger
 from ledgerlens.ingest import prepare
 
 
-def pytest_configure(config):
-    """The held-out ledger is generated once, after the code is frozen, and never by a test.
+@pytest.fixture(scope="session")
+def held_out_raw():
+    """The held-out ledger as measured once, from the commit tagged held-out-freeze.
 
-    Every generation builds an ``_EntryBuilder`` from its seed, and the held-out rows come
-    from ``_HeldOutStreams`` built from the same seed, so the guard sits on both. It is set
-    before collection, so a test module that generates at import is caught too; a test that
-    generates in a subprocess is not (none does). It goes in the commit that adds the held-out
-    ledger's fixture, after the measurement.
+    Until that measurement a guard here failed any test that generated with HELD_OUT_SEED;
+    since it, the ledger is pinned (``HELD_OUT_LEDGER_SHA256``) and what was printed is
+    reproduced by tests/test_limitations.py.
     """
-    from ledgerlens import generate
+    from ledgerlens.generate import HELD_OUT_SEED
 
-    for cls in (generate._EntryBuilder, generate._HeldOutStreams):
-        def guarded(self, seed, _real=cls.__init__):
-            if seed == generate.HELD_OUT_SEED:
-                pytest.fail("generated with HELD_OUT_SEED before the held-out measurement")
-            _real(self, seed)
-
-        cls.__init__ = guarded
+    return generate_ledger(seed=HELD_OUT_SEED, held_out=True)
 
 
 @pytest.fixture(scope="session")

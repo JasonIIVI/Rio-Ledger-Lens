@@ -107,7 +107,9 @@ measured as a share of its budget: an archetype of n entries puts n x B / P of t
 budget of B entries out of P by chance (`evaluate.budget_recall_by_archetype`,
 `evaluate.held_out_budget`). The ledger is generated once, from the commit tagged
 `held-out-freeze`, with `HELD_OUT_SEED`, which no code had used before; what is reported was
-registered in `docs/limitations.md` before it existed.
+registered in `docs/limitations.md` before it existed. Measured on 2026-10-18: the rule tier
+caught none of the 43 held-out entries; the model's budget held 6 of them, all token amounts,
+against 0.86 by chance, and none of the other four archetypes.
 
 ## The QuickBooks connector
 

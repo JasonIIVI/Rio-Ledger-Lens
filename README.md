@@ -259,9 +259,35 @@ near-miss vendor name. The rule tier is built to catch none of them, so what is 
 how many of them the model's budget holds, against chance (`ledgerlens score --labels` prints
 it).
 
-That ledger is generated once, after the code is frozen at the tag `held-out-freeze`, with a
+That ledger was generated once, after the code was frozen at the tag `held-out-freeze`, with a
 seed nothing had generated with before, and what is reported was written down before it
-existed: [docs/limitations.md](docs/limitations.md). Its result goes here once measured.
+existed: [docs/limitations.md](docs/limitations.md), which also carries the output as printed.
+Measured on 2026-10-18, the same on Python 3.12 and 3.9:
+
+| Held-out archetype | Entries | Rule tier caught | In the model's budget | By chance |
+|---|---:|---:|---:|---:|
+| `token_amount` | 8 | 0 | 6 | 0.16 |
+| `unfamiliar_user` | 8 | 0 | 0 | 0.16 |
+| `split_purchase` | 9 | 0 | 0 | 0.18 |
+| `round_trip` | 8 | 0 | 0 | 0.16 |
+| `shell_vendor_drip` | 10 | 0 | 0 | 0.20 |
+| all held-out | 43 | 0 | 6 | 0.86 |
+
+Two recall figures, kept apart because they answer different questions:
+
+- **Circular.** On the same ledger the rule tier finds 74 of the 77 entries of the eleven
+  generator archetypes (0.961). As on the default ledger, those are mostly the definitions
+  read back.
+- **Not circular.** The model's budget, 103 of 5,138 entries (the top 2% by rank), holds 6
+  of the 43 held-out entries, against 0.86 by chance: 7.0 times chance, a recall of 0.14.
+
+All six are token amounts. By the reading registered beforehand (at least half of an
+archetype's entries in the budget), the model catches `token_amount`, six of eight, and
+none of the other four. It misses the unfamiliar user, although `user_freq` sees one. It
+also misses the three patterns that exist only between entries: the split purchase, the
+round trip and the drip. So on these five recipes the model tier detects one thing no rule
+describes, an amount of a dollar or two on an ordinary pair, and nothing else. That is a
+measurement on patterns written for this project, not on real fraud.
 
 ## The narrative layer and the human loop
 
@@ -621,9 +647,9 @@ and reopen Claude Desktop:
       ledger is loaded, and a company's approver list and approval limit are read from a
       controls file beside its ledger, so JET-12 and JET-06 test a QuickBooks company
       against its own controls
-- [ ] **Week 5, last part** — break the circularity: which test caught each archetype, every
+- [x] **Week 5, last part** — break the circularity: which test caught each archetype, every
       setting swept, and a held-out ledger of archetypes no rule describes, generated once
-      after the code is frozen, to measure the model tier against chance (v1.1.0)
+      after the code was frozen, measuring the model tier against chance (v1.1.0)
 
 ## Limitations
 

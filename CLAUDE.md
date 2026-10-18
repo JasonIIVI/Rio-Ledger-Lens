@@ -379,11 +379,19 @@ and the MCP SDK, so the two together cover every code path CI will see.
     `PYTHONPATH` set (the venvs' editable install is another checkout's 1.0.0 code), generates
     once and records both files' sha256, and the summary lists held-out rows in
     `HeldOutType`'s order.
-- **Next** — the freeze (tag `held-out-freeze` on the green head), then the one measurement:
-  `generate --held-out`, `test` and `score` with its labels, pasted verbatim into
-  `docs/limitations.md` and the README, with no commit touching `src/` or `app.py` after the
-  tag. Then v1.1.0.
-- 1020 tests on 3.9 (1 skipped) / 1034 on 3.12 (the fourteen MCP tests need 3.10+), ruff clean.
+  - **Frozen** at `6055581` (annotated tag `held-out-freeze`; CI run by hand green, five jobs).
+  - **Measured once** (2026-10-18, 21:50 UTC), as registered: generated in 3.12, both files
+    hashed, `test` and `score` run on them in 3.12 and 3.9 with byte-identical output, pasted in
+    `docs/limitations.md`. The rule tier caught none of the 43. The model's budget (103 of 5,138)
+    held 6 of 43 against 0.86 by chance (7.0x, recall 0.14), all six token amounts: by the
+    registered reading it catches `token_amount` (6 of 8) and none of the other four. The
+    eleven generator archetypes on the same ledger: 74 of 77 by the rule tier. The commit after
+    the tag touches only docs and tests (`git diff held-out-freeze -- src app.py` is empty): the
+    measured ledger is a session fixture pinned by `HELD_OUT_LEDGER_SHA256`, and
+    `tests/test_limitations.py` runs `test` and `score` on it again and compares with what was
+    printed, so CI on Linux reproduces the measurement or fails.
+- **Next** — open PR C, merge it, then tag v1.1.0 with release notes (claims-reviewed).
+- 1025 tests on 3.9 (1 skipped) / 1039 on 3.12 (the fourteen MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
@@ -484,8 +492,9 @@ ledger CSV ──▶ ingest ──┼──▶ Isolation Forest ─────�
    directory (or another entry's case), never a re-grade, and the eval refuses to cross it.
 10. **The held-out figures are the ones measured at the freeze.** The held-out ledger is
     generated once, from the commit tagged `held-out-freeze`, with `HELD_OUT_SEED`, and nothing
-    is tuned on it. No test generates with that seed before the measurement (the conftest
-    guard). After the tag no commit touches `src/` or `app.py` until the measurement is merged;
+    is tuned on it. Before the measurement no test generated with that seed (a conftest guard,
+    removed with it). After the tag no commit touches `src/` or `app.py` until the measurement
+    is merged;
     a defect found then is disclosed in `docs/limitations.md`, not fixed. A later change that
     moves the held-out figures labels the new ones "re-measured, no longer held out".
 
@@ -504,10 +513,12 @@ Same pattern in the model tier: it is a strong re-ranker (top-25 precision 0.60,
 random) but a weak independent detector — the "model only" segment sits at the base rate, because
 these anomalies were *defined* as rule violations.
 
-**Breaking that circularity is the single most valuable remaining task.** Week 5 adds a held-out
-ledger of archetypes no rule describes, measured once at the freeze, against chance, with what
-is reported registered first in `docs/limitations.md` (rule 10). Do not quietly report the
-flattering number.
+**Breaking that circularity was the single most valuable remaining task.** Week 5 measured a
+held-out ledger of archetypes no rule describes, once, at the freeze, against chance, with what
+is reported registered first in `docs/limitations.md` (rule 10): the model's budget held 6 of
+the 43 held-out entries against 0.86 by chance, all of them token amounts, and none of the four
+other archetypes (three of which exist only between entries). Quote that beside the default
+figures, and do not quietly report the flattering number.
 
 The narrative eval has the same shape of caveat: it grades properties (grounded, specific,
 non-assertive, confidence in band), not insight. A note can pass every check and still be
@@ -525,9 +536,9 @@ unhelpful. Say so wherever the number is quoted.
 - Run `ruff check src tests app.py` and both venvs' test suites before every commit.
 - The Claude API is never called from a test: `tests/conftest.py` has the fake client
   (`llm` fixture) shaped like the real responses, thinking block included.
-- No test generates with `HELD_OUT_SEED`, and none computes a model score on a held-out
-  recipe: held-out tests use `DEV_SEEDS`, and a test of what `score` prints for held-out labels
-  relabels normal entries.
+- The held-out recipes are tested on `DEV_SEEDS`. The measured ledger (`HELD_OUT_SEED`) is the
+  session fixture `held_out_raw`, pinned by `HELD_OUT_LEDGER_SHA256`; `tests/test_limitations.py`
+  reproduces its measurement. A test that moves those figures is a re-measurement (rule 10).
 - No test touches the network: QuickBooks responses are replayed from `tests/fixtures/qbo/`
   (`RecordedTransport`), and a recording is made only with `pull-qbo --record` against a
   sandbox company, sanitized on the way to disk.

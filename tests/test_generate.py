@@ -16,6 +16,9 @@ from ledgerlens.schema import AnomalyType, HeldOutType, is_us_holiday
 #: The first is the default ledger's.
 DEV_SEEDS = (20260922, 101, 202, 303)
 
+#: The held-out ledger as measured from the commit tagged held-out-freeze (HELD_OUT_SEED).
+HELD_OUT_LEDGER_SHA256 = "3a3ab764870bb294854747ef24dc38591032cf5d79cbf1577a92737c6838f09c"
+
 #: The default ledger with the held-out rows, generated on DEV_SEEDS[0]: pins the recipes.
 DEV_HELD_OUT_SHA256 = "d5182b57029fb7d7dfc3d2b6d0ea6bb34d7779a7fda7189b35cfeca9bc24c94d"
 
@@ -146,8 +149,8 @@ def test_every_one_and_three_day_range_of_a_year_generates_or_is_refused():
 
 
 # --- the held-out ledger ---------------------------------------------------------
-# Every test here generates on DEV_SEEDS: HELD_OUT_SEED is generated with once, after the
-# code is frozen (conftest fails any test that tries).
+# The recipes are tested on DEV_SEEDS. HELD_OUT_SEED was generated with once, after the code
+# was frozen; that ledger is pinned below and its measurement reproduced in test_limitations.
 
 
 @pytest.fixture(scope="module")
@@ -293,11 +296,10 @@ def test_the_limitations_list_each_held_out_archetype_with_its_entries():
     assert "| all held-out | 43 |" in doc and "how many of 43 the budget holds" in doc
 
 
-def test_nothing_generates_with_the_held_out_seed_before_the_measurement():
-    from ledgerlens import generate
+def test_the_measured_held_out_ledger_is_pinned(held_out_raw):
+    """The ledger docs/limitations.md measured, in ledger_digest's canonical form."""
+    from ledgerlens.ingest import ledger_digest
 
-    with pytest.raises(pytest.fail.Exception, match="HELD_OUT_SEED"):
-        generate_ledger(start=date(2024, 1, 1), end=date(2024, 1, 31), seed=HELD_OUT_SEED)
-    # the held-out rows depend only on their streams' seed and the business days
-    with pytest.raises(pytest.fail.Exception, match="HELD_OUT_SEED"):
-        generate._HeldOutStreams(HELD_OUT_SEED)
+    lines, labels = held_out_raw
+    assert ledger_digest(prepare(lines.copy())) == HELD_OUT_LEDGER_SHA256
+    assert len(_held_out_ids(labels)) == 43 and int(labels["is_anomaly"].sum()) == 120
