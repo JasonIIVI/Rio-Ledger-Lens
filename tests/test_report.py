@@ -193,10 +193,11 @@ def test_the_summary_sheet_puts_the_circularity_caveat_beside_precision_and_reca
     assert not sheet.cell(row=caveat_row, column=2).alignment.wrap_text  # the numbers are left alone
     widths = sheet.column_dimensions["B"].width, openpyxl.load_workbook(bare)["Summary"].column_dimensions["B"].width
     assert widths[0] == widths[1] < 30, widths
-    # the column is sized to its longest unwrapped value, not to nothing: "Prepared" gives 18
+    # the column is sized to its longest unwrapped value, not to nothing: with no controls
+    # file, the "Controls file" row's "none (synthetic defaults)" gives 27
     longest = max(len(str(row[1].value)) for row in sheet.iter_rows()
                   if row[1].value is not None and not row[1].alignment.wrap_text)
-    assert widths[0] == longest + 2 == 18
+    assert widths[0] == longest + 2 == 27
     assert sheet.column_dimensions["A"].width >= len("Population (entries)") + 2
 
 
@@ -260,3 +261,23 @@ def test_ledger_text_is_written_as_text_never_as_a_formula(ledger, tmp_path):
     assert rows[first][header.index("source")] == "#REF!"
     source = header.index("source") + 1
     assert next(c for c in ws[2:ws.max_row] for c in c if c.column == source and c.value == "#REF!").data_type == "s"
+
+
+def test_the_summary_sheet_names_the_controls_and_keeps_a_name_from_the_file_as_text(ledger, tmp_path):
+    from ledgerlens.controls import Controls
+
+    flags = jets.run_all(ledger)
+    scored = jets.score_entries(ledger, flags)
+    cells = _summary_cells(build_workpaper(scored, flags, tmp_path / "d.xlsx"))
+    assert (cells["JET-12 approvers"], cells["JET-06 approval limit"], cells["Controls file"]) == (
+        "controller, mchen", "$10,000", "none (synthetic defaults)")
+    own = Controls(("=1+1", "controller"), 2_500.5, source="data/x.controls.json")
+    path = build_workpaper(scored, flags, tmp_path / "o.xlsx", controls=own)
+    sheet = openpyxl.load_workbook(path)["Summary"]  # not data_only: a formula reads back as "f"
+    cell = next(row[1] for row in sheet.iter_rows() if row[0].value == "JET-12 approvers")
+    assert cell.value == "=1+1, controller" and cell.data_type == "s"
+    cells = _summary_cells(path)
+    assert (cells["JET-06 approval limit"], cells["Controls file"]) == ("$2,500.50", "data/x.controls.json")
+    methodology = " ".join(str(c.value) for row in openpyxl.load_workbook(path)["Methodology"].iter_rows()
+                           for c in row if c.value)
+    assert "They are facts about the company, not thresholds tuned against data." in methodology

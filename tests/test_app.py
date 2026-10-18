@@ -605,3 +605,87 @@ def test_a_ledger_path_that_cannot_be_read_is_a_message_not_an_exception_page(tm
     (folder / "ledger.csv").mkdir(parents=True)
     at = _run(folder, tmp_path / "review.sqlite", reviewer="ana")
     assert at.error and any("ledger.csv" in t.value for t in at.text)
+
+
+def test_a_controls_file_that_cannot_be_used_is_a_message_not_the_defaults(data_dir, tmp_path):
+    bad = tmp_path / "bad"
+    bad.mkdir()
+    shutil.copy(data_dir / "ledger.csv", bad / "ledger.csv")
+    (bad / "ledger.controls.json").write_text('{"version": 1, "manual_entry_approvers": [], "approval_limit": 10000}')
+    at = _run(bad, tmp_path / "review.sqlite", reviewer="ana")  # _run asserts nothing was raised
+    assert [e.value for e in at.error] == ["The controls file beside this ledger cannot be used."]
+    assert any("ledger.controls.json: manual_entry_approvers is empty" in t.value for t in at.text)
+    assert not (tmp_path / "review.sqlite").exists()  # stopped before any store was opened
+
+
+def test_a_controls_file_written_after_the_first_load_is_read_on_the_next_run(data_dir, tmp_path):
+    """load() is cached by what its files are; the controls file is one of them."""
+    import json
+
+    from ledgerlens import jets
+    from ledgerlens.ingest import load_csv
+
+    side = tmp_path / "side"
+    side.mkdir()
+    shutil.copy(data_dir / "ledger.csv", side / "ledger.csv")
+    at = _run(side, tmp_path / "review.sqlite")
+    raised = next(m.value for m in at.metric if m.label == "Flags raised")
+    df = load_csv(side / "ledger.csv")
+    jet12 = jets.run_all(df, only=["JET-12"])
+    assert len(jet12) and str(len(jets.run_all(df))) == str(raised)
+    users = sorted(set(df.loc[df["entry_id"].isin(jet12["entry_id"]), "created_by"]))
+    (side / "ledger.controls.json").write_text(json.dumps(
+        {"version": 1, "manual_entry_approvers": ["controller", "mchen", *users], "approval_limit": 10000}))
+    at.run()
+    assert not at.exception, at.exception
+    assert next(m.value for m in at.metric if m.label == "Flags raised") == str(len(jets.run_all(df)) - len(jet12))
+
+
+def test_the_sidebar_names_the_controls_and_draws_a_name_from_the_file_as_code(data_dir, tmp_path):
+    import json
+
+    from ledgerlens.summary import code_span
+
+    at = _run(data_dir, tmp_path / "review.sqlite")
+    # the limit's "$" and "," escaped (app.md), so no pair of dollars can start maths
+    assert ("Controls: approvers `controller`, `mchen` (JET-12) \u00b7 approval limit \\$10\\,000 "
+            "(JET-06) \u00b7 the synthetic company's (no controls file beside the ledger)") in [
+        c.value for c in at.sidebar.caption]
+    own = tmp_path / "own"
+    own.mkdir()
+    shutil.copy(data_dir / "ledger.csv", own / "ledger.csv")
+    name = "[x](http://example.invalid/beacon.png)"
+    (own / "ledger.controls.json").write_text(json.dumps(
+        {"version": 1, "manual_entry_approvers": ["controller", name], "approval_limit": 2500.5}))
+    at = _run(own, tmp_path / "review.sqlite")
+    caption = next(c.value for c in at.sidebar.caption if c.value.startswith("Controls:"))
+    assert code_span(name) in caption and code_span(str(own / "ledger.controls.json")) in caption
+    assert "\\$2\\,500\\.50" in caption
+
+
+def test_a_link_to_nothing_written_after_the_first_load_is_refused_on_the_next_run(data_dir, tmp_path):
+    """No file and a link to nothing both had no stamp, so the cached defaults stood while every
+    other surface refused the file."""
+    side = tmp_path / "side"
+    side.mkdir()
+    shutil.copy(data_dir / "ledger.csv", side / "ledger.csv")
+    at = _run(side, tmp_path / "review.sqlite")
+    assert not at.error
+    os.symlink(side / "gone.json", side / "ledger.controls.json")
+    at.run()
+    assert not at.exception, at.exception
+    assert [e.value for e in at.error] == ["The controls file beside this ledger cannot be used."]
+    assert any("a link to a file that does not exist" in t.value for t in at.text)
+
+
+
+def test_a_link_loop_written_after_the_first_load_is_refused_on_the_next_run(data_dir, tmp_path):
+    side = tmp_path / "side"
+    side.mkdir()
+    shutil.copy(data_dir / "ledger.csv", side / "ledger.csv")
+    at = _run(side, tmp_path / "review.sqlite")
+    assert not at.error
+    os.symlink("ledger.controls.json", side / "ledger.controls.json")  # points at itself
+    at.run()
+    assert not at.exception, at.exception
+    assert [e.value for e in at.error] == ["The controls file beside this ledger cannot be used."]

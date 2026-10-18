@@ -21,7 +21,7 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
-from .generate import APPROVAL_THRESHOLD, MANUAL_JE_APPROVERS
+from .controls import DEFAULT_CONTROLS, Controls, format_approvers, format_limit
 from .ingest import entry_level
 
 FLAG_COLUMNS = ("entry_id", "test_id", "test_name", "severity", "reason")
@@ -167,12 +167,13 @@ def jet_period_end_manual_revenue(df: pd.DataFrame, days: int = 3) -> pd.DataFra
 
 
 def jet_just_under_threshold(
-    df: pd.DataFrame, threshold: float = APPROVAL_THRESHOLD, window: float = 0.03
+    df: pd.DataFrame, threshold: float = DEFAULT_CONTROLS.approval_limit, window: float = 0.03
 ) -> pd.DataFrame:
     """Amounts sitting just beneath an approval limit.
 
     One entry under the limit is nothing. A pattern of them is someone
-    steering around a control.
+    steering around a control. The limit is the company's (see ``controls``);
+    the window is this test's own.
     """
     e = entry_level(df)
     lower = threshold * (1 - window)
@@ -183,7 +184,7 @@ def jet_just_under_threshold(
             "test_id": "JET-06",
             "test_name": "Just under approval threshold",
             "severity": HIGH,
-            "reason": f"${r.entry_amount:,.2f} falls within {window:.0%} beneath the ${threshold:,.0f} approval threshold. "
+            "reason": f"${r.entry_amount:,.2f} falls within {window:.0%} beneath the {format_limit(threshold)} approval threshold. "
                       "Review for split or structured transactions."
                       ,
         }
@@ -338,11 +339,12 @@ def jet_large_value_outlier(df: pd.DataFrame, z_threshold: float = 3.5) -> pd.Da
 
 
 def jet_unapproved_manual_entry(
-    df: pd.DataFrame, approvers: tuple[str, ...] = MANUAL_JE_APPROVERS
+    df: pd.DataFrame, approvers: tuple[str, ...] = DEFAULT_CONTROLS.manual_entry_approvers
 ) -> pd.DataFrame:
     """Manual journal entries keyed by someone outside the approved list.
 
     A segregation-of-duties test: who is allowed to touch the ledger directly?
+    The list is the company's (see ``controls``), named in the reason as given.
     """
     e = entry_level(df)
     hit = e[(e["source"] == "Manual") & (~e["created_by"].isin(approvers))]
@@ -352,9 +354,8 @@ def jet_unapproved_manual_entry(
             "test_id": "JET-12",
             "test_name": "Manual entry outside approver list",
             "severity": LOW,
-            "reason": "Manual entry keyed by {}, who is not in the approved list ({}). "
-                      "Confirm delegated authority."
-                      .format(r.created_by, ", ".join(approvers)),
+            "reason": f"Manual entry keyed by {r.created_by}, who is not in the approved list "
+                      f"({format_approvers(approvers)}). Confirm delegated authority.",
         }
         for r in hit.itertuples()
     ])
@@ -382,15 +383,26 @@ REGISTRY: dict[str, tuple[str, TestFn]] = {
 SEVERITY_WEIGHT = {HIGH: 3.0, MEDIUM: 2.0, LOW: 1.0}
 
 
-def run_all(df: pd.DataFrame, only: list[str] | None = None) -> pd.DataFrame:
-    """Run every registered test (or just `only`) and stack the flags."""
+def run_all(
+    df: pd.DataFrame, only: list[str] | None = None, controls: Controls | None = None
+) -> pd.DataFrame:
+    """Run every registered test (or just `only`) and stack the flags.
+
+    ``controls`` are the company's approver list and approval limit, which JET-12
+    and JET-06 read; None is the synthetic company's (``DEFAULT_CONTROLS``).
+    """
+    controls = DEFAULT_CONTROLS if controls is None else controls
+    settings = {
+        "JET-06": {"threshold": controls.approval_limit},
+        "JET-12": {"approvers": controls.manual_entry_approvers},
+    }
     selected = only or list(REGISTRY)
     frames = []
     for test_id in selected:
         if test_id not in REGISTRY:
             raise KeyError(f"unknown test id: {test_id}")
         _, fn = REGISTRY[test_id]
-        frames.append(fn(df))
+        frames.append(fn(df, **settings.get(test_id, {})))
     if not frames:
         return _flags([])
     return pd.concat(frames, ignore_index=True)

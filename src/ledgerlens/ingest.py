@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import stat
 import warnings
 from pathlib import Path
 
@@ -90,6 +92,10 @@ class IdentityError(ValueError):
     """An identity sidecar exists but cannot be trusted."""
 
 
+#: An identity sidecar holds one short key; a file this size is something else.
+SIDECAR_MAX_BYTES = 64 * 1024
+
+
 def plural(n: int, one: str, many: str) -> str:
     return f"{n:,} {one if n == 1 else many}"
 
@@ -157,8 +163,13 @@ def ledger_digest(lines: pd.DataFrame) -> str:
 
 
 def identity_path(ledger_path: str | Path) -> Path:
-    """Where a ledger's identity sidecar sits: ``data/ledger.identity.json`` beside the CSV."""
-    return Path(ledger_path).with_suffix(IDENTITY_SUFFIX)
+    """Where a ledger's identity sidecar sits: ``data/ledger.identity.json`` beside the CSV.
+
+    A leading ``~`` is expanded as pandas expands it when it reads the ledger: taken
+    literally, ``~/books/qbo.csv`` was read from the home directory while its sidecar was
+    looked for under a directory named ``~``, so the review was filed under the CSV's digest.
+    """
+    return Path(os.path.expanduser(os.fspath(ledger_path))).with_suffix(IDENTITY_SUFFIX)
 
 
 def ledger_identity(lines: pd.DataFrame, path: str | Path | None = None) -> str:
@@ -172,10 +183,18 @@ def ledger_identity(lines: pd.DataFrame, path: str | Path | None = None) -> str:
     """
     if path is not None:
         sidecar = identity_path(path)
-        if sidecar.exists():
+        if os.path.lexists(sidecar):  # a link to nothing is a sidecar meant, not none
             try:
+                status = os.stat(sidecar)
+                # a FIFO would wait for a writer forever; a large file is something else
+                if not stat.S_ISREG(status.st_mode) or status.st_size > SIDECAR_MAX_BYTES:
+                    raise IdentityError(f"{sidecar} is not a small regular file")
                 payload = json.loads(sidecar.read_text(encoding="utf-8"))
-            except (OSError, ValueError) as exc:
+            except FileNotFoundError:
+                raise IdentityError(f"{sidecar} is a link to a file that does not exist") from None
+            except (OSError, ValueError, RecursionError) as exc:  # IdentityError passes as is
+                if isinstance(exc, IdentityError):
+                    raise
                 raise IdentityError(f"{sidecar} cannot be read as JSON ({exc})") from exc
             ledger_id = payload.get("ledger_id") if isinstance(payload, dict) else None
             if not isinstance(ledger_id, str) or not _QBO_ID.fullmatch(ledger_id):

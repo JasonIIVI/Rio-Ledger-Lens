@@ -19,6 +19,7 @@ import streamlit as st
 
 from ledgerlens import evaluate, jets
 from ledgerlens.benford import benford_test
+from ledgerlens.controls import ControlsError, controls_path, format_limit, load_controls
 from ledgerlens.env import load_dotenv
 from ledgerlens.ingest import identity_path, ledger_identity, load_csv, load_labels
 from ledgerlens.model import combine, score_ledger
@@ -37,12 +38,21 @@ def _stamp(path: str) -> tuple | None:
 
     ``load`` is cached by its arguments. Keyed by path alone, a label file corrected
     on disk kept showing the problem the first read found, and a regenerated ledger
-    kept its old numbers, until the server was restarted. The key covers the three
-    files ``load`` reads: the ledger, the labels and the ledger's identity sidecar.
+    kept its old numbers, until the server was restarted. The key covers the four
+    files ``load`` reads: the ledger, the labels, and the ledger's identity and
+    controls files.
     """
     try:
         status = os.stat(path)
-    except (OSError, ValueError):  # no such file, or a name the filesystem rejects: load says so
+    except FileNotFoundError:
+        try:  # a link to nothing is not "no file": load refuses it, so it keys differently
+            status = os.lstat(path)
+        except (OSError, ValueError):
+            return None
+        return ("link to nothing", status.st_mtime_ns)
+    except OSError as exc:  # a loop, a name too long: load refuses it, so not "no file" either
+        return ("unreadable", exc.errno)
+    except ValueError:  # a NUL in the name: load says so, every time (nothing is cached)
         return None
     return (status.st_mtime_ns, status.st_size)
 
@@ -54,7 +64,8 @@ def load(ledger_path: str, labels_path: str, stamps: tuple):
     # Computed here so it is cached with the frame it describes: the store is
     # bound to the ledger on screen, never to a stale one.
     ledger_id = ledger_identity(df, ledger_path)
-    flags = jets.run_all(df)
+    controls = load_controls(ledger_path)  # a file that cannot be used is refused, below
+    flags = jets.run_all(df, controls=controls)
     scored = jets.score_entries(df, flags)
     scores, report = score_ledger(df)
     combined = combine(scored, scores)
@@ -73,7 +84,7 @@ def load(ledger_path: str, labels_path: str, stamps: tuple):
             labels, labels_problem = None, f"missing column {exc}"
         except (OSError, ValueError) as exc:  # unreadable, not a label file, or a mismatch
             labels, labels_problem = None, str(exc)
-    return df, flags, combined, scores, report, labels, ledger_id, labels_problem
+    return df, flags, combined, scores, report, labels, ledger_id, labels_problem, controls
 
 
 _MARKUP = re.compile(r"([!-/:-@\[-`{-~])")  # every ASCII punctuation character
@@ -133,9 +144,16 @@ if not Path(ledger_path).exists():
     st.stop()
 
 try:
-    df, flags, combined, scores, report, labels, ledger_id, labels_problem = load(
+    df, flags, combined, scores, report, labels, ledger_id, labels_problem, controls = load(
         ledger_path, labels_path,
-        (_stamp(ledger_path), _stamp(labels_path), _stamp(str(identity_path(ledger_path)))))
+        (_stamp(ledger_path), _stamp(labels_path), _stamp(str(identity_path(ledger_path))),
+         _stamp(str(controls_path(ledger_path)))))
+except ControlsError as exc:  # before ValueError, which it is: the ledger itself is fine
+    # Never the defaults in its place: another company's approver list would flag every
+    # manual entry. As text: the reason can quote the file.
+    st.error("The controls file beside this ledger cannot be used.")
+    st.text(str(exc))
+    st.stop()
 except (OSError, ValueError) as exc:
     # A path that cannot be read (a folder exists too), a sidecar that names no ledger (never
     # guess which one it is), a file that is not a ledger, a cell no test can read, or a
@@ -159,6 +177,13 @@ except RuntimeError as exc:  # a file from a newer version, or not a review data
     st.error(str(exc))
     st.stop()
 st.sidebar.caption(f"Review rows keyed by `{ledger_id}`")
+# What JET-12 and JET-06 were run against. Names from a file are drawn as code spans, as
+# a flag's reason is, and the limit's "$" escaped so no pair of them starts maths.
+st.sidebar.caption("Controls: approvers {} (JET-12) · approval limit {} (JET-06) · {}".format(
+    ", ".join(code_span(name) for name in controls.manual_entry_approvers),
+    md(format_limit(controls.approval_limit)),
+    "from " + code_span(controls.source) if controls.source is not None
+    else "the synthetic company's (no controls file beside the ledger)"))
 others = store.other_ledgers()
 if not others.empty:
     # Surfaced, never shown as this ledger's: a file can hold several ledgers' review.

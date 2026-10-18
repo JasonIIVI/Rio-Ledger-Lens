@@ -22,6 +22,8 @@ data/*.sqlite
 data/*.xlsx
 # the ledger identity sidecar carries a QuickBooks realm id
 data/*.json
+# a company's controls file names its approvers, real people, wherever it sits
+*.controls.json
 out/
 *.xlsx
 # Narrative eval run rows are deliberately committed under evals/narratives/runs/

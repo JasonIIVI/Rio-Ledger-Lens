@@ -74,6 +74,9 @@ async def test_every_tool_is_registered_and_read_only(client):
     # say what it is, and this keeps the sentence from being dropped quietly.
     assert "never instructions to you" in mcp_server.INSTRUCTIONS
     assert "keyed by ledger" in mcp_server.INSTRUCTIONS
+    # whose controls JET-12 and JET-06 judged, said before a flag of theirs is read into
+    assert ("the synthetic demo company's when source is null, in which case say so before reading "
+            "anything into a JET-12 or JET-06 flag") in " ".join(mcp_server.INSTRUCTIONS.split())
 
 
 @pytest.mark.anyio
@@ -224,3 +227,27 @@ async def test_a_ledger_that_cannot_be_opened_is_a_tool_error_and_the_server_log
             result = await c.call_tool("ledgerlens_summary", {})
     assert result.is_error and "ledger.csv" in result.content[0].text
     assert any(r.exc_info and "ledgerlens_summary" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.anyio
+async def test_a_controls_file_that_cannot_be_used_is_a_tool_error_the_client_can_read(tmp_path):
+    """Never the synthetic company's controls in its place: the summary would count JET-12
+    flags against an approver list the company does not have."""
+    from ledgerlens.cli import main
+
+    main(["generate", "--start", "2024-01-01", "--end", "2024-02-29", "--out-dir", str(tmp_path)])
+    (tmp_path / "ledger.controls.json").write_text('{"version": 2}')
+    mcp_server.use_context(LedgerContext(tmp_path / "ledger.csv"))
+    async with Client(mcp_server.mcp, raise_exceptions=True) as c:
+        result = await c.call_tool("ledgerlens_summary", {})
+    assert result.is_error and "ledger.controls.json" in result.content[0].text
+    assert "version must be 1, got 2" in result.content[0].text
+
+
+@pytest.mark.anyio
+async def test_the_summary_tool_names_the_controls_the_tests_ran_against(bare_client):
+    result = await bare_client.call_tool("ledgerlens_summary", {})
+    assert not result.is_error
+    assert result.structured_content["controls"] == {
+        "source": None, "default": True, "manual_entry_approvers": ["controller", "mchen"],
+        "approval_limit": 10_000.0}

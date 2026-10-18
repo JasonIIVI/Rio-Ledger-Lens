@@ -600,3 +600,87 @@ def test_the_summary_never_reads_a_label_column():
     source = Path(summary.__file__).read_text(encoding="utf-8")
     assert "is_anomaly" not in source
     assert "true_positive" not in source.split("def _metric_rows")[0]  # collect only passes metrics on
+
+
+# --- the controls the tests ran against -------------------------------------
+
+
+def test_every_format_names_the_controls_and_where_they_came_from(payload):
+    assert payload["controls"] == {"source": None, "default": True,
+                                   "manual_entry_approvers": ["controller", "mchen"],
+                                   "approval_limit": 10_000.0}
+    said = ("approvers controller, mchen (JET-12); approval limit $10,000 (JET-06); the synthetic "
+            "company's (no controls file beside the ledger)")
+    assert "Controls " + said in flat(summary.render(payload, "text"))
+    assert ("| Controls | approvers `controller`, `mchen` (JET-12); approval limit $10,000 (JET-06); "
+            "the synthetic company's (no controls file beside the ledger) |") in summary.render(payload, "markdown")
+    assert json.loads(summary.render(payload, "json"))["controls"] == payload["controls"]
+
+
+def test_a_name_from_the_controls_file_is_inert_on_the_posted_page(small_ledger):
+    from ledgerlens.controls import Controls
+
+    name, source = "@octocat|x", "b|@c.controls.json"
+    context = LedgerContext(small_ledger[0], controls=Controls(("controller", name), 2_500.5,
+                                                               source=source)).load()
+    built = summary.collect(context, today=TODAY)
+    page = summary.render(built, "markdown")
+    assert summary.md_code(name) in page and summary.md_code(source) in page
+    assert "@octocat" not in page and "@" + ZWSP + "octocat" in page and "b|@c" not in page
+    assert "approval limit $2,500.50 (JET-06); from " in page
+    text = flat(summary.render(built, "text"))
+    assert "approvers @octocat|x, controller (JET-12); approval limit $2,500.50 (JET-06); from b|@c.controls.json" in text
+    assert built["controls"]["manual_entry_approvers"] == ["@octocat|x", "controller"]
+
+
+def test_the_notes_say_whose_controls_the_tests_ran_against(context, default_context, ledger, small_ledger):
+    from ledgerlens.controls import Controls
+
+    # the default ledger under other controls: not the published figures, and said so
+    others = summary.collect(LedgerContext(ledger, controls=Controls(("controller", "dsilva", "mchen"), 10_000)).load())
+    assert others["default_ledger"] and others["notes"][0] == summary.CONTROLS_NOTE
+    assert summary.SEEDED_NOTE not in others["notes"]
+    # the defaults restated in a file are the defaults: the seeded note stands
+    restated = LedgerContext(ledger, controls=Controls(("mchen", "controller"), 10_000, source="l.controls.json"))
+    restated_page = summary.collect(restated.load())
+    assert restated_page["notes"][0] == summary.SEEDED_NOTE
+    assert ("approval limit $10,000 (JET-06); from l.controls.json, the same as the synthetic "
+            "company's") in flat(summary.render(restated_page, "text"))
+    assert summary.collect(default_context)["notes"][0] == summary.SEEDED_NOTE
+    # another ledger: with no file, a note that the synthetic company's controls were used
+    bare = summary.collect(context)["notes"]
+    assert bare[0] == summary.TUNING_NOTE and summary.DEFAULT_CONTROLS_NOTE in bare
+    own = summary.collect(LedgerContext(small_ledger[0], controls=Controls(
+        ("controller",), 10_000, source="x.controls.json")).load())["notes"]
+    assert own[0] == summary.TUNING_NOTE and summary.DEFAULT_CONTROLS_NOTE not in own
+    # another ledger whose file restates the defaults: the company said so, so no such note
+    stated = summary.collect(LedgerContext(small_ledger[0], controls=Controls(
+        ("mchen", "controller"), 10_000, source="x.controls.json")).load())
+    assert stated["notes"][0] == summary.TUNING_NOTE and summary.DEFAULT_CONTROLS_NOTE not in stated["notes"]
+    assert "from x.controls.json, the same as the synthetic company's" in flat(summary.render(stated, "text"))
+
+
+
+def test_the_controls_line_never_splits_a_name_or_a_path(payload):
+    """A filler approver slides a name and a long path, hyphens and spaces in both, across the
+    96th column (the path as an iCloud folder spells it)."""
+    name = "-".join(["abcd"] * 8) + " van der berg"
+    source = "out/Mobile Documents/LedgerGen project/" + "d" * 40 + "/books-2026.controls.json"
+    for width in range(1, 65, 3):
+        page = copy.deepcopy(payload)
+        page["controls"].update(source=source, default=False,
+                                manual_entry_approvers=sorted(["a" * width, "controller", name]))
+        lines = summary.render(page, "text").splitlines()
+        assert any(name in line for line in lines), width
+        assert any(source in line for line in lines), width
+
+
+
+def test_a_controls_path_holding_a_control_character_is_printed_on_one_line(payload):
+    """A terminal escape (which textwrap keeps, unlike a newline) and a newline in the path."""
+    page = copy.deepcopy(payload)
+    source = "a\nb\x1b[2J.controls.json"
+    page["controls"].update(source=source, default=False)
+    text = summary.render(page, "text")
+    assert "from a b[2J.controls.json" in flat(text) and "\x1b" not in text
+    assert summary.md_code(source) in summary.render(page, "markdown")

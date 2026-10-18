@@ -127,3 +127,12 @@ def test_the_prose_repeats_the_tables_figures_and_computes_its_counts(measured, 
     assert f"{WORDS[len(report.dropped_constant)].capitalize()} features ({names}) are constant" in README
     budget = inspect.signature(combine).parameters["model_top_pct"].default
     assert f"a budget (the top {budget:.0%} by rank, ties included)" in README
+
+
+def test_the_readmes_controls_example_is_a_file_the_loader_accepts():
+    from ledgerlens.controls import Controls, parse_controls
+
+    text = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+    section = text.split("## Set a company's controls", 1)[1].split("\n## ", 1)[0]
+    example = re.search(r"```json\n(.*?)\n```", section, re.S).group(1)
+    assert parse_controls(example) == Controls(("qbo-user-1",), 10_000)

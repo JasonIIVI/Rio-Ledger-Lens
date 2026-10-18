@@ -275,3 +275,67 @@ def test_the_breakdowns_add_up_even_for_a_key_neither_list_names(small_ledger):
     assert list(summary["tier_agreement"]) == [*AGREEMENTS, "neither tier"]
     assert summary["tier_agreement"]["neither"] == 0
     assert sum(summary["tier_agreement"].values()) == summary["entries"]
+
+
+def test_a_ledger_read_by_path_is_tested_against_the_controls_beside_it(small_ledger, tmp_path):
+    """The MCP server reads its ledger by path: the controls file beside it applies there too,
+    and one that cannot be used is an error, never the synthetic company's in its place."""
+    from ledgerlens import jets
+    from ledgerlens.controls import DEFAULT_CONTROLS, Controls, ControlsError, controls_path
+
+    small, _ = small_ledger
+    csv = tmp_path / "books.csv"
+    small[list(REQUIRED_COLUMNS)].to_csv(csv, index=False)
+    assert LedgerContext(csv).load().controls is DEFAULT_CONTROLS
+    flagged = set(jets.run_all(small, only=["JET-12"])["entry_id"])
+    users = sorted(set(small.loc[small["entry_id"].isin(flagged), "created_by"]))
+    assert users
+    controls_path(csv).write_text(json.dumps(
+        {"version": 1, "manual_entry_approvers": ["controller", "mchen", *users], "approval_limit": 10000}))
+    context = LedgerContext(csv).load()
+    assert context.controls == Controls(("controller", "mchen", *users), 10_000)
+    assert context.summary()["flags_by_test"]["JET-12"] == 0
+    named = LedgerContext(small, controls=Controls(("controller", "mchen", *users), 10_000)).load()
+    assert named.summary()["flags_by_test"]["JET-12"] == 0  # a frame takes them from its caller
+    assert LedgerContext(small).load().summary()["flags_by_test"]["JET-12"] == len(flagged)
+    controls_path(csv).write_text("{}")
+    with pytest.raises(ControlsError, match="missing key"):
+        LedgerContext(csv).load()
+
+
+def test_the_summary_says_which_controls_the_tests_ran_against(context):
+    assert context.summary()["controls"] == {"source": None, "default": True,
+                                             "manual_entry_approvers": ["controller", "mchen"],
+                                             "approval_limit": 10_000.0}
+
+
+def test_a_load_that_failed_leaves_no_identity_or_controls_behind(small_ledger, tmp_path):
+    """The MCP server keeps one context: a first call refused over a bad controls file had set
+    the ledger's identity already, so a ledger replaced before the next call was served, and
+    its review rows read, under the old one."""
+    from ledgerlens.controls import controls_path
+    from ledgerlens.ingest import load_csv
+
+    small, _ = small_ledger
+    csv = tmp_path / "books.csv"
+    small[list(REQUIRED_COLUMNS)].to_csv(csv, index=False)
+    controls_path(csv).write_text("{}")
+    context = LedgerContext(csv)
+    with pytest.raises(ValueError):
+        context.load()
+    assert context.ledger_id is None and context.controls is None
+    small[list(REQUIRED_COLUMNS)].iloc[:-2].to_csv(csv, index=False)  # another ledger now
+    controls_path(csv).unlink()
+    context.load()
+    assert context.ledger_id == ledger_identity(load_csv(csv), csv)
+
+
+
+def test_a_model_that_cannot_be_fitted_leaves_no_identity_or_controls_behind(small_ledger, tmp_path):
+    small, _ = small_ledger
+    csv = tmp_path / "one.csv"
+    small[small["entry_id"] == small["entry_id"].iloc[0]][list(REQUIRED_COLUMNS)].to_csv(csv, index=False)
+    context = LedgerContext(csv)
+    with pytest.raises(ValueError, match="cannot be fitted"):
+        context.load()
+    assert context.ledger_id is None and context.controls is None

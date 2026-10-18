@@ -30,8 +30,9 @@ and the MCP SDK, so the two together cover every code path CI will see.
   the code). **v0.4.0** was PR #7 (2026-09-29; v0.3.1 was PR #5 on 2026-09-25; v0.3.0 was PR #2
   on 2026-09-23). Weeks 1–4 complete; weeks 1–3 were: narratives, review loop, dashboard
   integration, MCP server, narrative eval, `@claude` workflow. Week 5 is three PRs: ledger
-  validation (`week5/ledger-validation`), settable controls for JET-12 and JET-06, and a
-  held-out ledger of archetypes no rule describes (v1.1.0).
+  validation (PR #12, squash-merged 2026-10-13 as `8bd6c0f`), settable controls for JET-12
+  and JET-06 (`week5/controls`), and a held-out ledger of archetypes no rule describes
+  (v1.1.0).
 - **Review follow-up on `main`** (PR #4, 2026-09-24) — the first `@claude` review's findings:
   narratives are versioned and each decision records the note it saw (`narrative_id`);
   append-only is enforced by SQLite triggers; the MCP path opens the review database read-only;
@@ -197,7 +198,7 @@ and the MCP SDK, so the two together cover every code path CI will see.
   the sort (JET-07 could flag the original of a same-day re-post instead of the re-post);
   on one day the entry keyed first now stands, then the lower id. `docs/demo.gif` predates
   the fix: the model scores in its queue are the old ones.
-- **Ledger validation (week 5, `week5/ledger-validation`)** — `ingest.prepare` refuses a
+- **Ledger validation (week 5, PR #12, `8bd6c0f`)** — `ingest.prepare` refuses a
   cell no test can read before converting anything: blank or whitespace-only in a column a
   test keys on (`entry_id`, `line_no`, both dates, `fiscal_year`, `period`, `account_code`,
   `account_type`, `source`, `created_by`), a date that does not parse or carries a time
@@ -289,11 +290,55 @@ and the MCP SDK, so the two together cover every code path CI will see.
   archetype are unchanged: the default ledger's two CSVs are byte-identical on 3.9 and
   3.12. Not changed: a duplicate's re-post lands one to three days after its original and
   so can fall after `end` (the default ledger's does not).
+- **Settable controls (week 5, `week5/controls`)** — `controls.py`: a company's approver
+  list (JET-12) and approval limit (JET-06) in `<stem>.controls.json` beside the ledger
+  (`{"version": 1, "manual_entry_approvers": [...], "approval_limit": 10000}`); no file is
+  `DEFAULT_CONTROLS`, the synthetic company's (`controller`, `mchen`; $10,000), tied by a
+  test to the generator's constants, which `jets.py` no longer imports. A file that cannot be
+  used is refused, never replaced by the defaults, every problem named in one
+  `ControlsError` (a `ValueError`): not JSON, a duplicate key, NaN or Infinity, an unknown or
+  missing key, a version other than the integer 1, approvers that are not a non-empty list
+  of distinct strings, or one that is empty, holds a comma, is over 64 characters or is not
+  one line of visible text by `summary.one_line`'s test; a limit that is not a number, not
+  above 0, not whole cents, or has more digits than a float keeps. Approvers are kept
+  sorted, so the defaults restated render "(controller, mchen)" and "$10,000" byte for byte
+  (the committed prompts still rebuild). `jets.run_all(..., controls=)`; read by test, score,
+  report, summary, narrate and eval-narratives (one `error: cannot use the controls file`
+  line), by `LedgerContext` for a ledger given by path (so the MCP server), and by the
+  dashboard (cache key covers the file; the MCP server reads it at its first load). test,
+  score, report, narrate and eval-narratives print "Controls from ..." first when a file was
+  used (summary names it on the page); the summary (a `controls` block; `CONTROLS_NOTE`, `DEFAULT_CONTROLS_NOTE`, and
+  `SEEDED_NOTE` only for the default ledger under the defaults), the workpaper (Summary rows,
+  a Methodology block), the dashboard's sidebar and the MCP summary name them.
+  `eval-narratives` refuses other controls on the default ledger in every mode. `pull-qbo`
+  says when no controls file sits beside the pull; `generate` says when one already sits
+  beside the ledger it writes. `*.controls.json` is gitignored and in rule 1's pattern
+  (real approvers are real people). A review (correctness and security, claims, test
+  strength) found no high: fixed were inputs that escaped as a traceback or hung (deep
+  nesting, huge exponents and digit strings, a FIFO), so a file is now read only if it is a
+  regular file of at most 64 KiB, numbers of over 40 characters and NaN or Infinity are named
+  against the key holding them, every problem (duplicate keys included) is named in one
+  message, at most 50 approvers, a limit below $1 trillion; a leading `~` in a ledger path
+  (pandas expands it) is expanded for the controls and identity files too, and by `pull-qbo
+  --out`, so the guard judges the path written; a failed `LedgerContext.load` keeps no identity
+  or controls; a link to nothing keys the dashboard's cache apart from no file; and claims
+  (only JET-11's threshold was swept; 12 of the 17 committed prompts quote the defaults).
+  A verification of those fixes found a medium (`pull-qbo --out ./~/x.csv`: a Path drops the
+  `./`, and pandas then expanded the `~`; the path is now made absolute too) and two
+  regressions of them (Decimal arithmetic rounds to 28 digits, so 10000.000…001 passed as
+  whole cents and 1e-1000030 as a $0 limit: now compared with `quantize`; a NaN inside a
+  list printed an object's address), plus a value nested near the decoder's limit that
+  crashed the message (containers now shown through `reprlib`, two levels), a link loop keyed
+  like no file in the dashboard's cache, the Controls line split at a space (now one line,
+  as the Ledger line is), and the identity sidecar's own FIFO, depth and dangling-link
+  defects (on `main` before this branch; it is now read as the controls file is).
+  Names are compared as written (no Unicode normalisation; a ledger name with stray spaces
+  cannot be listed): documented. Open (the maintainer's call): review rows are keyed by ledger,
+  not controls, so after a controls change a decided entry stays out of the queue whatever
+  it is now flagged for (documented; recording the controls on each row is a schema change).
 - **Next** — breaking the circularity in the detection numbers (a held-out ledger of
-  archetypes no rule describes, generated once after the code is frozen), and an approver
-  list and approval limit that can be set for JET-12 and JET-06 (a controls file beside the
-  ledger).
-- 826 tests on 3.9 (1 skipped) / 838 on 3.12 (the twelve MCP tests need 3.10+), ruff clean.
+  archetypes no rule describes, generated once after the code is frozen).
+- 992 tests on 3.9 (1 skipped) / 1006 on 3.12 (the fourteen MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
@@ -322,7 +367,8 @@ ledger CSV ──▶ ingest ──┼──▶ Isolation Forest ─────�
 | `coa.py` | chart of accounts for the fictional test company |
 | `generate.py` | labelled synthetic GL generator |
 | `ingest.py` | validation + derived columns; `entry_level()` collapses lines to entries; `ledger_digest()` / `ledger_identity()`, the review-store key (`csv:<sha256>`, or `qbo:<realm>` from a `.identity.json` sidecar) |
-| `jets.py` | 12 deterministic tests + severity-weighted risk score |
+| `controls.py` | a company's approver list (JET-12) and approval limit (JET-06) from `<stem>.controls.json` beside the ledger; `DEFAULT_CONTROLS` (the synthetic company's) when there is none; a file that cannot be used is refused, never replaced |
+| `jets.py` | 12 deterministic tests + severity-weighted risk score; JET-06 and JET-12 read a `Controls` |
 | `benford.py` | first-digit test, MAD (Nigrini bands) + chi-square |
 | `features.py` | 16 engineered per-entry features for the model tier |
 | `model.py` | Isolation Forest, rank-based flagging, tier comparison |
@@ -346,7 +392,7 @@ ledger CSV ──▶ ingest ──┼──▶ Isolation Forest ─────�
    data handling:
    ```bash
    git ls-files -ci --exclude-standard                                    # must be empty (force-added ignored files)
-   git ls-files -z | LC_ALL=C grep -zaiE '\.csv$|\.xlsx$|\.parquet$|\.sqlite$|\.sqlite3$|\.db$|^data/|(^|/)\.env(\..*)?$|(^|/)secrets/|qbo-(sandbox|production)-[^/]*\.json$' | tr '\0' '\n' | grep -vx '.env.example'   # must be empty
+   git ls-files -z | LC_ALL=C grep -zaiE '\.csv$|\.xlsx$|\.parquet$|\.sqlite$|\.sqlite3$|\.db$|^data/|(^|/)\.env(\..*)?$|(^|/)secrets/|qbo-(sandbox|production)-[^/]*\.json$|\.controls\.json$' | tr '\0' '\n' | grep -vx '.env.example'   # must be empty
    ```
    (NUL-separated and any case on purpose: `git ls-files` quotes and escapes a path with a
    non-ASCII byte, which a line-based grep never matches.) CI's `rule-1` job runs the same
@@ -369,7 +415,8 @@ ledger CSV ──▶ ingest ──┼──▶ Isolation Forest ─────�
 6. **A flag is a question, not a finding.** Word all reasons and narratives accordingly; never
    assert an error or speculate about intent.
 7. **Thresholds are tuned against labelled data, not chosen for roundness.** Record the sweep in
-   `docs/tuning.md`.
+   `docs/tuning.md`. The approver list and approval limit (`controls.py`) are not thresholds:
+   they are company facts, stated in a controls file and never tuned.
 8. **The LLM never decides anything.** It explains flags and suggests evidence. A named human
    records every accept / dismiss / escalate. Decisions and narratives are append-only, enforced
    by SQLite triggers, and each decision records the narrative it was made against. The MCP
@@ -445,12 +492,12 @@ unhelpful. Say so wherever the number is quoted.
   hand; `ci.yml` also runs on a pull request), so a change to them is checked by
   `tests/test_workflows.py` before it is pushed, and its commands are run by hand first. A
   `ledgerlens` command added to a workflow is added to that file's `COMMANDS` table.
-- Text that came from a ledger is data. Where it leaves the machine it is made inert: the
-  summary's markdown through `summary.md_code`, a prompt through the data-not-instructions
-  rule, a refusal through `ascii` of the id it quotes, the workpaper's string cells written
+- Text that came from a ledger, or from a ledger's controls file, is data. Where it leaves the
+  machine it is made inert: the summary's markdown through `summary.md_code`, a prompt
+  through the data-not-instructions rule, a refusal through `ascii` of the id it quotes, the workpaper's string cells written
   as text (openpyxl would store one beginning with `=` as a formula), the CLI's own lines
-  through `summary.one_line`, and in the dashboard a flag's reason as a code span
-  (`summary.md_code`) and the note's prose with its markdown escaped (`app.md`: no construct
+  through `summary.one_line`, and in the dashboard a flag's reason and an approver's name as
+  code spans (`summary.code_span`) and the note's prose with its markdown escaped (`app.md`: no construct
   forms, though Streamlit still links a bare URL and redraws `->`); its tables are drawn as
   text. `summary.py` and its tests stay ASCII
   (pinned by a test), because their patterns name characters that could not be reviewed if
