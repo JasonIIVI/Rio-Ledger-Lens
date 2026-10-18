@@ -15,6 +15,7 @@ the baseline is sloppy.
 from __future__ import annotations
 
 import random
+import warnings
 from datetime import date, datetime, timedelta
 
 import numpy as np
@@ -228,8 +229,7 @@ def _inject_round_amounts(b: _EntryBuilder, days: list[date], n: int) -> None:
               AnomalyType.ROUND_AMOUNT)
 
 
-def _inject_weekend(b: _EntryBuilder, start: date, end: date, n: int) -> None:
-    weekends = [d for d in _all_days(start, end) if d.weekday() >= 5]
+def _inject_weekend(b: _EntryBuilder, weekends: list[date], n: int) -> None:
     for _ in range(n):
         day = b.rng.choice(weekends)
         pair = b.rng.choice(COMMON_PAIRS)
@@ -249,8 +249,7 @@ def _inject_after_hours(b: _EntryBuilder, days: list[date], n: int) -> None:
               AnomalyType.AFTER_HOURS_ENTRY)
 
 
-def _inject_holiday(b: _EntryBuilder, start: date, end: date, n: int) -> None:
-    holidays = [d for d in _all_days(start, end) if is_us_holiday(d) and d.weekday() < 5]
+def _inject_holiday(b: _EntryBuilder, holidays: list[date], n: int) -> None:
     for _ in range(n):
         day = b.rng.choice(holidays)
         pair = b.rng.choice(COMMON_PAIRS)
@@ -259,17 +258,12 @@ def _inject_holiday(b: _EntryBuilder, start: date, end: date, n: int) -> None:
               b.rng.choice(USERS), AnomalyType.HOLIDAY_ENTRY)
 
 
-def _inject_period_end_revenue(b: _EntryBuilder, start: date, end: date, n: int) -> None:
+def _inject_period_end_revenue(b: _EntryBuilder, candidates: list[date], n: int) -> None:
     """Manual entries crediting revenue in the last three days of a period.
 
     This is the classic revenue cut-off / management-override pattern that
     AU-C 240 tells auditors to go looking for.
     """
-    candidates = []
-    for d in _all_days(start, end):
-        last_day = _month_end(d)
-        if (last_day - d).days <= 2:
-            candidates.append(d)
     for _ in range(n):
         day = b.rng.choice(candidates)
         amount = _lognormal_amount(b.nprng, mean=8.0, sigma=0.6)  # deliberately large
@@ -370,6 +364,19 @@ def _month_end(d: date) -> date:
     return date(d.year, d.month + 1, 1) - timedelta(days=1)
 
 
+def _weekend_days(start: date, end: date) -> list[date]:
+    return [d for d in _all_days(start, end) if d.weekday() >= 5]
+
+
+def _weekday_holidays(start: date, end: date) -> list[date]:
+    return [d for d in _all_days(start, end) if is_us_holiday(d) and d.weekday() < 5]
+
+
+def _period_end_days(start: date, end: date) -> list[date]:
+    """The last three days of each month, weekends included."""
+    return [d for d in _all_days(start, end) if (_month_end(d) - d).days <= 2]
+
+
 # --- public API -------------------------------------------------------------
 
 #: Relative weight of each archetype in the injected population. Roughly
@@ -389,19 +396,36 @@ ANOMALY_MIX: dict[str, float] = {
     AnomalyType.UNBALANCED_ENTRY: 0.02,
 }
 
+#: Each injector draws its days from the list it is given: the business days,
+#: unless the archetype is in `_CALENDAR_DAYS`.
 _INJECTORS = {
-    AnomalyType.ROUND_AMOUNT: lambda b, d, s, e, n: _inject_round_amounts(b, d, n),
-    AnomalyType.WEEKEND_ENTRY: lambda b, d, s, e, n: _inject_weekend(b, s, e, n),
-    AnomalyType.AFTER_HOURS_ENTRY: lambda b, d, s, e, n: _inject_after_hours(b, d, n),
-    AnomalyType.HOLIDAY_ENTRY: lambda b, d, s, e, n: _inject_holiday(b, s, e, n),
-    AnomalyType.PERIOD_END_MANUAL_REVENUE: lambda b, d, s, e, n: _inject_period_end_revenue(b, s, e, n),
-    AnomalyType.JUST_UNDER_THRESHOLD: lambda b, d, s, e, n: _inject_just_under_threshold(b, d, n),
-    AnomalyType.DUPLICATE_ENTRY: lambda b, d, s, e, n: _inject_duplicates(b, d, n),
-    AnomalyType.RARE_ACCOUNT_PAIR: lambda b, d, s, e, n: _inject_rare_pairs(b, d, n),
-    AnomalyType.DORMANT_ACCOUNT: lambda b, d, s, e, n: _inject_dormant(b, d, n),
-    AnomalyType.BENFORD_DRIFT: lambda b, d, s, e, n: _inject_benford_drift(b, d, n),
-    AnomalyType.UNBALANCED_ENTRY: lambda b, d, s, e, n: _inject_unbalanced(b, d, n),
+    AnomalyType.ROUND_AMOUNT: _inject_round_amounts,
+    AnomalyType.WEEKEND_ENTRY: _inject_weekend,
+    AnomalyType.AFTER_HOURS_ENTRY: _inject_after_hours,
+    AnomalyType.HOLIDAY_ENTRY: _inject_holiday,
+    AnomalyType.PERIOD_END_MANUAL_REVENUE: _inject_period_end_revenue,
+    AnomalyType.JUST_UNDER_THRESHOLD: _inject_just_under_threshold,
+    AnomalyType.DUPLICATE_ENTRY: _inject_duplicates,
+    AnomalyType.RARE_ACCOUNT_PAIR: _inject_rare_pairs,
+    AnomalyType.DORMANT_ACCOUNT: _inject_dormant,
+    AnomalyType.BENFORD_DRIFT: _inject_benford_drift,
+    AnomalyType.UNBALANCED_ENTRY: _inject_unbalanced,
 }
+
+#: The archetypes that land on days other than business days: the days each is
+#: drawn from, and what a range with none of them lacks. A range with no
+#: business day is refused outright, so these are the only archetypes a short
+#: range can leave with nowhere to go.
+_CALENDAR_DAYS = {
+    AnomalyType.WEEKEND_ENTRY: (_weekend_days, "no Saturday or Sunday"),
+    AnomalyType.HOLIDAY_ENTRY: (_weekday_holidays, "no federal holiday on a weekday"),
+    AnomalyType.PERIOD_END_MANUAL_REVENUE: (_period_end_days,
+                                            "none of the last three days of a month"),
+}
+
+
+class ArchetypeSkipped(UserWarning):
+    """A range has no day an archetype can land on, so the ledger is generated without it."""
 
 
 def generate_ledger(
@@ -416,22 +440,42 @@ def generate_ledger(
     Returns ``(lines, labels)``. ``lines`` is the GL extract in the shape
     defined by :mod:`ledgerlens.schema`; ``labels`` is one row per entry with
     the ground truth, kept separate so detection code cannot cheat.
+
+    A short range may hold no weekend, no weekday federal holiday or none of
+    a month's last three days. The archetype that lands there is then left
+    out, with an :class:`ArchetypeSkipped` warning naming it, and the other
+    archetypes keep their counts. A range with no business day at all is
+    refused with a ``ValueError``.
     """
     if not 0 <= anomaly_rate < 1:
         raise ValueError("anomaly_rate must be in [0, 1)")
     if end < start:
-        raise ValueError("end must not precede start")
+        raise ValueError(f"end {end} precedes start {start}")
+    business = _business_days(start, end)
+    if not business:
+        # No normal activity, and nowhere for the eight archetypes drawn from
+        # business days: the ledger would be nothing but exceptions, and every
+        # number measured on it would mean nothing.
+        raise ValueError(f"{start}..{end} has no business day (each day is a weekend or a "
+                         "federal holiday), so there is no normal activity to generate")
 
     b = _EntryBuilder(seed)
-    business = _business_days(start, end)
     _generate_normal(b, business, entries_per_day)
 
     normal_count = len(b.labels)
     total_anomalies = max(len(ANOMALY_MIX), int(round(normal_count * anomaly_rate)))
 
     for archetype, weight in ANOMALY_MIX.items():
+        days = business
+        if archetype in _CALENDAR_DAYS:
+            where, lacking = _CALENDAR_DAYS[archetype]
+            days = where(start, end)
+            if not days:
+                warnings.warn(f"{start}..{end} has {lacking}, so no {archetype} anomaly was "
+                              "injected", ArchetypeSkipped, stacklevel=2)
+                continue
         n = max(1, int(round(total_anomalies * weight)))
-        _INJECTORS[archetype](b, business, start, end, n)
+        _INJECTORS[archetype](b, days, n)
 
     lines = pd.DataFrame(b.rows)
     labels = pd.DataFrame(b.labels)
