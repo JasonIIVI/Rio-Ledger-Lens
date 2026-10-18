@@ -347,9 +347,11 @@ and the MCP SDK, so the two together cover every code path CI will see.
   - **The held-out ledger.** `schema.HeldOutType` (five archetypes, 43 entries,
     `generate.HELD_OUT_MIX`), injected only by `generate_ledger(held_out=True)` /
     `generate --held-out` (`heldout-ledger.csv`, never `ledger.csv`), from their own streams and
-    numbered last, so the rest of that ledger is the one the seed gives alone. Each is
-    rule-silent by construction, and the tests check it on four development seeds (no flag on a
-    held-out entry, no other entry's flags moved). `--held-out` without `--seed` uses
+    numbered last, so the rest of that ledger is the one the seed gives alone. Each is built
+    to be rule-silent (JET-01 to 06, 10 and 12 by construction; JET-07, 08, 09 and 11 read the
+    population), and the tests check it on four development seeds (no flag on a held-out
+    entry, no other entry's (entry, test) flag counts moved); on other seeds the held-out lines
+    can move another entry's JET-11 flag (`docs/limitations.md`). `--held-out` without `--seed` uses
     `HELD_OUT_SEED`; `tests/conftest.py` fails any test that generates with it.
   - **The surfaces.** `evaluate.budget_recall_by_archetype` and `held_out_budget` (the
     model's budget against chance, n x B / P), printed by `score --labels` and on the
@@ -363,11 +365,20 @@ and the MCP SDK, so the two together cover every code path CI will see.
     dormant entry at any setting). `TUNING_NOTE`, the workpaper and the README no longer say
     the thresholds were tuned: only JET-11's was chosen. `docs/limitations.md` registers the
     measurement before it is made. Version 1.1.0.
+  - **The review** (one reviewer, scratch clone, no held-out seed, no held-out scoring) found no
+    value read wrong, crash or regression; fixed before the freeze: the caveat and
+    `NOT_DEFINITIONAL` now say which test catches the three depends on the draw (JET-08
+    catches all seven rare pairs on seed 101), `HELD_OUT_NOTE` no longer says "by
+    construction", attribution lists held-out rows first, the seed guard moved to
+    `pytest_configure` and covers `_HeldOutStreams`, the held-out line `score` prints is
+    pinned whole, and four tests that could not fail were tightened; the docs say where rule
+    silence rests on construction and where on seeds, and close three gaps in the
+    registration (the environment and versions, no controls file, the old archetypes' total).
 - **Next** — the freeze (tag `held-out-freeze` on the green head), then the one measurement:
   `generate --held-out`, `test` and `score` with its labels, pasted verbatim into
   `docs/limitations.md` and the README, with no commit touching `src/` or `app.py` after the
   tag. Then v1.1.0.
-- 1018 tests on 3.9 (1 skipped) / 1032 on 3.12 (the fourteen MCP tests need 3.10+), ruff clean.
+- 1019 tests on 3.9 (1 skipped) / 1033 on 3.12 (the fourteen MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
@@ -443,8 +454,9 @@ ledger CSV ──▶ ingest ──┼──▶ Isolation Forest ─────�
    reviewer instead of saving it.
 6. **A flag is a question, not a finding.** Word all reasons and narratives accordingly; never
    assert an error or speculate about intent.
-7. **Thresholds are tuned against labelled data, not chosen for roundness.** Record the sweep in
-   `docs/tuning.md`. The approver list and approval limit (`controls.py`) are not thresholds:
+7. **A threshold is chosen against labelled data, never for roundness, and every sweep is
+   recorded in `docs/tuning.md`.** Only JET-11's was chosen on the default ledger; the other
+   settings are swept there and left, because that ledger cannot choose them. The approver list and approval limit (`controls.py`) are not thresholds:
    they are company facts, stated in a controls file and never tuned.
 8. **The LLM never decides anything.** It explains flags and suggests evidence. A named human
    records every accept / dismiss / escalate. Decisions and narratives are append-only, enforced

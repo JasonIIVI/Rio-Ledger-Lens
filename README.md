@@ -139,8 +139,8 @@ test finds weekend entries. Recall near 1.0 on those archetypes is a tautology, 
 achievement.
 
 The other three are not circular, but they are not measurements of detection either:
-the test written for each catches half of them or fewer, and tests written for something
-else catch the rest. Which test caught what (`ledgerlens test --labels` prints this table;
+which test catches them depends on the draw, and on this ledger the test written for each
+catches half of them or fewer, and tests written for something else catch the rest. Which test caught what (`ledgerlens test --labels` prints this table;
 "by other tests" counts entries any other test flagged, the intended one too or not):
 
 | Archetype | Test written for it | Caught | By that test | By other tests |
@@ -252,11 +252,12 @@ kind of flag a reviewer dismisses in seconds.
 
 Measuring the model as a detector needs anomalies no rule describes.
 `ledgerlens generate --held-out` writes a second ledger, `heldout-ledger.csv` (with
-`heldout-labels.csv`; `ledger.csv` is left alone), that adds five archetypes written so that no
-test fires on them: a token amount, an unfamiliar user, a purchase split across three entries,
-a round trip of cash, and a drip of small payments to a near-miss vendor name. The rule tier
-catches none of them by construction, so what is measured is how many of them the model's
-budget holds, against chance (`ledgerlens score --labels` prints it).
+`heldout-labels.csv`; `ledger.csv` is left alone), that adds five archetypes built so that no
+test should fire on them (checked on development seeds): a token amount, an unfamiliar user, a
+purchase split across three entries, a round trip of cash, and a drip of small payments to a
+near-miss vendor name. The rule tier is built to catch none of them, so what is measured is
+how many of them the model's budget holds, against chance (`ledgerlens score --labels` prints
+it).
 
 That ledger is generated once, after the code is frozen at the tag `held-out-freeze`, with a
 seed nothing had generated with before, and what is reported was written down before it

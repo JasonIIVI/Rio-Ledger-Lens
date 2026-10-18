@@ -1,10 +1,11 @@
 # Tuning notes
 
 One threshold in LedgerLens, JET-11's, was chosen by measuring against the labelled ledger.
-Every other test's setting is swept below on the same ledger, and none was changed: most
-are flat across the range swept, or sit at the edge of the generator's own definition,
-because the generator injects most archetypes by the definition their test checks. This
-ledger cannot choose them. The tables are computed by `tests/test_tuning.py` and looked
+Every other test's setting is swept below on the same ledger, and none was changed. JET-01
+and JET-10 are flat across the whole range swept; JET-03, 05, 06 and 07 are flat over most of
+it, with the default at or inside the edge of the generator's own definition, because the
+generator injects those archetypes by the definition their test checks; JET-08 and JET-09
+move, for reasons the generator's draw explains. This ledger cannot choose any of them. The tables are computed by `tests/test_tuning.py` and looked
 for here, so a figure that moves fails a test. Every table counts flags and entries
 separately, precision per entry as `evaluate.precision_by_test` reports it, and, for a
 test written for an archetype, how many of that archetype's entries it catches.
