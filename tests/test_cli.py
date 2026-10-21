@@ -19,6 +19,49 @@ def test_generate_writes_both_files(tmp_path):
     assert (tmp_path / "labels.csv").exists()
 
 
+def test_generate_held_out_writes_its_own_files_and_leaves_the_ledger_alone(tmp_path, capsys):
+    import pandas as pd
+
+    from ledgerlens.schema import HeldOutType
+
+    (tmp_path / "ledger.csv").write_text("left alone\n")
+    code = main(["generate", "--held-out", "--seed", "101", "--start", "2024-01-01",
+                 "--end", "2024-03-31", "--out-dir", str(tmp_path)])
+    assert code == 0
+    assert (tmp_path / "ledger.csv").read_text() == "left alone\n"
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        "heldout-labels.csv", "heldout-ledger.csv", "ledger.csv"]
+    labels = pd.read_csv(tmp_path / "heldout-labels.csv", keep_default_na=False)
+    assert set(HeldOutType.ALL) <= set(labels["anomaly_type"])
+    out = capsys.readouterr().out
+    assert str(tmp_path / "heldout-ledger.csv") in out and ", 43 of them held out) to " in out
+
+
+def test_generate_held_out_without_a_seed_uses_the_held_out_seed(tmp_path, monkeypatch):
+    """Without --seed, --held-out gives the measured ledger's seed (docs/limitations.md)."""
+    from ledgerlens import cli
+    from ledgerlens.generate import HELD_OUT_SEED
+
+    seen, real = {}, cli.generate_ledger
+
+    def spy(**kwargs):
+        seen.update(kwargs)
+        return real(**kwargs)
+
+    monkeypatch.setattr(cli, "generate_ledger", spy)
+    assert main(["generate", "--held-out", "--start", "2024-01-01", "--end", "2024-01-31",
+                 "--out-dir", str(tmp_path)]) == 0
+    assert seen["seed"] == HELD_OUT_SEED and seen["held_out"] is True
+
+
+def test_generate_without_held_out_still_uses_the_default_seed(tmp_path):
+    for name, seed in (("plain", []), ("seeded", ["--seed", "20260922"])):
+        main(["generate", "--start", "2024-01-01", "--end", "2024-01-31", *seed,
+              "--out-dir", str(tmp_path / name)])
+    for name in ("ledger.csv", "labels.csv"):
+        assert (tmp_path / "plain" / name).read_bytes() == (tmp_path / "seeded" / name).read_bytes()
+
+
 def test_generate_says_which_archetype_a_short_range_left_out(tmp_path, capsys):
     code = main(["generate", "--start", "2024-01-01", "--end", "2024-01-10",
                  "--out-dir", str(tmp_path)])
@@ -71,6 +114,13 @@ def test_test_command_runs_against_generated_data(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "Precision" in out
     assert "Recall by archetype" in out
+    # recall alone cannot say whether the test written for an archetype is what caught it
+    table = out.split("Caught by the test written for each archetype, or by others:\n", 1)[1]
+    header = table.splitlines()[0].split()
+    assert header == ["anomaly_type", "intended_test", "n", "caught", "by_intended_test",
+                      "by_other_tests", "only_by_other_tests", "missed"]
+    benford = next(line.split() for line in table.splitlines() if line.split()[:1] == ["benford_drift"])
+    assert benford[1] == "none"  # no test was written for it, said in a word, not left blank
 
 
 def test_test_command_can_run_a_single_test(tmp_path, capsys):
@@ -1034,8 +1084,8 @@ def test_summary_prints_one_page_whose_numbers_are_the_test_commands(two_ledgers
                     "Tier agreement", "not a measure of quality",
                     "Detection against the labels (rule tier only)", "Top 10 by rule score", "Notes"):
         assert heading in page
-    assert "a question, not a finding" in page and "nine of eleven" in page
-    assert page.index("nine of eleven") < page.index("Precision")
+    assert "a question, not a finding" in page and "eight of eleven" in page
+    assert page.index("eight of eleven") < page.index("Precision")
 
 
 @pytest.mark.parametrize("extra", [[], ["--db", "no-such-review.sqlite"]])
@@ -1172,7 +1222,7 @@ def test_summary_of_a_quickbooks_pull_measures_nothing_and_says_why(qbo_env, cap
         assert main(["summary", str(out), "--format", fmt]) == 0
         page = capsys.readouterr().out
         assert "qbo:sandbox-fixtures" in page
-        assert "Precision" not in page and "nine of eleven" not in page
+        assert "Precision" not in page and "eight of eleven" not in page
         assert "Detection against" not in page and '"detection"' not in page
         assert "No labels were given, so detection quality was not measured" in " ".join(page.split())
         assert "not the generator's default ledger" in " ".join(page.split())
@@ -1364,7 +1414,7 @@ def test_test_and_score_print_the_caveat_ahead_of_the_numbers_it_qualifies(two_l
     # without labels there is no measured number, and so no caveat to print
     assert main(["test", ledger]) == 0 and main(["score", ledger]) == 0
     unlabelled = capsys.readouterr().out
-    assert "nine of eleven" not in unlabelled and "same circularity" not in unlabelled
+    assert "eight of eleven" not in unlabelled and "same circularity" not in unlabelled
 
 
 def test_eval_narratives_judges_and_writes_one_path_tilde_included(tmp_path, monkeypatch, capsys):
@@ -1771,6 +1821,39 @@ def test_generate_says_when_a_controls_file_already_sits_beside_the_new_ledger(t
     os.symlink(tmp_path / "gone.json", controls_path(tmp_path / "ledger.csv"))  # refused, so said
     assert main(argv) == 0
     assert "Note: " in capsys.readouterr().out
+
+
+def test_score_puts_each_archetype_against_the_models_budget(tmp_path, capsys):
+    """Normal entries relabelled as held out stand in for the real ones: no test scores a
+    held-out recipe before the measurement."""
+    import pandas as pd
+
+    from ledgerlens import evaluate
+
+    main(["generate", "--start", "2024-01-01", "--end", "2024-06-30", "--out-dir", str(tmp_path)])
+    ledger = str(tmp_path / "ledger.csv")
+    assert main(["score", ledger, "--out", str(tmp_path / "combined.csv")]) == 0
+    combined = pd.read_csv(tmp_path / "combined.csv", keep_default_na=False)
+    labels = pd.read_csv(tmp_path / "labels.csv", keep_default_na=False)
+    normal = combined.loc[~combined["entry_id"].isin(labels.loc[labels["is_anomaly"], "entry_id"])
+                          & ~combined["rule_flag"]]  # stand-ins for held-out entries: no rule fired
+    picked = list(normal.loc[normal["model_flag"], "entry_id"][:5]) + list(
+        normal.loc[~normal["model_flag"], "entry_id"][:3])  # five in the budget, three not
+    labels.loc[labels["entry_id"].isin(picked), ["is_anomaly", "anomaly_type"]] = [True, "token_amount"]
+    labels.to_csv(tmp_path / "relabelled.csv", index=False)
+    capsys.readouterr()
+    assert main(["score", ledger, "--labels", str(tmp_path / "relabelled.csv")]) == 0
+    out = capsys.readouterr().out
+    table = out.split("--- each archetype against the model's budget ---\n", 1)[1]
+    assert table.splitlines()[0].split() == [
+        "anomaly_type", "n", "rule_caught", "model_in_budget", "chance", "model_recall"]
+    assert table.splitlines()[1].split()[:4] == ["token_amount", "8", "0", "5"]  # held out first
+    budget, population = int(combined["model_flag"].sum()), len(combined)
+    chance = 8 * budget / population
+    assert ("Held-out archetypes, which no test describes: 5 of 8 in the budget "
+            f"({budget:,} of {population:,} entries), against {chance:.2f} by chance "
+            f"({5 / chance:.1f}x).") in out
+    assert out.index(evaluate.MODEL_TIER_CAVEAT[:40]) < out.index("--- each archetype against")
 
 
 def test_report_score_and_narrate_flag_a_pull_by_its_companys_controls(qbo_env, capsys, monkeypatch, llm):

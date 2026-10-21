@@ -128,22 +128,46 @@ Against the default two-year synthetic ledger (5,085 entries, 77 injected anomal
 | Metric | Value | How to read it |
 |---|---|---|
 | Precision | **0.843** | 75 of the 89 flagged entries were injected anomalies. 13 of the 14 that were not come from JET-12, which describes the control environment rather than the entry. |
-| Recall | **0.974** | 75 of 77 found, and partly circular: nine of the eleven archetypes are injected by the definition their test looks for. The two that are measured: `benford_drift` 3 of 4 (0.75) and `rare_account_pair` 6 of 7 (0.86). |
+| Recall | **0.974** | 75 of 77 found, and partly circular: eight of the eleven archetypes are injected by the definition their test looks for. The other three are caught mostly by tests written for something else (the table below). |
 | F1 | **0.904** | The harmonic mean of the two above, so it inherits the circularity. |
 | Flag rate | 1.75% of population | 89 of 5,085 entries. How much review the rule tier asks for, not how good it is. |
 
-**Read those numbers sceptically, because they are partly circular.** For nine of the
+**Read those numbers sceptically, because they are partly circular.** For eight of the
 eleven anomaly archetypes, the generator injects the anomaly using the same definition
 the test looks for. Weekend entries are injected as weekend entries, and the weekend
 test finds weekend entries. Recall near 1.0 on those archetypes is a tautology, not an
 achievement.
 
-The parts that are *not* circular, and are therefore the parts worth discussing:
+The other three are not circular, but they are not measurements of detection either:
+which test catches them depends on the draw, and on this ledger the test written for each
+catches half of them or fewer, and tests written for something else catch most of the others. Which test caught what (`ledgerlens test --labels` prints this table;
+"by other tests" counts entries any other test flagged, the intended one too or not):
 
-- **Benford drift: 0.75 recall.** Nothing defines these entries as anomalous except
-  the statistical shape of their amounts. One of four slipped through.
-- **Rare account pairs: 0.86 recall.** The baseline is learned from the population,
-  not hardcoded, so the test can genuinely miss.
+| Archetype | Test written for it | Caught | By that test | By other tests |
+|---|---|---|---|---|
+| `round_amount` | JET-01 | 11 of 11 | 11 | 7 |
+| `weekend_entry` | JET-02 | 10 of 10 | 10 | 6 |
+| `after_hours_entry` | JET-03 | 9 of 9 | 9 | 7 |
+| `holiday_entry` | JET-04 | 4 of 4 | 4 | 0 |
+| `period_end_manual_revenue` | JET-05 | 8 of 8 | 8 | 4 |
+| `just_under_threshold` | JET-06 | 8 of 8 | 8 | 4 |
+| `duplicate_entry` | JET-07 | 10 of 10 | 10 | 3 |
+| `rare_account_pair` | JET-08 | 6 of 7 | 3 | 6 |
+| `dormant_account` | JET-09 | 4 of 4 | 0 | 4 |
+| `benford_drift` | none | 3 of 4 | — | 3 |
+| `unbalanced_entry` | JET-10 | 2 of 2 | 2 | 2 |
+
+- **Benford drift: 0.75 recall, all of it JET-12's.** The injector keys each of these as
+  a manual entry by a user picked at random, and JET-12 flags those keyed by someone
+  outside the approver list. No test reads the shape of the amounts: Benford analysis is
+  reported beside the queue, never raised as a flag. The one it missed was keyed by an
+  approver.
+- **Rare account pairs: 0.86 recall, half of it JET-08's.** JET-08's baseline is learned
+  from the population, not hardcoded, so it can genuinely miss: it caught three of the
+  seven, and JET-09 and JET-12 caught three more.
+- **Dormant accounts: 1.00 recall, none of it JET-09's.** The injector posts to an account
+  the ledger rarely uses, not to one that was active and then quiet for 120 days, which is
+  what JET-09 looks for. JET-08 and JET-12 catch them instead.
 - **JET-12 produces 13 of the 14 false positives.** Excluding it, the rule layer
   generates exactly **one** false positive across 5,085 entries. That is not a bug:
   JET-12 describes the *control environment* rather than any individual entry, and a
@@ -223,6 +247,48 @@ is a test asserting it stays true.
 One honest false-positive pattern: the model repeatedly flags system-posted depreciation entries,
 because `system` is a rare `created_by` value. Structurally unusual, operationally boring - the
 kind of flag a reviewer dismisses in seconds.
+
+### The held-out ledger
+
+Measuring the model as a detector needs anomalies no rule describes.
+`ledgerlens generate --held-out` writes a second ledger, `heldout-ledger.csv` (with
+`heldout-labels.csv`; `ledger.csv` is left alone), that adds five archetypes built so that no
+test should fire on them (checked on development seeds): a token amount, an unfamiliar user, a
+purchase split across three entries, a round trip of cash, and a drip of small payments to a
+near-miss vendor name. The rule tier is built to catch none of them, so what is measured is
+how many of them the model's budget holds, against chance (`ledgerlens score --labels` prints
+it).
+
+That ledger was generated once, after the code was frozen at the tag `held-out-freeze`, with a
+seed nothing had generated with before, and what is reported was written down before it
+existed: [docs/limitations.md](docs/limitations.md), which also carries the output as printed.
+Measured on 2026-10-18, the same on Python 3.12 and 3.9:
+
+| Held-out archetype | Entries | Rule tier caught | In the model's budget | By chance |
+|---|---:|---:|---:|---:|
+| `token_amount` | 8 | 0 | 6 | 0.16 |
+| `unfamiliar_user` | 8 | 0 | 0 | 0.16 |
+| `split_purchase` | 9 | 0 | 0 | 0.18 |
+| `round_trip` | 8 | 0 | 0 | 0.16 |
+| `shell_vendor_drip` | 10 | 0 | 0 | 0.20 |
+| all held-out | 43 | 0 | 6 | 0.86 |
+
+Two recall figures, kept apart because they answer different questions:
+
+- **Circular.** On the same ledger the rule tier finds 74 of the 77 entries of the eleven
+  generator archetypes (0.961). As on the default ledger, those are mostly the definitions
+  read back.
+- **Not circular.** The model's budget, 103 of 5,138 entries (the top 2% by rank), holds 6
+  of the 43 held-out entries, against 0.86 by chance: 7.0 times chance, a recall of 0.14.
+
+All six are token amounts. By the reading registered beforehand (at least half of an
+archetype's entries in the budget), the model catches `token_amount`, six of eight, and
+none of the other four. It misses the unfamiliar user, although `user_freq` sees one. It
+also misses the three patterns that exist only between entries: the split purchase, the
+round trip and the drip. So the model tier catches one of the five, an amount under three
+dollars on an ordinary pair, which its `log_amount` feature sees by design, and none of the
+other four. That is one ledger, one seed and 43 entries of patterns written for this project,
+not real fraud.
 
 ## The narrative layer and the human loop
 
@@ -470,7 +536,7 @@ It scores nothing itself, and three rules shape what it prints:
 - **A number never travels without its caveat.** "A flag is a question, not a finding" is in
   every format. Precision and recall appear only with labels, under the heading "rule tier
   only", after the circularity caveat, with each archetype shown as caught-of-n and marked
-  *measured* or *definitional*. A ratio over nothing reads "undefined", not 0.000. The two
+  *not definitional* or *definitional*. A ratio over nothing reads "undefined", not 0.000. The two
   tiers get separate sections and are never added together; the model's count is called what
   it is, a budget (the top 2% by rank, ties included). The JSON carries the same caveats as
   fields, the detection caveat ahead of the figures, and says which ratios are defined, since
@@ -582,10 +648,14 @@ and reopen Claude Desktop:
       ledger is loaded, and a company's approver list and approval limit are read from a
       controls file beside its ledger, so JET-12 and JET-06 test a QuickBooks company
       against its own controls
-- [ ] **Next** — break the circularity: inject archetypes no rule describes and re-measure
-      both tiers against them
+- [x] **Week 5, last part** — break the circularity: which test caught each archetype, every
+      setting swept, and a held-out ledger of archetypes no rule describes, generated once
+      after the code was frozen, measuring the model tier against chance (v1.1.0)
 
 ## Limitations
+
+[docs/limitations.md](docs/limitations.md) says what the published numbers can carry, how
+the held-out measurement was registered before it was made, and what was seen before it.
 
 - Synthetic data cannot capture adaptive behaviour: real fraud adjusts to the controls
   looking for it.
@@ -599,8 +669,9 @@ and reopen Claude Desktop:
   by the controls they were made under.
 - The unsupervised tier cannot see cross-entry patterns such as duplicates, because its
   features are computed per entry.
-- Thresholds are tuned against this generator. Against a real ledger they are a
-  starting point, not a configuration.
+- Only JET-11's threshold was chosen against this generator; every other setting was swept
+  on it and left alone ([docs/tuning.md](docs/tuning.md)). Against a real ledger every
+  setting is a starting point, not a configuration.
 - The narrative eval grades properties (grounded, specific, non-assertive), not insight. A
   note can pass every check and still be unhelpful.
 - The QuickBooks pull handles single-currency companies only (a report without debit and

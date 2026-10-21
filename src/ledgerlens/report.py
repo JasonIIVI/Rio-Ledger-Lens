@@ -268,7 +268,8 @@ def build_workpaper(
             "  Non-conformity is a pointer, not a finding.",
             "",
             "Limitations",
-            "  Thresholds are tuned against synthetic data and are a starting point on a real ledger.",
+            "  Settings were measured against synthetic data (only JET-11's chosen there) and are a "
+            "starting point on a real ledger.",
             "  Synthetic anomalies do not adapt to the controls looking for them.",
             "  This is a demonstration of technique. It is not an audit procedure or professional advice.",
         ]

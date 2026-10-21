@@ -17,7 +17,7 @@ import pytest
 from ledgerlens import evaluate, jets, summary
 from ledgerlens.ledger_context import AGREEMENTS, CAVEAT, ENTRY_COLUMNS, LedgerContext
 from ledgerlens.review import DECISIONS, Decision, ReviewStore
-from ledgerlens.schema import AnomalyType
+from ledgerlens.schema import AnomalyType, HeldOutType
 
 TODAY = date(2001, 2, 3)  # never the day the suite runs: a run dated by the clock must differ
 ZWSP = "\u200b"
@@ -126,21 +126,24 @@ def test_detection_and_its_caveat_come_together_or_not_at_all(context, payload):
     assert summary.NO_LABELS_NOTE in unlabelled["notes"]
     for fmt in summary.FORMATS:
         text = summary.render(unlabelled, fmt)
-        assert "Precision" not in text and "Recall" not in text and "nine of eleven" not in text
+        assert "Precision" not in text and "Recall" not in text and "eight of eleven" not in text
 
 
-def test_archetypes_are_listed_measured_first_and_marked(default_context, labels):
+def test_archetypes_are_listed_not_definitional_first_and_marked(default_context, labels):
     built = summary.collect(default_context, labels=labels, today=TODAY)
     rows = built["detection"]["by_archetype"]
     assert {r["anomaly_type"] for r in rows} == set(AnomalyType.ALL)
-    measured = [r["anomaly_type"] for r in rows if r["definitional"] is False]
-    assert measured == sorted(evaluate.NON_CIRCULAR_ARCHETYPES)
-    assert [r["anomaly_type"] for r in rows[:len(measured)]] == measured  # they lead the table
-    rest = [r["anomaly_type"] for r in rows[len(measured):]]
-    assert rest == sorted(rest) and all(r["definitional"] is True for r in rows[len(measured):])
+    incidental = [r["anomaly_type"] for r in rows if r["definitional"] is False]
+    assert incidental == sorted(evaluate.NOT_DEFINITIONAL)
+    assert [r["anomaly_type"] for r in rows[:len(incidental)]] == incidental  # they lead the table
+    rest = [r["anomaly_type"] for r in rows[len(incidental):]]
+    assert rest == sorted(rest) and all(r["definitional"] is True for r in rows[len(incidental):])
     assert all(r["caught"] + r["missed"] == r["n"] for r in rows)
     markdown = summary.render(built, "markdown")
-    assert markdown.count("| measured |") == 2 and markdown.count("| definitional |") == 9
+    # "measured" claimed more than the attribution shows: these are caught by other tests
+    assert "measured |" not in markdown
+    assert markdown.count("| not definitional |") == 3 and markdown.count("| definitional |") == 8
+    assert summary.render(built, "text").count("  not definitional") == 3
     for row in rows:  # caught/n is printed beside every recall: 0.750 of four is not 0.750 of 400
         assert "{:,} of {:,}".format(row["caught"], row["n"]) in markdown
 
@@ -150,15 +153,62 @@ def test_the_archetype_order_is_the_summarys_own_not_recalls(context, small_ledg
     import pandas as pd
 
     table = pd.DataFrame({
-        "anomaly_type": ["weekend_entry", "benford_drift", "round_amount", "rare_account_pair"],
-        "n": [10, 4, 8, 7], "caught": [1, 4, 4, 7], "missed": [9, 0, 4, 0],
-        "recall": [0.1, 1.0, 0.5, 1.0],
+        "anomaly_type": ["weekend_entry", "dormant_account", "benford_drift", "round_amount",
+                         "rare_account_pair"],
+        "n": [10, 4, 4, 8, 7], "caught": [1, 4, 4, 4, 7], "missed": [9, 0, 0, 4, 0],
+        "recall": [0.1, 1.0, 1.0, 0.5, 1.0],
     })
     monkeypatch.setattr(evaluate, "recall_by_archetype", lambda flags, labels: table)
     rows = summary.collect(context, labels=small_ledger[1], today=TODAY)["detection"]["by_archetype"]
     assert [r["anomaly_type"] for r in rows] == [
-        "benford_drift", "rare_account_pair", "round_amount", "weekend_entry"]
-    assert [r["definitional"] for r in rows] == [False, False, True, True]
+        "benford_drift", "dormant_account", "rare_account_pair", "round_amount", "weekend_entry"]
+    assert [r["definitional"] for r in rows] == [False, False, False, True, True]
+
+
+def test_held_out_archetypes_are_read_as_held_out_and_lead_the_table(context, small_ledger):
+    labels = small_ledger[1].copy()
+    labels.loc[labels.index[labels["is_anomaly"]][:2], "anomaly_type"] = "token_amount"
+    built = summary.collect(context, labels=labels, today=TODAY)
+    rows = built["detection"]["by_archetype"]
+    assert rows[0]["anomaly_type"] == "token_amount"
+    assert rows[0]["held_out"] is True and rows[0]["definitional"] is None
+    assert all(r["held_out"] is False for r in rows[1:])
+    assert summary.HELD_OUT_NOTE in built["notes"]
+    assert "| held out |" in summary.render(built, "markdown")
+    assert "  held out" in summary.render(built, "text")
+    plain = summary.collect(context, labels=small_ledger[1], today=TODAY)
+    assert summary.HELD_OUT_NOTE not in plain["notes"]
+    # a held-out type on rows the labels call normal marks nothing held out
+    typed = small_ledger[1].copy()
+    typed.loc[typed.index[~typed["is_anomaly"]][:2], "anomaly_type"] = "token_amount"
+    assert summary.HELD_OUT_NOTE not in summary.collect(context, labels=typed, today=TODAY)["notes"]
+    # what the rule tier catches of them it catches by accident: never claimed to be none
+    assert "by construction" not in summary.HELD_OUT_NOTE and "by accident" in summary.HELD_OUT_NOTE
+    assert not any(r["held_out"] for r in plain["detection"]["by_archetype"])
+
+
+def test_every_held_out_archetype_is_read_as_held_out_in_the_generators_order(context, small_ledger):
+    labels = small_ledger[1].copy()
+    anomalous = labels.index[labels["is_anomaly"]]
+    kinds = list(reversed(HeldOutType.ALL))  # assigned out of order: the summary puts them in order
+    for i, kind in enumerate(kinds):
+        labels.loc[anomalous[i], "anomaly_type"] = kind
+    rows = summary.collect(context, labels=labels, today=TODAY)["detection"]["by_archetype"]
+    held = [r for r in rows if r["held_out"]]
+    assert [r["anomaly_type"] for r in held] == list(HeldOutType.ALL)
+    assert rows[:len(held)] == held and all(r["definitional"] is None for r in held)
+
+
+def test_the_tuning_note_claims_only_the_threshold_that_was_chosen():
+    """docs/tuning.md sweeps every setting; only JET-11's was chosen on the default ledger."""
+    assert "were tuned" not in summary.TUNING_NOTE
+    assert "only JET-11's was chosen there (docs/tuning.md)" in summary.TUNING_NOTE
+
+
+def test_the_default_controls_note_holds_for_a_generated_ledger_too():
+    """A ledger the generator made is the synthetic company's: its controls are its own."""
+    assert "not its own" not in summary.DEFAULT_CONTROLS_NOTE
+    assert "If this ledger is another company's, state its own" in summary.DEFAULT_CONTROLS_NOTE
 
 
 def test_an_archetype_the_generator_does_not_know_is_not_called_definitional(context, small_ledger):

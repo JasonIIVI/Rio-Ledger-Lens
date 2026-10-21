@@ -74,13 +74,42 @@ tool after week one.
 
 ## Known circularity
 
-Nine of the eleven archetypes are injected using the same definition the corresponding
+Eight of the eleven archetypes are injected using the same definition the corresponding
 test looks for, so their recall is near-tautological. This is stated plainly in the
 README rather than buried, because the alternative — quoting an unqualified 0.97 recall
 — would be misleading.
 
-The archetypes where detection is *not* definitional (Benford drift, rare account
-pairs) score 0.75 and 0.86 respectively, and are the honest measure of the rule layer.
+The other three (Benford drift, dormant accounts, rare account pairs) are not definitional,
+but they do not measure the rule layer either. Which test catches them depends on the draw
+(on seed 101 JET-08 catches all seven rare pairs). On the default ledger the test written for
+each catches half of them or fewer, and tests written for something else catch most of the others: JET-12 catches the
+Benford-drift entries keyed outside the approver list (the injector picks the keyer at
+random), and no test reads their amounts; JET-09 catches none of the dormant-account
+entries, which land on rarely used accounts rather than on ones that went quiet; JET-08
+catches three of the seven rare pairs. `evaluate.attribution` counts this, and
+`ledgerlens test --labels` prints it. Measuring detection needs anomalies no rule describes.
+
+## The held-out ledger
+
+Five archetypes no test describes (`schema.HeldOutType`) are injected only into an opt-in
+ledger, `generate_ledger(held_out=True)`. They draw from their own random streams and are
+numbered after every other entry, so the rest of that ledger is exactly the one the same seed
+gives without them, and the default ledger does not change at all. Each is built to be
+rule-silent: a business day and hour, a common pair whose source is neither Manual nor
+System, cents, nothing in the 3% beneath the approval limit, balanced. That silences JET-01 to
+06, 10 and 12 by construction; JET-07, 08, 09 and 11 read the population, so the tests check,
+on four development seeds, that no rule fires on a held-out entry and that every other entry
+keeps the flags it had (on other seeds the held-out lines can move another entry's JET-11
+flag, and on a tiny ledger JET-08's: `docs/limitations.md`).
+
+So the rule tier is built to catch none of them, and its recall on them measures nothing. The model tier is
+measured as a share of its budget: an archetype of n entries puts n x B / P of them in a
+budget of B entries out of P by chance (`evaluate.budget_recall_by_archetype`,
+`evaluate.held_out_budget`). The ledger is generated once, from the commit tagged
+`held-out-freeze`, with `HELD_OUT_SEED`, which no code had used before; what is reported was
+registered in `docs/limitations.md` before it existed. Measured on 2026-10-18: the rule tier
+caught none of the 43 held-out entries; the model's budget held 6 of them, all token amounts,
+against 0.86 by chance, and none of the other four archetypes.
 
 ## The QuickBooks connector
 

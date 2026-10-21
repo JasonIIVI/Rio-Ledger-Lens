@@ -22,11 +22,35 @@ from __future__ import annotations
 import pandas as pd
 
 from .ingest import plural, quote
-from .schema import AnomalyType
+from .schema import AnomalyType, HeldOutType
 
-#: The archetypes the generator does not inject by the very rule a test checks,
-#: so their recall is a measurement rather than the definition read back.
-NON_CIRCULAR_ARCHETYPES = (AnomalyType.BENFORD_DRIFT, AnomalyType.RARE_ACCOUNT_PAIR)
+#: The test written to find each archetype, in the generator's order. Benford drift
+#: has none: Benford analysis is reported beside the queue, never raised as a flag.
+INTENDED_TEST = {
+    AnomalyType.ROUND_AMOUNT: "JET-01",
+    AnomalyType.WEEKEND_ENTRY: "JET-02",
+    AnomalyType.AFTER_HOURS_ENTRY: "JET-03",
+    AnomalyType.HOLIDAY_ENTRY: "JET-04",
+    AnomalyType.PERIOD_END_MANUAL_REVENUE: "JET-05",
+    AnomalyType.JUST_UNDER_THRESHOLD: "JET-06",
+    AnomalyType.DUPLICATE_ENTRY: "JET-07",
+    AnomalyType.RARE_ACCOUNT_PAIR: "JET-08",
+    AnomalyType.DORMANT_ACCOUNT: "JET-09",
+    AnomalyType.BENFORD_DRIFT: None,
+    AnomalyType.UNBALANCED_ENTRY: "JET-10",
+}
+
+#: The archetypes the generator does not inject by exactly the definition their test
+#: checks (benford_drift has none), so which test catches them depends on the draw. On
+#: the default ledger the test written for them catches half of them or fewer and tests
+#: written for something else catch most of the others; on another seed JET-08 can catch every rare
+#: pair. Their recall is incidental either way: not the definition read back, and not a
+#: measure of detection.
+NOT_DEFINITIONAL = (
+    AnomalyType.BENFORD_DRIFT,
+    AnomalyType.DORMANT_ACCOUNT,
+    AnomalyType.RARE_ACCOUNT_PAIR,
+)
 
 #: Printed beside every rule-tier precision or recall the tool shows: `test`,
 #: `score` (whose segment table's "rules only" and "both" rows are the rule tier's
@@ -34,10 +58,12 @@ NON_CIRCULAR_ARCHETYPES = (AnomalyType.BENFORD_DRIFT, AnomalyType.RARE_ACCOUNT_P
 #: gate. It carries no figure: the numbers beside it move with the ledger, the
 #: reason to distrust them does not.
 DETECTION_CAVEAT = (
-    "Read these sceptically. For nine of eleven archetypes the generator injects the anomaly "
+    "Read these sceptically. For eight of eleven archetypes the generator injects the anomaly "
     "using the same definition the test looks for, so recall on those is close to "
-    "tautological. The honest figures are the archetypes where detection is not definitional: "
-    "benford_drift and rare_account_pair."
+    "tautological. The other three, benford_drift, dormant_account and rare_account_pair, are "
+    "not injected by exactly that definition, so which test catches them depends on the draw: "
+    "on the default ledger, mostly tests written for something else. Their recall says how "
+    "they happened to be injected, not how well anything detects them."
 )
 
 #: The same caveat for the model tier's segment and lift tables: `score` and the
@@ -45,7 +71,9 @@ DETECTION_CAVEAT = (
 MODEL_TIER_CAVEAT = (
     "The same circularity applies to the model tier: these anomalies were defined as rule "
     "violations, so almost every anomaly the model ranks highly, the rules had already caught. "
-    "Read the lift as re-ranking of the rule tier's queue, not as independent detection."
+    "Read the lift as re-ranking of the rule tier's queue, not as independent detection. Only "
+    "the held-out archetypes, which no rule describes, measure it as a detector: how many of "
+    "them its budget holds, against chance."
 )
 
 
@@ -160,6 +188,71 @@ def recall_by_archetype(flags: pd.DataFrame, labels: pd.DataFrame) -> pd.DataFra
     return out.sort_values("recall").reset_index(drop=True)
 
 
+def attribution(flags: pd.DataFrame, labels: pd.DataFrame) -> pd.DataFrame:
+    """Which tests caught each archetype: the one written for it, or others.
+
+    Recall cannot tell a test doing its job from one written for something else
+    that happened to fire. ``by_other_tests`` counts the entries any other test
+    flagged, whether or not the intended one did too; ``only_by_other_tests``
+    the caught entries the intended test missed. ``intended_test`` is "" where
+    no test was written for the type. Rows: held-out archetypes, then the
+    generator's, then any other type by name, as in the budget table.
+    """
+    columns = ["anomaly_type", "intended_test", "n", "caught", "by_intended_test",
+               "by_other_tests", "only_by_other_tests", "missed"]
+    anomalies = labels[labels["is_anomaly"]]
+    if flags.empty:  # no flags may also mean no columns
+        flags = pd.DataFrame(columns=["entry_id", "test_id"])
+    rows = []
+    for archetype in _archetype_order(anomalies["anomaly_type"]):
+        ids = set(anomalies.loc[anomalies["anomaly_type"] == archetype, "entry_id"])
+        intended = INTENDED_TEST.get(archetype) or ""
+        hit = flags[flags["entry_id"].isin(ids)]
+        caught = set(hit["entry_id"])
+        mine = set(hit.loc[hit["test_id"] == intended, "entry_id"]) if intended else set()
+        other = set(hit.loc[hit["test_id"] != intended, "entry_id"])
+        rows.append({
+            "anomaly_type": archetype,
+            "intended_test": intended,
+            "n": len(ids),
+            "caught": len(caught),
+            "by_intended_test": len(mine),
+            "by_other_tests": len(other),
+            "only_by_other_tests": len(caught - mine),
+            "missed": len(ids - caught),
+        })
+    return pd.DataFrame(rows, columns=columns)
+
+
+def sweep(run, values, labels: pd.DataFrame, test_id: str | None = None) -> pd.DataFrame:
+    """One test at several settings: what it raises there, and how much of that is anomalous.
+
+    ``run(value)`` gives the test's flags at that setting; the caller runs the test, so
+    detection never sees the labels (rule 2). Precision is per entry, as everywhere
+    else. When ``test_id`` is the test written for an archetype (``INTENDED_TEST``),
+    ``intended_caught`` counts that archetype's entries it flags, of
+    ``intended_n``; otherwise both are None.
+    """
+    truth = set(labels.loc[labels["is_anomaly"], "entry_id"])
+    archetype = next((a for a, t in INTENDED_TEST.items() if t and t == test_id), None)
+    intended = (set(labels.loc[labels["anomaly_type"] == archetype, "entry_id"])
+                if archetype else None)
+    rows = []
+    for value in values:
+        flags = run(value)
+        flagged = set(flags["entry_id"]) if not flags.empty else set()
+        rows.append({
+            "value": value,
+            "flags_raised": len(flags),
+            "entries_flagged": len(flagged),
+            "true_positives": len(flagged & truth),
+            "precision": round(_safe_div(len(flagged & truth), len(flagged)), 4),
+            "intended_caught": None if intended is None else len(flagged & intended),
+            "intended_n": None if intended is None else len(intended),
+        })
+    return pd.DataFrame(rows)
+
+
 def precision_by_test(flags: pd.DataFrame, labels: pd.DataFrame) -> pd.DataFrame:
     """How trustworthy each individual test is.
 
@@ -269,6 +362,64 @@ def model_lift(
             "lift_vs_random": round(_safe_div(precision, base_rate), 1),
         })
     return pd.DataFrame(rows)
+
+
+def _archetype_order(present) -> list[str]:
+    """Held-out archetypes, then the generator's, each in its own order, then any other by name."""
+    present = set(present)
+    known = [a for a in (*HeldOutType.ALL, *AnomalyType.ALL) if a in present]
+    return known + sorted(present - set(known))
+
+
+def budget_recall_by_archetype(combined: pd.DataFrame, labels: pd.DataFrame) -> pd.DataFrame:
+    """Each archetype against the model tier's budget, and against chance.
+
+    The model tier flags a fixed share of the entries by rank, its budget: B of P.
+    An archetype of n entries puts n * B / P of them there by chance alone, so
+    ``chance`` is the count to beat. Only an archetype no rule describes measures
+    the model as a detector; ``rule_caught`` stands beside it to say which those
+    are. Rows: held-out archetypes first, then the generator's, then any other.
+    """
+    columns = ["anomaly_type", "n", "rule_caught", "model_in_budget", "chance", "model_recall"]
+    budget, population = int(combined["model_flag"].sum()), len(combined)
+    tiers = combined.set_index("entry_id")[["rule_flag", "model_flag"]]
+    anomalies = labels[labels["is_anomaly"]]
+    rows = []
+    for archetype in _archetype_order(anomalies["anomaly_type"]):
+        ids = anomalies.loc[anomalies["anomaly_type"] == archetype, "entry_id"]
+        hit = tiers.reindex(ids)  # an id the ledger lacks is in neither tier: eq(True) is False
+        n, in_budget = len(ids), int(hit["model_flag"].eq(True).sum())
+        rows.append({
+            "anomaly_type": archetype,
+            "n": n,
+            "rule_caught": int(hit["rule_flag"].eq(True).sum()),
+            "model_in_budget": in_budget,
+            "chance": round(_safe_div(n * budget, population), 2),
+            "model_recall": round(_safe_div(in_budget, n), 4),
+        })
+    return pd.DataFrame(rows, columns=columns)
+
+
+def held_out_budget(combined: pd.DataFrame, labels: pd.DataFrame) -> dict | None:
+    """The held-out archetypes together against the model's budget; None if the labels have none.
+
+    ``lift`` is how many times chance the budget holds (0.0 when chance is nothing).
+    """
+    held = labels[labels["is_anomaly"] & labels["anomaly_type"].isin(HeldOutType.ALL)]
+    if held.empty:
+        return None
+    budget, population = int(combined["model_flag"].sum()), len(combined)
+    in_budget = int(combined.loc[combined["entry_id"].isin(set(held["entry_id"])), "model_flag"].sum())
+    chance = _safe_div(len(held) * budget, population)
+    return {
+        "n": len(held),
+        "in_budget": in_budget,
+        "chance": round(chance, 2),
+        "recall": round(_safe_div(in_budget, len(held)), 4),
+        "lift": round(_safe_div(in_budget, chance), 1),
+        "budget": budget,
+        "population": population,
+    }
 
 
 def score_by_archetype(model_scores: pd.Series, labels: pd.DataFrame) -> pd.DataFrame:

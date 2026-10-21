@@ -32,6 +32,9 @@ def measured(ledger, labels):
     return {
         "metrics": evaluate.evaluate(flags, labels, ledger["entry_id"].unique()),
         "recall": evaluate.recall_by_archetype(flags, labels).set_index("anomaly_type"),
+        "attribution": evaluate.attribution(flags, labels).set_index("anomaly_type"),
+        "flags": flags,
+        "labels": labels,
         "by_test": evaluate.precision_by_test(flags, labels).set_index("test_id"),
         "tiers": evaluate.compare_tiers(combined, labels).set_index("segment"),
         "lift": evaluate.model_lift(scores, labels).set_index("top_n"),
@@ -45,14 +48,26 @@ def test_the_results_table_is_what_the_default_ledger_measures(measured):
     assert f"| Recall | **{m['recall']:.3f}** | {m['true_positives']} of {m['true_anomalies']} found" in README
     assert f"| F1 | **{m['f1']:.3f}** |" in README
     assert f"| Flag rate | {m['flag_rate']:.2%} of population | {m['flagged']} of {m['population']:,} entries" in README
-    drift, pair = measured["recall"].loc["benford_drift"], measured["recall"].loc["rare_account_pair"]
-    assert (f"`benford_drift` {int(drift.caught)} of {int(drift.n)} ({drift.recall:.2f}) and "
-            f"`rare_account_pair` {int(pair.caught)} of {int(pair.n)} ({pair.recall:.2f})") in README
     jet12 = measured["by_test"].loc["JET-12"]
     false_flags = int(jet12["entries_flagged"] - jet12["true_positives"])
     assert f"{false_flags} of the {m['false_positives']} that were not come from JET-12" in README
     # the caveat is in the table's own rows, not only in the paragraph after it
-    assert "and partly circular: nine of the eleven archetypes are injected by the definition" in README
+    circular = len(AnomalyType.ALL) - len(evaluate.NOT_DEFINITIONAL)
+    assert (f"and partly circular: {WORDS[circular]} of the {WORDS[len(AnomalyType.ALL)]} archetypes "
+            "are injected by the definition their test looks for. The other "
+            f"{WORDS[len(evaluate.NOT_DEFINITIONAL)]} are caught mostly by tests written for "
+            "something else") in README
+
+
+def test_the_attribution_table_is_what_the_default_ledger_measures(measured):
+    """Which test caught each archetype: the row for every archetype, as evaluate counts it."""
+    assert "| Archetype | Test written for it | Caught | By that test | By other tests |" in README
+    for archetype, row in measured["attribution"].iterrows():
+        mine = row.intended_test or "none"
+        by_mine = int(row.by_intended_test) if row.intended_test else "\u2014"
+        cells = (f"| `{archetype}` | {mine} | {int(row.caught)} of {int(row.n)} | {by_mine} "
+                 f"| {int(row.by_other_tests)} |")
+        assert cells in README, archetype
 
 
 def test_the_tier_and_lift_tables_are_what_the_default_ledger_measures(measured):
@@ -105,20 +120,50 @@ def test_the_archetype_table_and_the_benford_example_are_what_the_default_ledger
 
 def test_the_prose_repeats_the_tables_figures_and_computes_its_counts(measured, ledger):
     """The bullets and paragraphs restate the tables' figures in words; each is looked for as
-    the measured value spells it, and "nine of the eleven" comes from the archetype lists."""
+    the measured value spells it, and "eight of the eleven" comes from the archetype lists."""
     m = measured["metrics"]
     drift, pair = measured["recall"].loc["benford_drift"], measured["recall"].loc["rare_account_pair"]
+    dormant = measured["recall"].loc["dormant_account"]
+    share = measured["attribution"]
+    flags, labels = measured["flags"], measured["labels"]
+
+    def tests_on(ids):
+        return set(flags.loc[flags["entry_id"].isin(ids), "test_id"])
+
+    def ids_of(archetype):
+        return set(labels.loc[labels["anomaly_type"] == archetype, "entry_id"])
+
     jet12 = measured["by_test"].loc["JET-12"]
     false_flags = int(jet12["entries_flagged"] - jet12["true_positives"])
     rate = m["true_anomalies"] / m["population"]
     assert f"({m['population']:,} entries, {m['true_anomalies']} injected anomalies at {rate:.1%}):" in README
-    assert f"**Benford drift: {drift.recall:.2f} recall.**" in README
-    assert f"{WORDS[int(drift.missed)].capitalize()} of {WORDS[int(drift.n)]} slipped through." in README
-    assert f"**Rare account pairs: {pair.recall:.2f} recall.**" in README
+    # Benford drift: every one caught, caught by JET-12 alone; the one missed keyed by an approver
+    assert f"**Benford drift: {drift.recall:.2f} recall, all of it JET-12's.**" in README
+    assert tests_on(ids_of("benford_drift")) == {"JET-12"}
+    assert int(drift.missed) == 1 and "The one it missed was keyed by an approver." in README
+    missed = ids_of("benford_drift") - set(flags["entry_id"])
+    from ledgerlens.controls import DEFAULT_CONTROLS
+    keyed_by = set(ledger.loc[ledger["entry_id"].isin(missed), "created_by"])
+    assert keyed_by <= set(DEFAULT_CONTROLS.manual_entry_approvers)
+    # rare account pairs: half by JET-08, the rest only by JET-09 and JET-12
+    pairs = share.loc["rare_account_pair"]
+    assert int(pairs.by_intended_test) * 2 == int(pairs.caught)
+    assert f"**Rare account pairs: {pair.recall:.2f} recall, half of it JET-08's.**" in README
+    assert (f"it caught {WORDS[int(pairs.by_intended_test)]} of the {WORDS[int(pairs.n)]}, and JET-09 "
+            f"and JET-12 caught {WORDS[int(pairs.only_by_other_tests)]} more.") in README
+    by_jet08 = set(flags.loc[flags["test_id"] == "JET-08", "entry_id"])
+    assert tests_on(ids_of("rare_account_pair") - by_jet08) == {"JET-09", "JET-12"}
+    # dormant accounts: every one caught, none by JET-09, which waits for its default quiet spell
+    assert int(share.loc["dormant_account", "by_intended_test"]) == 0
+    assert f"**Dormant accounts: {dormant.recall:.2f} recall, none of it JET-09's.**" in README
+    quiet = inspect.signature(jets.jet_dormant_account).parameters["dormant_days"].default
+    assert f"not to one that was active and then quiet for {quiet} days" in README
+    assert tests_on(ids_of("dormant_account")) == {"JET-08", "JET-12"}
+    assert "JET-08 and JET-12 catch them instead." in README
     assert f"**JET-12 produces {false_flags} of the {m['false_positives']} false positives.**" in README
     assert m["false_positives"] - false_flags == 1
     assert f"exactly **one** false positive across {m['population']:,} entries" in README
-    circular = len(AnomalyType.ALL) - len(evaluate.NON_CIRCULAR_ARCHETYPES)
+    circular = len(AnomalyType.ALL) - len(evaluate.NOT_DEFINITIONAL)
     assert f"For {WORDS[circular]} of the {WORDS[len(AnomalyType.ALL)]} anomaly archetypes" in README
     assert f"{WORDS[circular]} of the {WORDS[len(AnomalyType.ALL)]} archetypes are injected by the definition" in README
     assert f"over {len(FEATURE_COLUMNS)} engineered per-entry features" in README

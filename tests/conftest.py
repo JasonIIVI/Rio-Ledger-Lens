@@ -15,6 +15,19 @@ from ledgerlens.ingest import prepare
 
 
 @pytest.fixture(scope="session")
+def held_out_raw():
+    """The held-out ledger as measured once, from the commit tagged held-out-freeze.
+
+    Until that measurement a guard here failed any test that generated with HELD_OUT_SEED;
+    since it, the ledger is pinned (``HELD_OUT_LEDGER_SHA256``) and what was printed is
+    reproduced by tests/test_limitations.py.
+    """
+    from ledgerlens.generate import HELD_OUT_SEED
+
+    return generate_ledger(seed=HELD_OUT_SEED, held_out=True)
+
+
+@pytest.fixture(scope="session")
 def raw_ledger():
     return generate_ledger(start=date(2024, 1, 1), end=date(2025, 12, 31), entries_per_day=10)
 

@@ -67,6 +67,52 @@ def test_recall_by_archetype_covers_all_injected_types(ledger, labels):
     assert (table["caught"] + table["missed"] == table["n"]).all()
 
 
+def test_attribution_says_which_test_caught_each_archetype():
+    labels = pd.DataFrame({
+        "entry_id": ["A", "B", "C", "D", "E", "F"],
+        "is_anomaly": [True, True, True, True, True, False],
+        "anomaly_type": ["round_amount", "round_amount", "weekend_entry", "benford_drift",
+                         "made_up", ""],
+    })
+    flags = pd.DataFrame({
+        "entry_id": ["A", "A", "A", "B", "C", "D", "F"],
+        "test_id": ["JET-01", "JET-01", "JET-12", "JET-12", "JET-12", "JET-12", "JET-01"],
+    })
+    table = evaluate.attribution(flags, labels).set_index("anomaly_type")
+    # the generator's archetypes in their own order, then any other type by name
+    assert list(table.index) == ["round_amount", "weekend_entry", "benford_drift", "made_up"]
+    assert table.loc["round_amount"].to_dict() == {
+        "intended_test": "JET-01", "n": 2, "caught": 2, "by_intended_test": 1,
+        "by_other_tests": 2, "only_by_other_tests": 1, "missed": 0}
+    assert table.loc["weekend_entry", "intended_test"] == "JET-02"
+    assert table.loc["weekend_entry", ["caught", "by_intended_test", "only_by_other_tests"]].tolist() == [1, 0, 1]
+    # no test was written for benford_drift, or for a type the generator does not know
+    assert table.loc["benford_drift", "intended_test"] == ""
+    assert table.loc["benford_drift", ["by_intended_test", "only_by_other_tests"]].tolist() == [0, 1]
+    assert table.loc["made_up", ["intended_test", "caught", "missed"]].tolist() == ["", 0, 1]
+    # a flag on an entry the labels call normal is no archetype's
+    assert table["by_other_tests"].sum() == 4
+    held = labels.assign(anomaly_type=labels["anomaly_type"].replace("made_up", "token_amount"))
+    assert list(evaluate.attribution(flags, held)["anomaly_type"])[0] == "token_amount"  # as elsewhere
+    empty = evaluate.attribution(pd.DataFrame(columns=["entry_id", "test_id"]), labels)
+    assert empty["caught"].sum() == 0 and empty["missed"].sum() == 5
+
+
+def test_eight_archetypes_are_caught_by_their_own_test_and_three_mostly_by_others(ledger, labels):
+    """What DETECTION_CAVEAT says, measured on the default ledger."""
+    from ledgerlens.schema import AnomalyType
+
+    assert list(evaluate.INTENDED_TEST) == list(AnomalyType.ALL)
+    assert {t for t in evaluate.INTENDED_TEST.values() if t} <= set(jets.REGISTRY)
+    table = evaluate.attribution(jets.run_all(ledger), labels).set_index("anomaly_type")
+    for archetype, row in table.iterrows():
+        if archetype in evaluate.NOT_DEFINITIONAL:
+            assert row.by_intended_test * 2 <= row.caught, archetype  # half or less of them
+            assert row.by_other_tests == row.caught > row.by_intended_test, archetype
+        else:
+            assert row.by_intended_test == row.caught == row.n, archetype
+
+
 def test_precision_by_test_is_bounded(ledger, labels):
     flags = jets.run_all(ledger)
     table = evaluate.precision_by_test(flags, labels)
@@ -167,12 +213,15 @@ def test_duplicates_are_invisible_to_entry_level_features(ledger, labels):
 def test_the_detection_caveat_counts_the_archetypes_it_names():
     from ledgerlens.schema import AnomalyType
 
-    circular = len(AnomalyType.ALL) - len(evaluate.NON_CIRCULAR_ARCHETYPES)
-    assert (circular, len(AnomalyType.ALL)) == (9, 11)  # the text says "nine of eleven"
-    assert "nine of eleven" in evaluate.DETECTION_CAVEAT
-    assert set(evaluate.NON_CIRCULAR_ARCHETYPES) <= set(AnomalyType.ALL)
-    for name in evaluate.NON_CIRCULAR_ARCHETYPES:
+    circular = len(AnomalyType.ALL) - len(evaluate.NOT_DEFINITIONAL)
+    assert (circular, len(AnomalyType.ALL)) == (8, 11)  # the text says "eight of eleven"
+    assert "eight of eleven" in evaluate.DETECTION_CAVEAT
+    assert set(evaluate.NOT_DEFINITIONAL) <= set(AnomalyType.ALL)
+    for name in evaluate.NOT_DEFINITIONAL:
         assert name in evaluate.DETECTION_CAVEAT
+    # which test catches those three depends on the draw: JET-08 catches every rare pair on
+    # other seeds, so "mostly by other tests" is said of the default ledger only
+    assert "depends on the draw: on the default ledger" in evaluate.DETECTION_CAVEAT
     # Neither caveat carries a figure: the numbers beside it move with the ledger.
     for text in (evaluate.DETECTION_CAVEAT, evaluate.MODEL_TIER_CAVEAT):
         assert not any(ch.isdigit() for ch in text)
@@ -307,3 +356,56 @@ def test_precision_by_test_counts_entries_and_says_so(ledger, labels):
     assert (table.loc["JET-11", "entries_flagged"], table.loc["JET-11", "true_positives"]) == (7, 6)
     assert list(evaluate.precision_by_test(jets.run_all(ledger).iloc[:0], labels).columns) == [
         "test_id", "test_name", "entries_flagged", "true_positives", "precision"]
+
+
+def _tiers_and_labels():
+    combined = pd.DataFrame({
+        "entry_id": list("ABCDEFGHIJ"),
+        "rule_flag": [True] + [False] * 9,
+        "model_flag": [False, True, True] + [False] * 7,
+    })
+    labels = pd.DataFrame({
+        "entry_id": list("ABCDEFGHIJ"),
+        "is_anomaly": [True, True, True, True] + [False] * 6,
+        "anomaly_type": ["round_amount", "token_amount", "token_amount", "made_up"] + [""] * 6,
+    })
+    return combined, labels
+
+
+def test_budget_recall_counts_each_archetype_against_chance():
+    combined, labels = _tiers_and_labels()
+    table = evaluate.budget_recall_by_archetype(combined, labels).set_index("anomaly_type")
+    assert list(table.index) == ["token_amount", "round_amount", "made_up"]  # held out first
+    # a budget of 2 of 10 entries: an archetype of n puts n * 2 / 10 there by chance
+    assert table.loc["token_amount"].to_dict() == {
+        "n": 2, "rule_caught": 0, "model_in_budget": 2, "chance": 0.4, "model_recall": 1.0}
+    assert table.loc["round_amount", ["rule_caught", "model_in_budget", "chance"]].tolist() == [1, 0, 0.2]
+    assert table.loc["made_up", ["n", "model_in_budget", "model_recall"]].tolist() == [1, 0, 0.0]
+
+
+def test_budget_recall_rounds_chance_to_the_cent_and_counts_an_id_the_ledger_lacks_in_neither():
+    combined = pd.DataFrame({"entry_id": ["A", "B", "C"], "rule_flag": [False] * 3,
+                             "model_flag": [True, True, False]})
+    labels = pd.DataFrame({"entry_id": ["A", "Z"], "is_anomaly": [True, True],
+                           "anomaly_type": ["token_amount", "token_amount"]})
+    row = evaluate.budget_recall_by_archetype(combined, labels).iloc[0]
+    assert (row.n, row.rule_caught, row.model_in_budget, row.chance) == (2, 0, 1, 1.33)
+
+
+def test_the_held_out_archetypes_together_against_the_budget():
+    combined, labels = _tiers_and_labels()
+    assert evaluate.held_out_budget(combined, labels) == {
+        "n": 2, "in_budget": 2, "chance": 0.4, "recall": 1.0, "lift": 5.0, "budget": 2,
+        "population": 10}
+    # a held-out type on a row the labels call normal is not one of them
+    normal = labels.assign(anomaly_type=labels["anomaly_type"].where(labels["is_anomaly"], "token_amount"))
+    assert evaluate.held_out_budget(combined, normal)["n"] == 2
+    none_held_out = labels.assign(anomaly_type=labels["anomaly_type"].replace("token_amount", "made_up"))
+    assert evaluate.held_out_budget(combined, none_held_out) is None
+    empty_budget = combined.assign(model_flag=False)
+    assert evaluate.held_out_budget(empty_budget, labels)["lift"] == 0.0  # chance of nothing
+
+
+def test_the_model_tier_caveat_says_what_measures_it_as_a_detector():
+    assert ("Only the held-out archetypes, which no rule describes, measure it as a detector"
+            in evaluate.MODEL_TIER_CAVEAT)

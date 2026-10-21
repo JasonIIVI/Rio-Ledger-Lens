@@ -14,6 +14,7 @@ the baseline is sloppy.
 
 from __future__ import annotations
 
+import bisect
 import random
 import warnings
 from datetime import date, datetime, timedelta
@@ -22,7 +23,7 @@ import numpy as np
 import pandas as pd
 
 from .coa import COMMON_PAIRS, RARELY_USED, account_name, account_type
-from .schema import AnomalyType, is_us_holiday
+from .schema import AnomalyType, HeldOutType, is_us_holiday
 
 # --- people who key entries -------------------------------------------------
 
@@ -39,6 +40,15 @@ APPROVAL_THRESHOLD = 10_000.0
 
 BUSINESS_START_HOUR = 8
 BUSINESS_END_HOUR = 18
+
+#: The default ledger's seed: the generator's default, and `ledgerlens generate`'s.
+DEFAULT_SEED = 20260922
+
+#: The held-out ledger's seed, written down in the commit that adds the held-out code and
+#: passed to the generator for the first time only once that code is frozen (the
+#: `held-out-freeze` tag): nothing is tuned on what it gives. The tests use other seeds,
+#: and fail if anything generates with this one.
+HELD_OUT_SEED = 20261019
 
 
 def _business_datetime(rng: random.Random, day: date) -> datetime:
@@ -165,9 +175,13 @@ _CUSTOMERS = ("Delgado Retail", "Harborview Inc", "Sunbelt Markets", "Praxis Gro
               "Coral Trading", "Vista Foods", "Northline LLC")
 
 
-def _describe(b: _EntryBuilder, pair: tuple[str, str], n: int) -> str:
+def _fill(rng: random.Random, pair: tuple[str, str], n: int) -> str:
     template = _DESCRIPTIONS.get(pair, "Journal entry {n}")
-    return template.format(n=n, v=b.rng.choice(_VENDORS), c=b.rng.choice(_CUSTOMERS))
+    return template.format(n=n, v=rng.choice(_VENDORS), c=rng.choice(_CUSTOMERS))
+
+
+def _describe(b: _EntryBuilder, pair: tuple[str, str], n: int) -> str:
+    return _fill(b.rng, pair, n)
 
 
 def _source_for(pair: tuple[str, str]) -> str:
@@ -377,6 +391,157 @@ def _period_end_days(start: date, end: date) -> list[date]:
     return [d for d in _all_days(start, end) if (_month_end(d) - d).days <= 2]
 
 
+# --- held-out archetypes -------------------------------------------------------
+# Patterns no test describes, injected only into the opt-in held-out ledger
+# (`generate_ledger(held_out=True)`). Each is built to be rule-silent: a business
+# day and hour, a common pair whose source is neither Manual (JET-05 and JET-12
+# read only manual entries) nor System, an amount carrying cents (JET-01 reads
+# whole thousands) and outside the 3% beneath the approval limit (JET-06),
+# balanced. That silences JET-01 to JET-06, JET-10 and JET-12 by construction;
+# JET-07, 08, 09 and 11 read the population, so they are checked on development
+# seeds instead (on a ledger of a few dozen entries JET-08 can fire on one). The
+# model tier is the one measured on them. They draw from their own random streams
+# and take their ids after every other entry, so the rest of the ledger is the one
+# the same seed gives without them.
+
+#: The common pairs a held-out entry may use.
+_HELD_OUT_PAIRS: tuple[tuple[str, str], ...] = tuple(
+    p for p in COMMON_PAIRS if _source_for(p) not in ("Manual", "System"))
+
+#: Users the ledger has never seen: a temp, a service account, a second admin.
+_UNFAMILIAR_USERS: tuple[str, ...] = ("temp01", "temp02", "svc_import", "admin2")
+
+#: A real vendor's name, a letter or a mark away.
+_NEAR_MISS_VENDORS: tuple[str, ...] = (
+    "Acme Papers", "Gulf Fraight", "Print Works", "Torres C.P.A.", "Citywide Suply")
+
+#: JET-06 looks 3% beneath the limit; no held-out amount lands there.
+_JUST_UNDER = APPROVAL_THRESHOLD * 0.97
+
+#: How many of each held-out archetype: entries, or groups of entries for the three
+#: built from several (3 parts per split purchase, 2 legs per round trip, 5 payments
+#: per drip), 43 entries in all. Fixed, not scaled by `anomaly_rate`.
+HELD_OUT_MIX: dict[str, int] = {
+    HeldOutType.TOKEN_AMOUNT: 8,
+    HeldOutType.UNFAMILIAR_USER: 8,
+    HeldOutType.SPLIT_PURCHASE: 3,
+    HeldOutType.ROUND_TRIP: 4,
+    HeldOutType.SHELL_VENDOR_DRIP: 2,
+}
+
+
+class _HeldOutStreams:
+    """The held-out archetypes' own random streams, seeded apart from the main pair."""
+
+    def __init__(self, seed: int) -> None:
+        self.rng = random.Random(f"ledgerlens-held-out:{seed}")
+        self.nprng = np.random.default_rng(np.random.SeedSequence(seed, spawn_key=(1,)))
+
+
+def _with_cents(rng: random.Random, low: float, high: float) -> float:
+    """An amount in [low, high] that is not a whole dollar."""
+    while True:
+        amount = round(rng.uniform(low, high), 2)
+        if amount % 1 and not _JUST_UNDER <= amount < APPROVAL_THRESHOLD:
+            return amount
+
+
+def _held_out_entry(b: _EntryBuilder, s: _HeldOutStreams, day: date, pair: tuple[str, str],
+                    amount: float, description: str, user: str, archetype: str) -> None:
+    b.add(day, _business_datetime(s.rng, day), pair[0], pair[1], amount, description,
+          _source_for(pair), user, archetype)
+
+
+def _inject_token_amounts(b: _EntryBuilder, s: _HeldOutStreams, business: list[date], n: int) -> None:
+    """A dollar or two on an ordinary pair: a test posting, or a probe of what goes through."""
+    for _ in range(n):
+        day, pair = s.rng.choice(business), s.rng.choice(_HELD_OUT_PAIRS)
+        _held_out_entry(b, s, day, pair, _with_cents(s.rng, 0.50, 2.99),
+                        _fill(s.rng, pair, s.rng.randint(1000, 9999)), s.rng.choice(USERS),
+                        HeldOutType.TOKEN_AMOUNT)
+
+
+def _inject_unfamiliar_users(b: _EntryBuilder, s: _HeldOutStreams, business: list[date], n: int) -> None:
+    """Ordinary entries keyed by someone the ledger has never seen."""
+    for _ in range(n):
+        day, pair = s.rng.choice(business), s.rng.choice(_HELD_OUT_PAIRS)
+        _held_out_entry(b, s, day, pair, _with_cents(s.rng, 40.0, 2_500.0),
+                        _fill(s.rng, pair, s.rng.randint(1000, 9999)),
+                        s.rng.choice(_UNFAMILIAR_USERS), HeldOutType.UNFAMILIAR_USER)
+
+
+def _inject_split_purchases(b: _EntryBuilder, s: _HeldOutStreams, business: list[date], n: int) -> None:
+    """One vendor, one day, three purchases that together pass the approval limit."""
+    pair = ("1300", "2000")
+    for _ in range(n):
+        day, vendor, user = s.rng.choice(business), s.rng.choice(_VENDORS), s.rng.choice(USERS)
+        total = int(round(_with_cents(s.rng, APPROVAL_THRESHOLD + 50, APPROVAL_THRESHOLD + 800) * 100))
+        while True:  # three distinct parts, each carrying cents, adding up to the total exactly
+            first = s.rng.randint(total * 31 // 100, total * 35 // 100)
+            second = s.rng.randint(total * 31 // 100, total * 35 // 100)
+            parts = (first, second, total - first - second)
+            if len(set(parts)) == 3 and all(p % 100 for p in parts):
+                break
+        for cents in parts:
+            _held_out_entry(b, s, day, pair, cents / 100,
+                            f"Inventory PO {s.rng.randint(1000, 9999)} - vendor {vendor}", user,
+                            HeldOutType.SPLIT_PURCHASE)
+
+
+def _inject_round_trips(b: _EntryBuilder, s: _HeldOutStreams, business: list[date], n: int) -> None:
+    """Cash revenue in, and the same amount out as ad spend three business days later."""
+    for _ in range(n):
+        i = s.rng.randrange(len(business) - 3)
+        amount = _with_cents(s.rng, 1_500.0, 6_000.0)
+        _held_out_entry(b, s, business[i], ("1000", "4100"), amount,
+                        f"Service revenue - customer {s.rng.choice(_CUSTOMERS)}",
+                        s.rng.choice(USERS), HeldOutType.ROUND_TRIP)
+        _held_out_entry(b, s, business[i + 3], ("6500", "1000"), amount,
+                        f"Ad spend - {s.rng.choice(_VENDORS)}", s.rng.choice(USERS),
+                        HeldOutType.ROUND_TRIP)
+
+
+def _drip_days(business: list[date], start: date) -> list[date] | None:
+    """The first business day on or after each fortnight from ``start``, five of them."""
+    days = []
+    for k in range(5):
+        i = bisect.bisect_left(business, start + timedelta(days=14 * k))
+        if i == len(business):
+            return None
+        days.append(business[i])
+    return days
+
+
+def _inject_vendor_drips(b: _EntryBuilder, s: _HeldOutStreams, business: list[date], n: int) -> None:
+    """A few hundred dollars every two weeks to a vendor whose name is a near miss."""
+    pair = ("6600", "1000")
+    starts = [d for d in business if _drip_days(business, d) is not None]
+    for vendor in s.rng.sample(_NEAR_MISS_VENDORS, n):  # one vendor per drip
+        user = s.rng.choice(USERS)
+        for day in _drip_days(business, s.rng.choice(starts)):
+            _held_out_entry(b, s, day, pair, _with_cents(s.rng, 150.0, 450.0),
+                            f"Office supplies - {vendor}", user, HeldOutType.SHELL_VENDOR_DRIP)
+
+
+_HELD_OUT_INJECTORS = {
+    HeldOutType.TOKEN_AMOUNT: _inject_token_amounts,
+    HeldOutType.UNFAMILIAR_USER: _inject_unfamiliar_users,
+    HeldOutType.SPLIT_PURCHASE: _inject_split_purchases,
+    HeldOutType.ROUND_TRIP: _inject_round_trips,
+    HeldOutType.SHELL_VENDOR_DRIP: _inject_vendor_drips,
+}
+
+#: What a short range can lack for a held-out archetype; the other three need only
+#: one business day, and a range with none is refused.
+_HELD_OUT_NEEDS = {
+    HeldOutType.ROUND_TRIP: (lambda business: len(business) > 3,
+                             "no business day three business days before another"),
+    HeldOutType.SHELL_VENDOR_DRIP: (
+        lambda business: any(_drip_days(business, d) is not None for d in business),
+        "no room for five payments a fortnight apart"),
+}
+
+
 # --- public API -------------------------------------------------------------
 
 #: Relative weight of each archetype in the injected population. Roughly
@@ -433,7 +598,8 @@ def generate_ledger(
     end: date = date(2025, 12, 31),
     entries_per_day: int = 10,
     anomaly_rate: float = 0.015,
-    seed: int = 20260922,
+    seed: int = DEFAULT_SEED,
+    held_out: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Generate a labelled synthetic general ledger.
 
@@ -446,6 +612,11 @@ def generate_ledger(
     out, with an :class:`ArchetypeSkipped` warning naming it, and the other
     archetypes keep their counts. A range with no business day at all is
     refused with a ``ValueError``.
+
+    ``held_out`` adds the archetypes no test describes (:class:`HeldOutType`,
+    ``HELD_OUT_MIX``), drawn from their own streams and numbered after every
+    other entry, so the rest of the ledger is the one ``held_out=False`` gives. A
+    range too short for one of them leaves it out the same way.
     """
     if not 0 <= anomaly_rate < 1:
         raise ValueError("anomaly_rate must be in [0, 1)")
@@ -476,6 +647,17 @@ def generate_ledger(
                 continue
         n = max(1, int(round(total_anomalies * weight)))
         _INJECTORS[archetype](b, days, n)
+
+    if held_out:
+        streams = _HeldOutStreams(seed)
+        for archetype, n in HELD_OUT_MIX.items():
+            if archetype in _HELD_OUT_NEEDS:
+                fits, lacking = _HELD_OUT_NEEDS[archetype]
+                if not fits(business):
+                    warnings.warn(f"{start}..{end} has {lacking}, so no {archetype} anomaly was "
+                                  "injected", ArchetypeSkipped, stacklevel=2)
+                    continue
+            _HELD_OUT_INJECTORS[archetype](b, streams, business, n)
 
     lines = pd.DataFrame(b.rows)
     labels = pd.DataFrame(b.labels)
