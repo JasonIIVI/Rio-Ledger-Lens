@@ -154,8 +154,8 @@ Wrote 5,138 labels (120 anomalies, 2.34%, 43 of them held out) to data/heldout-l
 ```
 
 `ledgerlens test data/heldout-ledger.csv --labels data/heldout-labels.csv` (Python 3.12; the
-3.9 output is identical; on Linux the tied rows of two of its tables print in another order,
-see the disclosures):
+3.9 output is identical; until the tie fix made after the merge, Linux printed the tied rows
+of two of its tables in another order, see the disclosures):
 
 ```text
 Ran 12 test(s) over 5,138 entries
@@ -376,15 +376,18 @@ duplicate archetype on the default ledger.
 - **The seed.** `HELD_OUT_SEED` arrives in the same commit as the held-out code (`d328a90`),
   so "never generated with before" rests on the tests' guard and on what this document
   says was run, not on the history alone.
-- **Tie order in two printed tables, found after the freeze.** `test` prints its "Recall by
-  archetype" and "Precision by test" tables sorted on one key with pandas' default sort, which
-  is not stable. So rows that tie print in another order on CI's Linux runners than on the Mac
-  that made the measurement: the five held-out archetypes at 0.0000 and the nine at 1.0000,
-  and on Python 3.9 JET-10 and JET-11 at 1.0000. Every row's values are the same, and `score`'s
-  output, the model's figures included, is the same byte for byte. The sorts are in `src/`, so
-  by rule 10 the defect is disclosed here and not fixed until the measurement is merged;
-  `tests/test_limitations.py` compares those two tables' rows regardless of their order and
-  everything else exactly.
+- **Tie order in two printed tables, found after the freeze, fixed after the merge.** `test`
+  printed its "Recall by archetype" and "Precision by test" tables sorted on one key with
+  pandas' default sort, which is not stable. So rows that tie printed in another order on CI's
+  Linux runners than on the Mac that made the measurement: the five held-out archetypes at
+  0.0000 and the nine at 1.0000, and on Python 3.9 JET-10 and JET-11 at 1.0000. Every row's
+  values were the same, and `score`'s output, the model's figures included, was the same byte
+  for byte. The sorts are in `src/`, so by rule 10 the defect was disclosed here and not fixed
+  until the measurement was merged, and until then `tests/test_limitations.py` compared those
+  two tables' rows regardless of their order. After the merge, before v1.1.0 was tagged, the
+  two sorts were given a tie-break: by name and by test id, the order the Mac had printed. The
+  output above is unchanged, it prints again exactly on every platform, and the test compares
+  all of it. No value moved.
 - **Ties.** `model_lift` gives a tie at its cut to the lower entry id; `combine` puts every
   entry tied at the budget's cutoff inside it, so the budget can hold slightly more than 2%.
 - **The narration prompt.** Its system prompt says the risk score counts "distinct tests";

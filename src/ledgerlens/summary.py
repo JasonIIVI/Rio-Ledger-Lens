@@ -200,7 +200,7 @@ def collect(
             row["definitional"] = _definitional(row["anomaly_type"])
             row["held_out"] = row["anomaly_type"] in HeldOutType.ALL
         # Held out first, in the generator's order as in evaluate's tables, then the archetypes
-        # that are not definitional, then by name: recall ties have no order of their own.
+        # that are not definitional, then by name, whatever order recall's table gives.
         by_archetype.sort(key=lambda r: (
             not r["held_out"],
             HeldOutType.ALL.index(r["anomaly_type"]) if r["held_out"] else 0,

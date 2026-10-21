@@ -149,7 +149,7 @@ def test_archetypes_are_listed_not_definitional_first_and_marked(default_context
 
 
 def test_the_archetype_order_is_the_summarys_own_not_recalls(context, small_ledger, monkeypatch):
-    """recall_by_archetype sorts by recall, which leaves ties (most rows are 1.000) unordered."""
+    """The summary orders the rows itself, whatever order recall_by_archetype gives them."""
     import pandas as pd
 
     table = pd.DataFrame({
