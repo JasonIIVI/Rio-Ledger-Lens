@@ -121,36 +121,50 @@ def test_precision_by_test_is_bounded(ledger, labels):
 
 def test_recall_by_archetype_breaks_a_tie_by_name():
     """However many rows tie on recall, they come back by name. On recall alone pandas' default
-    sort, which is not stable, kept up to 16 tied rows in order on a Mac and scrambled more, and
-    on CI's Linux runners it scrambled fewer, so `test` printed tied rows in another order there."""
+    sort, which is not stable, kept tied rows in order on a Mac in a table of up to 16 rows and
+    could scramble them in a longer one, and on CI's Linux runners it scrambled shorter tables
+    too, so `test` printed tied rows in another order there. The archetypes' sizes run against
+    their names, so a tie broken on any other column comes out in another order as well."""
     names = [f"type_{i:02d}" for i in range(40)]
+    sizes = [1 + (39 - i) % 4 for i in range(40)]
+    entries = [(name, f"{name}-{k}") for name, size in zip(names, sizes) for k in range(size)]
     labels = pd.DataFrame({
-        "entry_id": [f"E{i:02d}" for i in range(40)] + ["N"],
-        "is_anomaly": [True] * 40 + [False],
-        "anomaly_type": names + [""],
+        "entry_id": [entry for _, entry in entries] + ["N"],
+        "is_anomaly": [True] * len(entries) + [False],
+        "anomaly_type": [name for name, _ in entries] + [""],
     })
-    flags = pd.DataFrame({"entry_id": [f"E{i:02d}" for i in range(0, 40, 2)], "test_id": "JET-01"})
+    caught = set(names[0::2])
+    flags = pd.DataFrame({"entry_id": [entry for name, entry in entries if name in caught],
+                          "test_id": "JET-01"})
     table = evaluate.recall_by_archetype(flags, labels)
     assert list(table["anomaly_type"]) == names[1::2] + names[0::2]  # missed, then caught
     assert list(table["recall"]) == [0.0] * 20 + [1.0] * 20
+    assert table["n"].nunique() > 1
 
 
 def test_precision_by_test_breaks_a_tie_by_test_id():
-    """However many tests tie on precision, they come back by test id, for the same reason."""
+    """However many tests tie on precision, they come back by test id, for the same reason. The
+    counts and the names run against the ids, so a tie broken on either comes out in another
+    order as well."""
     ids = [f"JET-{i:02d}" for i in range(1, 41)]
+    names = {test: f"name {(i * 7) % 40:02d}" for i, test in enumerate(ids)}
+    sizes = [1 + (40 - i) % 4 for i in range(1, 41)]
+    flagged = [(test, f"{test}-{k}") for test, size in zip(ids, sizes) for k in range(size)]
     flags = pd.DataFrame({
-        "entry_id": [f"E{i:02d}" for i in range(40)],
-        "test_id": ids,
-        "test_name": [f"Test {i}" for i in range(40)],
+        "entry_id": [entry for _, entry in flagged],
+        "test_id": [test for test, _ in flagged],
+        "test_name": [names[test] for test, _ in flagged],
     })
+    anomalous = set(ids[0::2])
     labels = pd.DataFrame({
-        "entry_id": [f"E{i:02d}" for i in range(40)],
-        "is_anomaly": [i % 2 == 0 for i in range(40)],
-        "anomaly_type": ["round_amount" if i % 2 == 0 else "" for i in range(40)],
+        "entry_id": [entry for _, entry in flagged],
+        "is_anomaly": [test in anomalous for test, _ in flagged],
+        "anomaly_type": ["round_amount" if test in anomalous else "" for test, _ in flagged],
     })
     table = evaluate.precision_by_test(flags, labels)
     assert list(table["test_id"]) == ids[0::2] + ids[1::2]  # every 1.0, then every 0.0
     assert list(table["precision"]) == [1.0] * 20 + [0.0] * 20
+    assert table["entries_flagged"].nunique() > 1
 
 
 def test_format_report_is_readable():

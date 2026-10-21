@@ -386,8 +386,8 @@ duplicate archetype on the default ledger.
   until the measurement was merged, and until then `tests/test_limitations.py` compared those
   two tables' rows regardless of their order. After the merge, before v1.1.0 was tagged, the
   two sorts were given a tie-break: by name and by test id, the order the Mac had printed. The
-  output above is unchanged, it prints again exactly on every platform, and the test compares
-  all of it. No value moved.
+  output above is unchanged, its order no longer depends on the platform's sort, and the test
+  compares all of it. No value moved.
 - **Ties.** `model_lift` gives a tie at its cut to the lower entry id; `combine` puts every
   entry tied at the budget's cutoff inside it, so the budget can hold slightly more than 2%.
 - **The narration prompt.** Its system prompt says the risk score counts "distinct tests";

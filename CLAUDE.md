@@ -12,7 +12,7 @@ Audit analytics over general ledger data. Read this before changing anything.
 | Repo | `JasonIIVI/Rio-Ledger-Lens` (public, MIT) |
 | Working folder | `~/Library/Mobile Documents/com~apple~CloudDocs/LedgerGen project` (iCloud) |
 | Virtualenvs | `~/.venvs/ledgerlens` (3.9) and `~/.venvs/ledgerlens312` (3.12) — **deliberately outside iCloud**, one set per machine |
-| Python here | system 3.9.6 plus python.org **3.12.0** at `/usr/local/bin/python3.12`. Code must stay 3.9-compatible; only `mcp_server.py` needs 3.10+. pandas 2.2 or later (`ingest` imports `pandas.tseries.api.guess_datetime_format`) |
+| Python here | system 3.9.6 plus python.org **3.12.0** at `/usr/local/bin/python3.12`. Code must stay 3.9-compatible; only `mcp_server.py` needs 3.10+. pandas 2.2 or later (`ingest` imports `pandas.tseries.api.guess_datetime_format`), Streamlit 1.49 or later (`st.dataframe(width="stretch")`); CI and the venvs install the latest (pandas 2.3 and 3.0), so the floors themselves are not run |
 | CI | GitHub Actions: pytest on 3.9 / 3.11 / 3.12 + a detection-quality gate + a `rule-1` job (no data or secret file tracked); `claude.yml` answers `@claude`; `weekly.yml` regenerates the default ledger on Mondays and opens an Issue with `ledgerlens summary` |
 
 ```bash
@@ -26,8 +26,8 @@ and the MCP SDK, so the two together cover every code path CI will see.
 ## Current state
 
 - **v1.1.0** is #12 to #15 (#15, `week5/held-out`, squash-merged 2026-10-21 as `e0a2b02`) and
-  the follow-up `fix/pandas-floor-and-tie-order`, tagged on the follow-up's merge commit;
-  release notes reviewed against the code.
+  the follow-up `fix/pandas-floor-and-tie-order`, to be tagged on the follow-up's merge
+  commit with release notes reviewed against the code.
   **v1.0.0** was PR #9 (`week4/automation-and-readme`, squash-merged 2026-10-07 as `039a3ad`,
   tagged once the weekly run had opened its first Issue, #10; release notes reviewed against
   the code). **v0.4.0** was PR #7 (2026-09-29; v0.3.1 was PR #5 on 2026-09-25; v0.3.0 was PR #2
@@ -398,25 +398,31 @@ and the MCP SDK, so the two together cover every code path CI will see.
     test" tables in another order (one-key unstable sorts in `evaluate`, in `src/`, frozen):
     disclosed in `docs/limitations.md`, and the test compared those two tables' rows regardless
     of order until the tie fix below.
-- **pandas floor and stable tie order (`fix/pandas-floor-and-tie-order`, before the v1.1.0
-  tag)** — two things found after the merge.
+- **Version floors and stable tie order (`fix/pandas-floor-and-tie-order`, before the v1.1.0
+  tag)** — found after the merge.
   - **pandas 2.2.** Since #12 `ingest` imports `pandas.tseries.api.guess_datetime_format`,
     public from pandas 2.2.0 (absent in 2.0.3 and 2.1.4), and reads with
     `to_datetime(format="mixed")`, from 2.0.0, while `pyproject.toml` said `pandas>=1.5`: an
     install pip accepted with pandas 1.5 to 2.1 failed at the start of every command. Found by
     the release notes' claims review. `pyproject.toml` says `pandas>=2.2`, and
     `tests/test_version.py` pins it.
+  - **Streamlit 1.49.** `app.py` has given `st.dataframe` `width="stretch"` since #1, which
+    Streamlit takes from 1.49.0 (1.48.0's `width` is an int or None), while the `app` extra
+    said `streamlit>=1.30`. Found by this branch's review. The extra says `streamlit>=1.49`,
+    pinned beside the pandas floor.
   - **Ties.** `recall_by_archetype` breaks a tie on recall by name, and `precision_by_test` a
     tie on precision by test id: the order the Mac printed the measurement in (pandas' default
-    sort kept up to 16 tied rows in order there and scrambled more; Linux scrambled fewer). So
-    `tests/test_limitations.py` compares the whole of `test`'s output again, and CI on Linux
-    reproduces the record exactly. No value moves. The other tables that only display rows
+    sort kept tied rows in order there in a table of up to 16 rows and could scramble them in
+    a longer one; on CI's Linux runners it scrambled the 16-row recall table too, and on 3.9
+    the 12-row precision table). Two keys go through a stable lexsort, so the order no longer
+    depends on the platform's sort, and `tests/test_limitations.py` compares the whole of
+    `test`'s output again. No value moves. The other tables that only display rows
     (Benford by MAD, review counts, mean model score by archetype) still leave a tie to a
     one-key sort.
 - **Next** — tag v1.1.0 on the follow-up's merge commit, with the claims-reviewed notes. Then the
   maintainer's call. Open, unchanged: re-recording `docs/demo.gif` (its model scores predate
   v1.0.0's tie fix) and the display-only sorts above.
-- 1027 tests on 3.9 (1 skipped) / 1041 on 3.12 (the fourteen MCP tests need 3.10+), ruff clean.
+- 1028 tests on 3.9 (1 skipped) / 1042 on 3.12 (the fourteen MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
