@@ -17,7 +17,8 @@ classifiers = [
   "Topic :: Office/Business :: Financial :: Accounting",
 ]
 dependencies = [
-  "pandas>=1.5",
+  # 2.2 made pandas.tseries.api.guess_datetime_format public, which ingest reads dates with.
+  "pandas>=2.2",
   "numpy>=1.23",
   "scikit-learn>=1.0",
   "openpyxl>=3.1",
