@@ -6,6 +6,7 @@
     ledgerlens score     - run both tiers and compare them
     ledgerlens report    - write the Excel workpaper
     ledgerlens summary   - one page on a ledger, as text, markdown or JSON
+    ledgerlens sample    - select entries to examine against a materiality you give, with a memo
     ledgerlens narrate   - write Claude narratives for the riskiest entries
     ledgerlens eval-narratives - grade the narrative layer against the case set
     ledgerlens adopt-legacy - file review rows from before ledgers were keyed under a ledger
@@ -45,6 +46,20 @@ from .model import combine, score_ledger
 from .narrate import DEFAULT_EFFORT, DEFAULT_MAX_TOKENS, DEFAULT_MODEL, NarrativeError, Narrator
 from .report import build_workpaper
 from .review import LEGACY_LEDGER_ID, ReviewStore
+from .sampling import (
+    DEFAULT_CONFIDENCE,
+    DEFAULT_PERFORMANCE_SHARE,
+    DEFAULT_STRATA,
+    DEFAULT_TRIVIAL_SHARE,
+    METHODS,
+    Materiality,
+    SamplingError,
+    collect_memo,
+    mus_select,
+    render_memo,
+    stratified_select,
+)
+from .sampling import FORMATS as SAMPLE_FORMATS
 from .schema import HeldOutType
 from .summary import FORMATS as SUMMARY_FORMATS
 from .summary import collect as collect_summary
@@ -402,13 +417,13 @@ def cmd_report(args: argparse.Namespace) -> int:
     return 0
 
 
-def _refuse_summary_out(out: Path) -> str | None:
-    """Why a summary may not be written to ``out``, or None.
+def _refuse_tracked_out(out: Path, noun: str) -> str | None:
+    """Why a ``noun`` (a summary, a selection memo) may not be written to ``out``, or None.
 
-    A summary of real books carries descriptions, users and amounts, and CI's rule-1
-    check goes by file name: it would not notice a tracked ``.md`` or ``.json``. So
-    inside a git checkout a summary goes under ``out/``, which git ignores, and
-    nowhere else; outside one, anywhere. Links are followed first, so the answer is
+    Either, made from real books, carries descriptions, users and amounts, and CI's
+    rule-1 check goes by file name: it would not notice a tracked ``.md`` or ``.json``.
+    So inside a git checkout it goes under ``out/``, which git ignores, and nowhere
+    else; outside one, anywhere. Links are followed first, so the answer is
     about where the bytes would land: an ``out`` that links to ``docs/`` is ``docs/``.
     ``out`` is the path that will be written, ``~`` already expanded by the caller:
     judging one spelling and writing another is how a guard gets walked around.
@@ -420,31 +435,50 @@ def _refuse_summary_out(out: Path) -> str | None:
     if root is None or (root / "out") in target.parents:
         return None
     return (f"{out} is inside the git checkout at {root} but not under its out/ directory, "
-            "which git ignores; a summary is never written where it could be committed")
+            f"which git ignores; a {noun} is never written where it could be committed")
+
+
+def _checked_out(text: str, noun: str) -> tuple[Path | None, str | None]:
+    """``(the path to write to, None)``, or ``(None, the line to print)``.
+
+    Expanded once, here, from a leading "~" only: a shell leaves `--out=~/x.md` as typed,
+    and the path the guard judges has to be the path that is written to. The directory
+    check comes first (said before any work is done), before the guard would call the
+    out/ directory itself "not under out/".
+    """
+    try:
+        out = _expand_home(text)
+        is_dir = out.is_dir()
+        refusal = None if is_dir else _refuse_tracked_out(out, noun)
+    except (OSError, RuntimeError) as exc:
+        # ~name with no such user, a link to itself, a parent nobody may search, a name
+        # too long: the check and the guard each need a stat, and a stat can fail
+        return None, f"error: cannot write the {noun} to {text}: {exc}"
+    if is_dir:
+        return None, f"error: cannot write the {noun} to {out}: it is a directory"
+    if refusal:
+        return None, f"refused: {refusal}"
+    return out, None
+
+
+def _write_out(out: Path, text: str, noun: str, fmt: str) -> int:
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(text + "\n", encoding="utf-8")
+    except OSError as exc:  # a parent that is a file, a directory nobody may write to
+        print(f"error: cannot write the {noun} to {out}: {exc}")
+        return 2
+    print(f"{noun[0].upper()}{noun[1:]} ({fmt}) written to {out}")
+    return 0
 
 
 def cmd_summary(args: argparse.Namespace) -> int:
     """One page on the ledger, for a terminal, a script, or the weekly workflow's Issue."""
     out = None
     if args.out:
-        try:
-            # Expanded once, here, from a leading "~" only: a shell leaves `--out=~/x.md` as
-            # typed, and the path the guard judges has to be the path the summary is written
-            # to. The directory check comes first (said now, not after both tiers have run),
-            # before the guard would call the out/ directory itself "not under out/".
-            out = _expand_home(args.out)
-            is_dir = out.is_dir()
-            refusal = None if is_dir else _refuse_summary_out(out)
-        except (OSError, RuntimeError) as exc:
-            # ~name with no such user, a link to itself, a parent nobody may search, a name
-            # too long: the check and the guard each need a stat, and a stat can fail
-            print(f"error: cannot write the summary to {args.out}: {exc}")
-            return 2
-        if is_dir:
-            print(f"error: cannot write the summary to {out}: it is a directory")
-            return 2
-        if refusal:
-            print(f"refused: {refusal}")
+        out, problem = _checked_out(args.out, "summary")
+        if problem:
+            print(problem)
             return 2
     context = None
     try:
@@ -482,14 +516,63 @@ def cmd_summary(args: argparse.Namespace) -> int:
     if out is None:
         print(text)
         return 0
-    try:
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(text + "\n", encoding="utf-8")
-    except OSError as exc:  # a parent that is a file, a directory nobody may write to
-        print(f"error: cannot write the summary to {out}: {exc}")
+    return _write_out(out, text, "summary", args.format)
+
+
+def cmd_sample(args: argparse.Namespace) -> int:
+    """Select entries to examine against the materiality given, and state how in a memo.
+
+    Nothing is printed but the memo, so `--format json` stays one document. A flag that
+    does not apply to the method is refused rather than ignored: the memo states what the
+    selection was made with, and an ignored flag would be stated nowhere.
+    """
+    out = None
+    if args.out:
+        out, problem = _checked_out(args.out, "selection memo")
+        if problem:
+            print(problem)
+            return 2
+    misplaced = [flag for flag, given, method in (
+        ("--size", args.size, "stratified"), ("--strata", args.strata, "stratified"),
+        ("--confidence", args.confidence, "mus"),
+    ) if given is not None and args.method != method]
+    if misplaced:
+        print(f"error: {', '.join(misplaced)} does not apply to --method {args.method}")
         return 2
-    print(f"Summary ({args.format}) written to {out}")
-    return 0
+    if args.method == "stratified" and args.size is None:
+        print("error: --method stratified needs --size, the number of entries to draw below "
+              "performance materiality")
+        return 2
+    try:
+        materiality = Materiality(
+            args.materiality,
+            DEFAULT_PERFORMANCE_SHARE if args.performance is None else args.performance,
+            DEFAULT_TRIVIAL_SHARE if args.trivial is None else args.trivial)
+    except SamplingError as exc:
+        print(f"error: {one_line(exc)}")
+        return 2
+    df, problem = _load_ledger(args.ledger)
+    if problem:
+        print(problem)
+        return 2
+    try:
+        ledger_id = ledger_identity(df, args.ledger)
+        if args.method == "mus":
+            selection = mus_select(
+                df, materiality, seed=args.seed,
+                confidence=DEFAULT_CONFIDENCE if args.confidence is None else args.confidence)
+        else:
+            selection = stratified_select(
+                df, materiality, size=args.size, seed=args.seed,
+                strata=DEFAULT_STRATA if args.strata is None else args.strata)
+    except (OSError, ValueError) as exc:  # SamplingError, or an identity sidecar naming none
+        print(f"error: cannot select from the ledger {args.ledger}: {one_line(exc)}")
+        return 2
+    text = render_memo(collect_memo(selection, ledger=args.ledger, ledger_id=ledger_id), args.format)
+    if out is None:
+        print(text)
+        return 0
+    return _write_out(out, text, "selection memo", args.format)
 
 
 def cmd_narrate(args: argparse.Namespace) -> int:
@@ -1053,6 +1136,33 @@ def build_parser() -> argparse.ArgumentParser:
                     help="write the summary here instead of printing it; inside a git "
                          "checkout only under out/")
     sm.set_defaults(func=cmd_summary)
+
+    sa = sub.add_parser("sample", help="select entries to examine against a materiality you give, "
+                                       "with a memo of how")
+    sa.add_argument("ledger", help="path to a GL csv")
+    sa.add_argument("--method", choices=METHODS, default="mus",
+                    help="mus: monetary unit sampling (the default); stratified: every entry at "
+                         "or above performance materiality, and a seeded draw from bands of value "
+                         "below it")
+    sa.add_argument("--materiality", required=True, metavar="DOLLARS",
+                    help="overall materiality, your judgement for the engagement (no default)")
+    sa.add_argument("--performance", metavar="SHARE",
+                    help=f"performance materiality as a share of overall (default {DEFAULT_PERFORMANCE_SHARE})")
+    sa.add_argument("--trivial", metavar="SHARE",
+                    help=f"clearly trivial as a share of overall (default {DEFAULT_TRIVIAL_SHARE})")
+    sa.add_argument("--confidence", metavar="LEVEL",
+                    help=f"mus only: the confidence level the sample is sized for (default {DEFAULT_CONFIDENCE})")
+    sa.add_argument("--size", type=_positive_int,
+                    help="stratified only, and needed there: entries to draw below performance materiality")
+    sa.add_argument("--strata", type=_positive_int,
+                    help=f"stratified only: bands of value to draw from (default {DEFAULT_STRATA})")
+    sa.add_argument("--seed", type=int,
+                    help="repeat a selection; when not given one is drawn, and the memo states it")
+    sa.add_argument("--format", choices=SAMPLE_FORMATS, default="text")
+    sa.add_argument("--out", type=_path_arg,
+                    help="write the memo here instead of printing it; inside a git checkout only "
+                         "under out/")
+    sa.set_defaults(func=cmd_sample)
 
     n = sub.add_parser("narrate", help="write Claude narratives for the riskiest entries")
     n.add_argument("ledger", help="path to a GL csv")

@@ -1982,3 +1982,108 @@ def test_pull_qbo_keeps_a_dot_slash_tilde_literal_as_the_shell_does(qbo_env, mon
     assert not (home / "proj" / "books.csv").exists() and not (home / "proj" / "books.identity.json").exists()
     assert _replay_to("./~/proj/data/ledger.csv") == 0
     assert (home / "proj" / "data" / "ledger.csv").read_text() == "synthetic"
+
+
+# --- ledgerlens sample ---------------------------------------------------------------
+
+def _sample(two_ledgers, capsys, *extra):
+    capsys.readouterr()
+    code = main(["sample", str(two_ledgers / "a" / "ledger.csv"), *extra])
+    return code, capsys.readouterr().out
+
+
+def test_sample_prints_a_memo_that_repeats_from_its_seed(two_ledgers, capsys):
+    code, first = _sample(two_ledgers, capsys, "--method", "mus", "--materiality", "50000", "--seed", "7")
+    assert code == 0
+    assert first.startswith("LedgerLens selection memo, ")
+    for part in ("Method       monetary unit sampling", "Seed         7 (given)",
+                 "clearly trivial $2,500.00 (5%)", "Sampling interval", "Selected entries"):
+        assert part in first, part
+    assert _sample(two_ledgers, capsys, "--materiality", "50000", "--seed", "7") == (0, first)  # mus by default
+
+
+def test_a_drawn_seed_is_stated_and_repeats_the_selection(two_ledgers, capsys):
+    code, drawn = _sample(two_ledgers, capsys, "--materiality", "50000")
+    assert code == 0
+    seed = re.search(r"Seed {9}(\d+) \(drawn; run again with --seed (\d+) to repeat", drawn)
+    assert seed and seed.group(1) == seed.group(2)
+    _, again = _sample(two_ledgers, capsys, "--materiality", "50000", "--seed", seed.group(1))
+    assert drawn.split("Selected entries")[1] == again.split("Selected entries")[1]
+
+
+def test_sample_json_is_one_document(two_ledgers, capsys):
+    code, out = _sample(two_ledgers, capsys, "--materiality", "50000", "--seed", "7",
+                        "--format", "json")
+    assert code == 0
+    payload = json.loads(out)
+    assert (payload["method"], payload["seed"], payload["seed_drawn"]) == ("mus", 7, False)
+    assert payload["selected"] and payload["materiality"]["performance"] == 37500.0
+
+
+def test_sample_stratified_examines_everything_at_performance_in_full(two_ledgers, capsys):
+    code, out = _sample(two_ledgers, capsys, "--method", "stratified", "--materiality", "20000",
+                        "--size", "10", "--seed", "3", "--format", "json")
+    assert code == 0
+    payload = json.loads(out)
+    full = [r for r in payload["selected"] if r["band"] == "full"]
+    assert all(r["amount"] >= 15000 for r in full)
+    assert len(payload["selected"]) - len(full) == 10
+    assert payload["parameters"]["examined_in_full"] == len(full)
+    assert payload["parameters"]["strata"] == len(payload["parameters"]["bands"]) == 3  # the default
+
+
+@pytest.mark.parametrize("extra, said", [
+    (["--materiality", "0"], "error: materiality must be above 0"),
+    (["--materiality", "50,000"], 'write 50000, not "50,000"'),
+    (["--materiality", "50000", "--performance", "2"], "performance share must be above 0 and at most 1"),
+    (["--materiality", "50000", "--trivial", "0.9"], "must be below the performance share"),
+    (["--materiality", "50000", "--size", "5"], "error: --size does not apply to --method mus"),
+    (["--materiality", "50000", "--method", "stratified"], "error: --method stratified needs --size"),
+    (["--materiality", "50000", "--method", "stratified", "--size", "5", "--confidence", "0.9"],
+     "error: --confidence does not apply to --method stratified"),
+    (["--materiality", "50000", "--method", "stratified", "--size", "999999"],
+     "entries below performance materiality"),
+    (["--materiality", "50000", "--method", "stratified", "--size", "5", "--strata", "21"],
+     "strata must be a whole number from 1 to 20"),
+    (["--materiality", "50000", "--seed", "-1"], "seed must be a whole number of 0 or more"),
+    (["--materiality", "50000", "--confidence", "1"], "confidence must be above 0 and below 1"),
+    (["--materiality", "1"], "more than the ledger's"),
+])
+def test_sample_refuses_what_it_cannot_use_in_one_line(two_ledgers, capsys, extra, said):
+    code, out = _sample(two_ledgers, capsys, *extra)
+    assert code == 2 and said in out
+    assert out.startswith("error: ") and out.count("\n") == 1
+
+
+def test_sample_needs_a_materiality(two_ledgers, capsys):
+    with pytest.raises(SystemExit) as exited:
+        main(["sample", str(two_ledgers / "a" / "ledger.csv")])
+    assert exited.value.code == 2
+    assert "--materiality" in capsys.readouterr().err
+
+
+def test_sample_says_when_the_ledger_cannot_be_read(tmp_path, capsys):
+    assert main(["sample", str(tmp_path / "missing.csv"), "--materiality", "50000"]) == 2
+    out = capsys.readouterr().out
+    assert out.startswith("error: cannot read the ledger") and out.count("\n") == 1
+
+
+def test_a_memo_is_written_inside_a_checkout_only_under_out(two_ledgers, tmp_path, capsys):
+    from ledgerlens.connectors.tokens import repository_root
+
+    if repository_root(tmp_path) is not None:
+        pytest.skip(f"{tmp_path} is inside a git repository")
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "docs").mkdir()
+    for target in (repo / "memo.md", repo / "docs" / "memo.md"):
+        code, out = _sample(two_ledgers, capsys, "--materiality", "50000", "--seed", "7",
+                            "--out", str(target))
+        assert code == 2 and out.startswith("refused: ")
+        assert "a selection memo is never written where it could be committed" in out
+    assert not (repo / "memo.md").exists() and list((repo / "docs").iterdir()) == []
+    target = repo / "out" / "memo.md"
+    code, out = _sample(two_ledgers, capsys, "--materiality", "50000", "--seed", "7",
+                        "--format", "markdown", "--out", str(target))
+    assert code == 0 and out == f"Selection memo (markdown) written to {target}\n"
+    assert target.read_text(encoding="utf-8").startswith("## LedgerLens selection memo, ")
