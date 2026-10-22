@@ -536,7 +536,9 @@ ledgerlens sample data/ledger.csv --fiscal-year 2025 --method mus --materiality 
   population is one fiscal year: a ledger that spans several needs `--fiscal-year`, and the
   memo names the year. It is every entry of that year with a positive amount, in every account
   and from every source: a journal-entry population, not one tied to an account balance or an
-  assertion. Entries of no amount, or of a negative one, are left out and counted.
+  assertion. Entries of no amount, or of a negative one, are left out and counted. The year is
+  the ledger's `fiscal_year` column: a QuickBooks pull fills it with each posting date's
+  calendar year, so for a company whose fiscal year ends in another month it is a calendar year.
 - **Monetary unit sampling** (`--method mus`, the default) treats every dollar as a sampling
   unit, so an entry is selected in proportion to its amount, and every entry at or above the
   sampling interval is selected whatever the random start. The sample size is book value x
@@ -555,9 +557,10 @@ ledgerlens sample data/ledger.csv --fiscal-year 2025 --method mus --materiality 
   Without `--seed` one is drawn and stated, and running again with it gives the same selection,
   on Python 3.9 and 3.12 alike: the only random draws are the ones Python promises not to change.
 - **What it is not.** A selection is what to examine, not a finding: nothing in the memo says an
-  entry is misstated, and an entry left out is not cleared by being left out. It reads the
-  ledger's entries only, their ids, fiscal years and amounts: no test's flags, no model score,
-  no controls file and no labels.
+  entry is misstated, and an entry left out is not cleared by being left out. It selects from
+  the ledger's entries alone, by their ids, fiscal years and amounts, and lists each with its
+  posting date and description: it reads no test's flags, no model score, no controls file and
+  no labels.
 
 The memo prints as text, or as markdown or JSON with `--format`. `--out` writes it to a file;
 inside a git checkout, as for the summary, only under `out/`, because a memo of real books

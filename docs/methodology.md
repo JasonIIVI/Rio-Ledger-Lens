@@ -163,7 +163,9 @@ Materiality is set for one year's financial statements, so the population is one
 every entry of that year with a positive amount (the larger of its debits and credits), in
 every account and from every source. It is a journal-entry population, not one tied to an
 account balance or an assertion. A ledger that spans several years is refused unless the year
-is named. Entries of no amount, or of a negative one, hold no dollar to select: they are left
+is named. The year is the ledger's `fiscal_year` column; a QuickBooks pull fills it with each
+posting date's calendar year, so for a company whose fiscal year ends in another month the
+year sampled is a calendar year. Entries of no amount, or of a negative one, hold no dollar to select: they are left
 out, counted in the memo, and need a procedure of their own.
 
 Two selections are offered, both of the kind AU-C 530 describes; neither claims to meet it.
@@ -188,8 +190,9 @@ Two selections are offered, both of the kind AU-C 530 describes; neither claims 
 Both are reproducible from their seed on every Python the package supports: amounts are whole
 cents, sizes and intervals are exact, and the only random draws are `random.Random(seed).random()`,
 the one sequence Python promises not to change. The selection memo states every figure, the
-seed among them. A selection is what to examine, not a finding, and it reads no flag, model
-score, controls file or label.
+seed among them. A selection is what to examine, not a finding. It is made from the entries'
+ids, fiscal years and amounts, lists each with its posting date and description, and reads no
+flag, model score, controls file or label.
 
 ## References
 

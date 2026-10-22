@@ -61,7 +61,7 @@ MAX_STRATA = 20
 CEILING = Decimal(10) ** 12
 _CENT = Decimal("0.01")
 #: A share is a percentage to four places at most; finer is a typing slip, and a share
-#: written 1E-999999999 would print a billion zeros as a percentage.
+#: written 1E-999990 would print about a million zeros as a percentage.
 _SHARE_STEP = Decimal("0.000001")
 #: A number given on the command line, not a document.
 _MAX_DIGITS = 40
@@ -95,8 +95,9 @@ STRATIFIED_NOTE = (
     "random draw; the draw covers every other entry, in bands of near-equal value."
 )
 INPUT_NOTE = (
-    "The selection reads the ledger's entries only, their ids, fiscal years and amounts: no "
-    "test's flags, no model score, no controls file and no labels."
+    "The selection is made from the ledger's entries alone, by their ids, fiscal years and "
+    "amounts, and lists each with its posting date and description (its first line's, by line "
+    "number). It reads no test's flags, no model score, no controls file and no labels."
 )
 
 
@@ -109,7 +110,9 @@ def _decimal(value: object, name: str) -> tuple[Decimal | None, str | None]:
 
     Read as written: a string is parsed by Decimal, never through a float, so 0.1 is
     0.1. A number built in code is read by its value: an integer exactly, a float (numpy's
-    among them, whose repr in numpy 2 is ``np.float64(...)``) by the repr of its float.
+    float64 among them, whose repr in numpy 2 is ``np.float64(...)``) by the repr of its
+    float, and a float narrower than that (numpy's float32 or float16) by its own text, so
+    a float32 0.05 is 0.05 and not the 0.05000000074505806 a float holds of it.
     """
     if isinstance(value, bool):
         return None, f"{name} must be a number, got {value!r}"
@@ -118,7 +121,11 @@ def _decimal(value: object, name: str) -> tuple[Decimal | None, str | None]:
     elif isinstance(value, numbers.Integral):
         number = Decimal(operator.index(value))
     elif isinstance(value, numbers.Real):
-        number = Decimal(repr(float(value)))
+        narrow = getattr(getattr(value, "dtype", None), "itemsize", 8) < 8
+        try:
+            number = Decimal(str(value) if narrow else repr(float(value)))
+        except OverflowError:  # a Fraction too large for a float
+            return None, f"{name} {quote(str(value))} has more digits than it needs"
     elif isinstance(value, str):
         text = value.strip()
         if len(text) > _MAX_DIGITS:
@@ -147,7 +154,10 @@ def _whole(value: object, name: str, low: int, high: int | None = None) -> int:
     elif isinstance(value, str):
         text = value.strip()
         if 0 < len(text) <= 20 and text.lstrip("+-").isdigit():
-            number = int(text)
+            try:
+                number = int(text)
+            except ValueError:  # isdigit passes "+-5", a superscript 2 and a circled 1; int does not
+                number = None
     span = f"of {low} or more" if high is None else f"from {low} to {high}"
     if number is None or number < low or (high is not None and number > high):
         raise SamplingError(f"{name} must be a whole number {span}, got {quote(value)}")
@@ -315,14 +325,17 @@ def population(df: pd.DataFrame, fiscal_year: object = None) -> tuple[pd.DataFra
 
     A ledger of one fiscal year is that year; a ledger of several needs ``fiscal_year``,
     because materiality is set for one year's financial statements. An entry's amount is
-    ``entry_level``'s, the larger of its debits and its credits, in whole cents, and its
-    description is its first line's (lines are put in ``line_no`` order first, so it does
-    not depend on the order of the rows). An entry of no amount, or of a negative one, holds
+    ``entry_level``'s, the larger of its debits and its credits, in whole cents. Its
+    description is its first line's in ``line_no`` order, a missing one passed over: lines
+    are put in that order first, so it does not depend on the order of the rows, except
+    between lines that share a line number, which keep the ledger's order. The year is the
+    ``fiscal_year`` column read as a whole number. An entry of no amount, or of a negative one, holds
     no dollar to select: it is left out and counted. ``entry_id`` is unique per entry, so
     it is the whole order.
     """
     entries = entry_level(df.sort_values(["entry_id", "line_no"], kind="mergesort"))
-    years = sorted(int(year) for year in entries["fiscal_year"].unique())
+    fiscal = entries["fiscal_year"].map(int)
+    years = sorted({int(year) for year in fiscal})
     if fiscal_year is None:
         if len(years) > 1:
             raise SamplingError(
@@ -334,12 +347,12 @@ def population(df: pd.DataFrame, fiscal_year: object = None) -> tuple[pd.DataFra
         if year not in years:
             raise SamplingError("the ledger has no entry in fiscal year {} (it holds {})".format(
                 year, ", ".join(map(str, years)) or "no entries"))
-    in_year = entries if year is None else entries[entries["fiscal_year"] == year]
+    in_year = entries if year is None else entries[fiscal == year]
     in_year = in_year.assign(cents=(in_year["entry_amount"] * 100).round().astype("int64"))
     kept = in_year[in_year["cents"] > 0].sort_values("entry_id").reset_index(drop=True)
     kept = kept.assign(
         posting_date=pd.to_datetime(kept["posting_date"]).dt.strftime("%Y-%m-%d"),
-        description=kept["description"].map(one_line),
+        description=kept["description"].map(lambda text: "" if pd.isna(text) else one_line(text)),
     )
     facts = {
         "fiscal_year": year,

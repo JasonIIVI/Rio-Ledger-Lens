@@ -2055,6 +2055,13 @@ def test_sample_stratified_examines_everything_at_performance_in_full(two_ledger
     (["--materiality", "50000", "--method", "stratified", "--size", "5", "--strata", "0"],
      "error: strata must be a whole number from 1 to 20"),
     (["--materiality", "50000", "--seed", "1.5"], "error: seed must be a whole number of 0 or more"),
+    # isdigit passes these and int() does not: they were a traceback
+    (["--materiality", "50000", "--seed=+-5"], "error: seed must be a whole number of 0 or more"),
+    (["--materiality", "50000", "--seed=" + chr(0xB2)], "error: seed must be a whole number of 0 or more"),
+    (["--materiality", "50000", "--fiscal-year=++2024"], "error: fiscal year must be a whole number"),
+    (["--materiality", "50000", "--method", "stratified", "--size=+-3"], "error: size must be a whole number"),
+    (["--materiality", "50000", "--method", "stratified", "--size", "5", "--strata=" + chr(0x2460)],
+     "error: strata must be a whole number from 1 to 20"),
 ])
 def test_sample_refuses_what_it_cannot_use_in_one_line(two_ledgers, capsys, extra, said):
     code, out = _sample(two_ledgers, capsys, *extra)

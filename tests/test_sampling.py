@@ -81,6 +81,19 @@ def test_numbers_built_by_numpy_are_read_by_their_value():
     assert s.seed == 3 and s.parameters["confidence"] == 0.95
 
 
+def test_a_float_narrower_than_a_double_and_a_fraction_are_read_by_their_value():
+    """Through a float64, float32 0.05 was 0.05000000074505806, refused as finer than six places."""
+    m = Materiality(np.float32(50000), np.float32(0.75), np.float32(0.05))
+    assert (m.overall, m.performance_share, m.trivial_share) == (
+        Decimal("50000.0"), Decimal("0.75"), Decimal("0.05"))
+    assert Materiality(np.float16(0.5), "0.5", "0.25").overall == Decimal("0.5")
+    s = mus_select(_ledger([10_000.0] * 4), m, confidence=np.float32(0.9), seed=1)
+    assert s.parameters["confidence"] == 0.9
+    assert Materiality(Fraction(100_001, 2)).overall == Decimal("50000.5")
+    with pytest.raises(SamplingError, match="materiality '1000.* has more digits than it needs"):
+        Materiality(Fraction(10 ** 400))
+
+
 @pytest.mark.parametrize("args, said", [
     (("0",), "materiality must be above 0"),
     (("-5",), "materiality must be above 0"),
@@ -107,6 +120,11 @@ def test_materiality_that_cannot_be_used_is_refused_with_its_reason(args, said):
     with pytest.raises(SamplingError) as caught:
         Materiality(*args)
     assert said in str(caught.value)
+
+
+def test_a_share_can_be_given_to_six_places():
+    assert Materiality("50000", "0.123456", "0.000001").describe() == (
+        "$50,000.00 overall; performance $6,172.80 (12.3456%); clearly trivial $0.05 (0.0001%)")
 
 
 def test_every_problem_with_materiality_is_named_at_once():
@@ -147,6 +165,21 @@ def test_an_entrys_description_is_its_first_lines_whatever_the_row_order():
     df["description"] = [f"{side} side {i // 2}" for i, side in enumerate(["debit", "credit"] * 2)]
     entries, _ = population(df.iloc[::-1])
     assert list(entries["description"]) == ["debit side 0", "debit side 1"]
+
+
+def test_an_entry_whose_description_is_missing_shows_none():
+    df = _ledger([100.0, 200.0])
+    df["description"] = pd.array([pd.NA, pd.NA, "second", pd.NA], dtype="string")
+    entries, _ = population(df)
+    assert list(entries["description"]) == ["", "second"]
+
+
+def test_a_fiscal_year_column_held_as_text_is_read_as_its_number():
+    df = _ledger([100.0, 200.0, 300.0], years=[2024, 2025, 2025])
+    df["fiscal_year"] = df["fiscal_year"].astype(str)
+    entries, facts = population(df, fiscal_year=2025)
+    assert list(entries["cents"]) == [20000, 30000]
+    assert (facts["fiscal_year"], facts["other_years"]) == (2025, 1)
 
 
 def test_a_ledger_of_several_fiscal_years_needs_the_year_named():
@@ -298,14 +331,35 @@ def test_mus_on_the_default_ledger_selects_the_same_entries_on_every_python(ledg
     p = s.parameters
     assert (p["size"], p["entries_selected"], p["certain"], p["certain_from"]) == (193, 185, 7, 12_484.63)
     assert s.population["book_value"] == 2_409_533.22
+    assert (s.population["entries_in_year"], s.population["other_years"]) == (2_528, 2_557)
     digest = hashlib.sha256(",".join(s.items["entry_id"]).encode()).hexdigest()
     assert digest[:16] == "ab3df2681609f236"
+
+
+def test_mus_samples_the_fiscal_year_named_and_no_other(ledger):
+    s = mus_select(ledger, Materiality("50000"), seed=7, fiscal_year=2024)
+    p = s.parameters
+    assert (p["size"], p["entries_selected"]) == (196, 183)
+    assert s.population["book_value"] == 2_450_555.68
+    assert (s.population["entries_in_year"], s.population["other_years"]) == (2_557, 2_528)
+    years = ledger.loc[ledger["entry_id"].isin(s.items["entry_id"]), "fiscal_year"]
+    assert set(years) == {2024}
 
 
 @pytest.mark.parametrize("confidence", [0, 1, "1.5", "-0.1", "x", "nan"])
 def test_a_confidence_outside_zero_and_one_is_refused(confidence):
     with pytest.raises(SamplingError, match="confidence"):
         mus_select(_ledger([100.0]), Materiality("50000"), confidence=confidence, seed=1)
+
+
+@pytest.mark.parametrize("text", ["+-5", "++2025", "-+2", chr(0xB2), chr(0x2460)])
+def test_a_whole_number_int_cannot_read_is_refused_not_raised(text):
+    """isdigit passes a stacked sign's digits, a superscript 2 and a circled 1; int() does not,
+    and its ValueError escaped the command as a traceback."""
+    with pytest.raises(SamplingError, match="seed must be a whole number of 0 or more"):
+        check_parameters("mus", seed=text)
+    with pytest.raises(SamplingError, match="fiscal year must be a whole number of 1 or more"):
+        population(_ledger([100.0]), fiscal_year=text)
 
 
 @pytest.mark.parametrize("seed", [-1, True, "x", "3.5", 1.5, ""])
@@ -455,6 +509,22 @@ def test_the_interval_line_names_a_whole_cent_every_entry_of_which_is_selected()
     _, text = _memo(s, "text")
     assert "Sampling interval   $12,407.41" in text and "every entry of $12,407.41 or more" in text
     assert s.parameters["interval"] < 12_407.41 == s.parameters["certain_from"]
+
+
+def test_the_whole_cent_is_the_interval_rounded_up_not_to_the_nearest():
+    """$1,000,000.01 in 80 units: the interval is $12,500.000125, so an entry of $12,500.00 can
+    miss every unit, and only one of $12,500.01 or more is certain."""
+    s = mus_select(_ledger([10_000.0] * 99 + [10_000.01]), Materiality("50000"), seed=3)
+    assert (s.parameters["size"], s.parameters["certain_from"]) == (80, 12_500.01)
+    _, text = _memo(s, "text")
+    assert "Sampling interval   $12,500.00" in text and "every entry of $12,500.01 or more" in text
+
+
+def test_entries_of_no_amount_alone_bring_no_note_on_negative_ones():
+    payload, text = _memo(mus_select(_ledger([10_000.0] * 4 + [0.0]), Materiality("50000"), seed=1),
+                          "text")
+    assert "1 entry of no amount left out" in text
+    assert sampling.NEGATIVE_NOTE not in payload["notes"]
 
 
 def test_a_drawn_seed_says_how_to_repeat_the_selection():

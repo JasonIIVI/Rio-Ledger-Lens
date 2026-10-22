@@ -423,9 +423,11 @@ and the MCP SDK, so the two together cover every code path CI will see.
   `ledgerlens sample`. Materiality comes from the command line only (`--materiality`; the
   `--performance` and `--trivial` shares default to 0.75 and 0.05, below 1, to at most six
   places, each figure rounded down to the cent and refused under a cent), every problem named
-  at once; numbers built by numpy are read by their value. The population is one fiscal year
-  (`--fiscal-year`, needed when the ledger spans several): its entries with a positive amount,
-  lines in `line_no` order first; entries of no amount and of a negative one are counted apart.
+  at once; numbers built by numpy are read by their value (a float32 by its own text). The
+  population is one fiscal year (`--fiscal-year`, needed when the ledger spans several; a
+  QuickBooks pull's year is the posting date's calendar year): its entries with a positive
+  amount, lines in `line_no` order first; entries of no amount and of a negative one are
+  counted apart.
   Monetary unit sampling: R = -ln(1 - confidence) (no expected misstatement; tolerable
   misstatement = performance), n = ceil(book value x R / performance), interval exact
   (`Fraction`), a seeded start, each entry's units counted from its bounds in one pass (no cap
@@ -433,7 +435,8 @@ and the MCP SDK, so the two together cover every code path CI will see.
   which that holds). Stratified: everything at or above performance in full, a seeded draw of
   `--size` from everything below it in bands of near-equal value, shared by largest remainder.
   Clearly trivial sets nothing aside (the plan had it set aside: on the default ledger that was
-  $2.97M, 61% of the book value). Only `random.Random(seed).random()` is drawn, so a seed gives
+  $2.97M, 61% of the book value), and no band is promised a draw; the maintainer accepted both
+  changes on 2026-10-22. Only `random.Random(seed).random()` is drawn, so a seed gives
   one selection on every Python; the default ledger's FY2025 selections are pinned by id. The
   memo states every figure, the seed (drawn and stated when not given) and what the population
   leaves out; ledger text through `md_code` / `one_line`; `--out` through the summary's guard,
@@ -442,12 +445,16 @@ and the MCP SDK, so the two together cover every code path CI will see.
   controls file or label. One review (no value read wrong; one high: numpy floats crashed
   `Materiality`; mediums: the units-versus-entries refusal and its false reason, negative
   entries counted as of no amount, a two-year population against one materiality), all fixed.
+  A verification of those fixes found a crash (`--seed=+-5`, a superscript or circled digit
+  passed `isdigit` and int() raised; argparse had refused them before) and test gaps (seven
+  of eight mutants survived, among them `certain_from` rounded to the nearest cent), fixed
+  with a float32 read by its own text, a text `fiscal_year` column and a missing description.
 - **Next** — week 6, PR 2: each entry's materiality band in the exception queue (`test`,
   `summary`, the workpaper, the dashboard), never folded into the risk score; then v1.2.0.
   Open, the maintainer's call: re-recording `docs/demo.gif` (its model scores predate
   v1.0.0's tie fix), the display-only sorts above, and week 5's model train/test split (a
   re-measurement under rule 10).
-- 1136 tests on 3.9 (1 skipped) / 1150 on 3.12 (the fourteen MCP tests need 3.10+), ruff clean.
+- 1153 tests on 3.9 (1 skipped) / 1167 on 3.12 (the fourteen MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
