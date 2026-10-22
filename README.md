@@ -518,6 +518,44 @@ was none.
 A controls file can name real people, so git ignores any `*.controls.json` and CI's rule-1
 check fails if one is ever committed.
 
+## Select a sample
+
+Ranking by risk says which entries look odd; it does not say which are big enough to matter.
+`ledgerlens sample` applies a materiality you give and selects entries to examine, with a memo
+of how the selection was made and how to repeat it:
+
+```bash
+ledgerlens sample data/ledger.csv --method mus --materiality 50000 --seed 7
+```
+
+- **Materiality is yours.** `--materiality` is the overall figure for the engagement; there is
+  no default and no file. Performance materiality and clearly trivial are shares of it
+  (`--performance 0.75` and `--trivial 0.05` by default), each rounded down to the cent.
+  Nothing tunes them.
+- **Monetary unit sampling** (`--method mus`, the default) treats every dollar as a sampling
+  unit, so an entry is selected in proportion to its amount, and every entry at or above the
+  sampling interval is selected whatever the random start. The sample size is book value x
+  reliability factor / performance materiality, rounded up, with the zero-error factor
+  -ln(1 - confidence), 2.9957 at the default 95%: it assumes no misstatement is expected, and
+  expecting some needs a larger sample. On the default ledger at $50,000 that is 389 units at
+  an interval of $12,493.80, landing on 368 entries.
+- **Stratified random sampling** (`--method stratified --size N`) examines every entry at or
+  above performance materiality in full and draws N of the rest at random, from bands of
+  near-equal value (`--strata`, 3 by default). Clearly trivial sets nothing aside: it governs
+  which misstatements are added up, and the default ledger's 4,742 entries under $2,500 come to
+  $2.97 million. With `--size 40` the default ledger's 4 entries of $37,500 or more are examined
+  in full and 40 are drawn, from bands of 3,811, 965 and 305 entries.
+- **Repeatable.** The memo states every figure the selection came from, the seed among them.
+  Without `--seed` one is drawn and stated, and running again with it gives the same selection,
+  on Python 3.9 and 3.12 alike: the only random draws are the ones Python promises not to change.
+- **What it is not.** A selection is what to examine, not a finding: nothing in the memo says an
+  entry is misstated, and an entry left out is not cleared by being left out. It reads only the
+  amounts: no test's flags, no model score, no controls file and no labels.
+
+The memo prints as text, or as markdown or JSON with `--format`. `--out` writes it to a file;
+inside a git checkout, as for the summary, only under `out/`, because a memo of real books
+carries their entries and descriptions.
+
 ## One page, and a weekly run
 
 `ledgerlens summary` gathers what the other commands print piecemeal into one page: the rule
@@ -651,6 +689,8 @@ and reopen Claude Desktop:
 - [x] **Week 5, last part** — break the circularity: which test caught each archetype, every
       setting swept, and a held-out ledger of archetypes no rule describes, generated once
       after the code was frozen, measuring the model tier against chance (v1.1.0)
+- [x] **Week 6, first part** — materiality and `ledgerlens sample`: monetary unit and
+      stratified sampling, seeded and repeatable, with a memo of how each selection was made
 
 ## Limitations
 

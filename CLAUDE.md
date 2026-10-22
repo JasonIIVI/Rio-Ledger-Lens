@@ -26,8 +26,8 @@ and the MCP SDK, so the two together cover every code path CI will see.
 ## Current state
 
 - **v1.1.0** is #12 to #15 (#15, `week5/held-out`, squash-merged 2026-10-21 as `e0a2b02`) and
-  the follow-up `fix/pandas-floor-and-tie-order`, to be tagged on the follow-up's merge
-  commit with release notes reviewed against the code.
+  #17 (`fix/pandas-floor-and-tie-order`, squash-merged 2026-10-22 as `5c99403`), tagged on
+  `5c99403` with release notes reviewed against the code.
   **v1.0.0** was PR #9 (`week4/automation-and-readme`, squash-merged 2026-10-07 as `039a3ad`,
   tagged once the weekly run had opened its first Issue, #10; release notes reviewed against
   the code). **v0.4.0** was PR #7 (2026-09-29; v0.3.1 was PR #5 on 2026-09-25; v0.3.0 was PR #2
@@ -398,8 +398,8 @@ and the MCP SDK, so the two together cover every code path CI will see.
     test" tables in another order (one-key unstable sorts in `evaluate`, in `src/`, frozen):
     disclosed in `docs/limitations.md`, and the test compared those two tables' rows regardless
     of order until the tie fix below.
-- **Version floors and stable tie order (`fix/pandas-floor-and-tie-order`, before the v1.1.0
-  tag)** — found after the merge.
+- **Version floors and stable tie order (#17, `fix/pandas-floor-and-tie-order`, before the
+  v1.1.0 tag)** — found after the merge.
   - **pandas 2.2.** Since #12 `ingest` imports `pandas.tseries.api.guess_datetime_format`,
     public from pandas 2.2.0 (absent in 2.0.3 and 2.1.4), and reads with
     `to_datetime(format="mixed")`, from 2.0.0, while `pyproject.toml` said `pandas>=1.5`: an
@@ -419,10 +419,28 @@ and the MCP SDK, so the two together cover every code path CI will see.
     `test`'s output again. No value moves. The other tables that only display rows
     (Benford by MAD, review counts, mean model score by archetype) still leave a tie to a
     one-key sort.
-- **Next** — tag v1.1.0 on the follow-up's merge commit, with the claims-reviewed notes. Then the
-  maintainer's call. Open, unchanged: re-recording `docs/demo.gif` (its model scores predate
-  v1.0.0's tie fix) and the display-only sorts above.
-- 1028 tests on 3.9 (1 skipped) / 1042 on 3.12 (the fourteen MCP tests need 3.10+), ruff clean.
+- **Materiality and sampling (week 6, PR 1, `week6/sampling`)** — `sampling.py` and
+  `ledgerlens sample`. Materiality comes from the command line only (`--materiality`, with
+  `--performance` 0.75 and `--trivial` 0.05 as shares, each rounded down to the cent),
+  refused with every problem named. Monetary unit sampling: R = -ln(1 - confidence) (no
+  expected misstatement), n = ceil(book value x R / performance), interval exact
+  (`Fraction`), a seeded start, `bisect` into entries laid end to end in `entry_id` order; a
+  sample larger than the population is refused. Stratified: everything at or above
+  performance in full, a seeded draw of `--size` from everything below it in bands of
+  near-equal value, shared by largest remainder. Clearly trivial sets nothing aside (the plan
+  had it set aside: on the default ledger that was $2.97M, 61% of the book value). Only
+  `random.Random(seed).random()` is drawn, so a seed gives one selection on every Python; the
+  default ledger's selections are pinned by id. The memo states every figure and the seed
+  (drawn and stated when not given); ledger text through `md_code` / `one_line`; `--out`
+  through the summary's guard, now shared (`_checked_out`). It reads no flag, model score,
+  controls file or label. Mutants: 17 of 18 killed in the module (the survivor equivalent:
+  `entry_level` already orders by `entry_id`), 11 of 11 in the command.
+- **Next** — week 6, PR 2: each entry's materiality band in the exception queue (`test`,
+  `summary`, the workpaper, the dashboard), never folded into the risk score; then v1.2.0.
+  Open, the maintainer's call: re-recording `docs/demo.gif` (its model scores predate
+  v1.0.0's tie fix), the display-only sorts above, and week 5's model train/test split (a
+  re-measurement under rule 10).
+- 1106 tests on 3.9 (1 skipped) / 1120 on 3.12 (the fourteen MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
@@ -453,6 +471,7 @@ ledger CSV ──▶ ingest ──┼──▶ Isolation Forest ─────�
 | `ingest.py` | validation + derived columns; `entry_level()` collapses lines to entries; `ledger_digest()` / `ledger_identity()`, the review-store key (`csv:<sha256>`, or `qbo:<realm>` from a `.identity.json` sidecar) |
 | `controls.py` | a company's approver list (JET-12) and approval limit (JET-06) from `<stem>.controls.json` beside the ledger; `DEFAULT_CONTROLS` (the synthetic company's) when there is none; a file that cannot be used is refused, never replaced |
 | `jets.py` | 12 deterministic tests + severity-weighted risk score; JET-06 and JET-12 read a `Controls` |
+| `sampling.py` | `Materiality` (overall, performance, clearly trivial; given per run, never defaulted) and two seeded selections over entries' amounts: monetary unit sampling (no expected misstatement) and stratified random sampling; the selection memo (`collect_memo` / `render_memo`, text / markdown / JSON) |
 | `benford.py` | first-digit test, MAD (Nigrini bands) + chi-square |
 | `features.py` | 16 engineered per-entry features for the model tier |
 | `model.py` | Isolation Forest, rank-based flagging, tier comparison |
@@ -467,7 +486,7 @@ ledger CSV ──▶ ingest ──┼──▶ Isolation Forest ─────�
 | `env.py` | dependency-free `.env` loader |
 | `connectors/qbo.py` | QuickBooks Online: `QboConfig` (`QBO_*`), transports (urllib, `RecordedTransport` replay, sanitizing `Recorder`), OAuth (`QboAuth`, `CallbackServer`), `QboClient` (refresh, throttling, paging), and the mapping into the ledger contract (`pull`, `PullStats`, `write_identity`); stdlib |
 | `connectors/tokens.py` | QuickBooks token store: `~/.config/ledgerlens/qbo-<environment>-<realm>.json` (`$XDG_CONFIG_HOME/ledgerlens/` when set; `$LEDGERLENS_TOKEN_DIR` overrides both), mode 600, a record only for the realm its file names, refuses any path inside a git checkout; stdlib |
-| `cli.py` | `generate` / `test` / `score` / `benford` / `report` / `summary` / `narrate` / `adopt-legacy` / `eval-narratives` / `qbo-auth` / `pull-qbo` |
+| `cli.py` | `generate` / `test` / `score` / `benford` / `report` / `summary` / `sample` / `narrate` / `adopt-legacy` / `eval-narratives` / `qbo-auth` / `pull-qbo` |
 | `app.py` | Streamlit dashboard: queue, note, decision form, history |
 
 ## Rules that must not be broken
@@ -501,7 +520,9 @@ ledger CSV ──▶ ingest ──┼──▶ Isolation Forest ─────�
 7. **A threshold is chosen against labelled data, never for roundness, and every sweep is
    recorded in `docs/tuning.md`.** Only JET-11's was chosen on the default ledger; the other
    settings are swept there and left, because that ledger cannot choose them. The approver list and approval limit (`controls.py`) are not thresholds:
-   they are company facts, stated in a controls file and never tuned.
+   they are company facts, stated in a controls file and never tuned. Materiality
+   (`sampling.py`) is neither: it is the auditor's judgement, given for each run, never
+   defaulted and never tuned.
 8. **The LLM never decides anything.** It explains flags and suggests evidence. A named human
    records every accept / dismiss / escalate. Decisions and narratives are append-only, enforced
    by SQLite triggers, and each decision records the narrative it was made against. The MCP

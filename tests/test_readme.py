@@ -181,3 +181,22 @@ def test_the_readmes_controls_example_is_a_file_the_loader_accepts():
     section = text.split("## Set a company's controls", 1)[1].split("\n## ", 1)[0]
     example = re.search(r"```json\n(.*?)\n```", section, re.S).group(1)
     assert parse_controls(example) == Controls(("qbo-user-1",), 10_000)
+
+
+def test_the_sampling_section_quotes_what_sample_selects_on_the_default_ledger(ledger):
+    from ledgerlens.sampling import Materiality, mus_select, population, stratified_select
+
+    m = Materiality("50000")
+    mus = mus_select(ledger, m, seed=7).parameters
+    assert (f"{mus['reliability_factor']:.4f} at the default 95%" in README
+            and f"that is {mus['size']} units at an interval of ${mus['interval']:,.2f}, landing on "
+                f"{mus['entries_selected']} entries" in README)
+    entries, _ = population(ledger)
+    small = entries[entries["cents"] < m.trivial_cents]
+    assert (f"the default ledger's {len(small):,} entries under ${float(m.clearly_trivial):,.0f} come "
+            f"to ${small['cents'].sum() / 1e8:.2f} million" in README)
+    strat = stratified_select(ledger, m, size=40, seed=7).parameters
+    bands = ", ".join(f"{b['entries']:,}" for b in strat["bands"][:-1])
+    assert (f"the default ledger's {strat['examined_in_full']} entries of ${float(m.performance):,.0f} "
+            f"or more are examined in full and 40 are drawn, from bands of {bands} and "
+            f"{strat['bands'][-1]['entries']:,} entries" in README)
