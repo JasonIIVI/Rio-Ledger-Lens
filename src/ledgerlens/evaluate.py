@@ -185,7 +185,9 @@ def recall_by_archetype(flags: pd.DataFrame, labels: pd.DataFrame) -> pd.DataFra
     ).reset_index()
     out["missed"] = out["n"] - out["caught"]
     out["recall"] = (out["caught"] / out["n"]).round(4)
-    return out.sort_values("recall").reset_index(drop=True)
+    # A tie on recall goes by name. On recall alone pandas' default sort, which is not stable,
+    # left tied rows in another order on CI's Linux runners than on a Mac.
+    return out.sort_values(["recall", "anomaly_type"]).reset_index(drop=True)
 
 
 def attribution(flags: pd.DataFrame, labels: pd.DataFrame) -> pd.DataFrame:
@@ -275,7 +277,8 @@ def precision_by_test(flags: pd.DataFrame, labels: pd.DataFrame) -> pd.DataFrame
         true_positives=("hit", "sum"),
     ).reset_index()
     out["precision"] = (out["true_positives"] / out["entries_flagged"]).round(4)
-    return out.sort_values("precision", ascending=False).reset_index(drop=True)
+    # A tie on precision goes by test id, for the reason recall_by_archetype gives.
+    return out.sort_values(["precision", "test_id"], ascending=[False, True]).reset_index(drop=True)
 
 
 def format_report(metrics: dict[str, float]) -> str:
