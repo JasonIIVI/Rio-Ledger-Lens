@@ -1485,6 +1485,7 @@ def test_every_command_turns_a_ledger_it_cannot_read_into_one_line(two_ledgers, 
         ["narrate", str(bad), "--db", str(tmp_path / "r.sqlite")],
         ["adopt-legacy", str(bad), "--db", str(tmp_path / "r.sqlite")],
         ["eval-narratives", str(bad), "--cases", str(tmp_path / "c.json")],
+        ["sample", str(bad), "--materiality", "50000"],
         ["test", str(tmp_path / "missing.csv")],
     ):
         capsys.readouterr()
@@ -2035,7 +2036,7 @@ def test_sample_stratified_examines_everything_at_performance_in_full(two_ledger
 @pytest.mark.parametrize("extra, said", [
     (["--materiality", "0"], "error: materiality must be above 0"),
     (["--materiality", "50,000"], 'write 50000, not "50,000"'),
-    (["--materiality", "50000", "--performance", "2"], "performance share must be above 0 and at most 1"),
+    (["--materiality", "50000", "--performance", "2"], "performance share must be above 0 and below 1"),
     (["--materiality", "50000", "--trivial", "0.9"], "must be below the performance share"),
     (["--materiality", "50000", "--size", "5"], "error: --size does not apply to --method mus"),
     (["--materiality", "50000", "--method", "stratified"], "error: --method stratified needs --size"),
@@ -2047,7 +2048,13 @@ def test_sample_stratified_examines_everything_at_performance_in_full(two_ledger
      "strata must be a whole number from 1 to 20"),
     (["--materiality", "50000", "--seed", "-1"], "seed must be a whole number of 0 or more"),
     (["--materiality", "50000", "--confidence", "1"], "confidence must be above 0 and below 1"),
-    (["--materiality", "1"], "more than the ledger's"),
+    (["--materiality", "50000", "--fiscal-year", "2023"], "no entry in fiscal year 2023 (it holds 2024)"),
+    (["--materiality", "50000", "--fiscal-year", "x"], "error: fiscal year must be a whole number"),
+    (["--materiality", "50000", "--method", "stratified", "--size", "0"], "error: size must be a whole number"),
+    (["--materiality", "50000", "--method", "stratified", "--size", "x"], "error: size must be a whole number"),
+    (["--materiality", "50000", "--method", "stratified", "--size", "5", "--strata", "0"],
+     "error: strata must be a whole number from 1 to 20"),
+    (["--materiality", "50000", "--seed", "1.5"], "error: seed must be a whole number of 0 or more"),
 ])
 def test_sample_refuses_what_it_cannot_use_in_one_line(two_ledgers, capsys, extra, said):
     code, out = _sample(two_ledgers, capsys, *extra)
@@ -2087,3 +2094,26 @@ def test_a_memo_is_written_inside_a_checkout_only_under_out(two_ledgers, tmp_pat
                         "--format", "markdown", "--out", str(target))
     assert code == 0 and out == f"Selection memo (markdown) written to {target}\n"
     assert target.read_text(encoding="utf-8").startswith("## LedgerLens selection memo, ")
+
+
+def test_sample_needs_the_year_named_for_a_ledger_of_several(tmp_path, capsys):
+    main(["generate", "--start", "2024-12-01", "--end", "2025-01-31", "--out-dir", str(tmp_path)])
+    ledger = str(tmp_path / "ledger.csv")
+    capsys.readouterr()
+    assert main(["sample", ledger, "--materiality", "50000"]) == 2
+    out = capsys.readouterr().out
+    assert out.startswith("error: cannot select from the ledger") and out.count("\n") == 1
+    assert "spans fiscal years 2024, 2025" in out and "--fiscal-year" in out
+    assert main(["sample", ledger, "--materiality", "50000", "--fiscal-year", "2025", "--seed", "1",
+                 "--format", "json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["population"]["fiscal_year"] == 2025 and payload["population"]["other_years"] > 0
+
+
+def test_sample_files_a_ledger_under_its_identity(two_ledgers, tmp_path, capsys):
+    ledger = tmp_path / "books.csv"
+    ledger.write_bytes((two_ledgers / "a" / "ledger.csv").read_bytes())
+    (tmp_path / "books.identity.json").write_text(json.dumps({"ledger_id": "qbo:9130357"}))
+    capsys.readouterr()
+    assert main(["sample", str(ledger), "--materiality", "50000", "--seed", "1"]) == 0
+    assert "Identity     qbo:9130357" in capsys.readouterr().out

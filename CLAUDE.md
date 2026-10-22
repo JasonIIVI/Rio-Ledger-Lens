@@ -420,27 +420,34 @@ and the MCP SDK, so the two together cover every code path CI will see.
     (Benford by MAD, review counts, mean model score by archetype) still leave a tie to a
     one-key sort.
 - **Materiality and sampling (week 6, PR 1, `week6/sampling`)** — `sampling.py` and
-  `ledgerlens sample`. Materiality comes from the command line only (`--materiality`, with
-  `--performance` 0.75 and `--trivial` 0.05 as shares, each rounded down to the cent),
-  refused with every problem named. Monetary unit sampling: R = -ln(1 - confidence) (no
-  expected misstatement), n = ceil(book value x R / performance), interval exact
-  (`Fraction`), a seeded start, `bisect` into entries laid end to end in `entry_id` order; a
-  sample larger than the population is refused. Stratified: everything at or above
-  performance in full, a seeded draw of `--size` from everything below it in bands of
-  near-equal value, shared by largest remainder. Clearly trivial sets nothing aside (the plan
-  had it set aside: on the default ledger that was $2.97M, 61% of the book value). Only
-  `random.Random(seed).random()` is drawn, so a seed gives one selection on every Python; the
-  default ledger's selections are pinned by id. The memo states every figure and the seed
-  (drawn and stated when not given); ledger text through `md_code` / `one_line`; `--out`
-  through the summary's guard, now shared (`_checked_out`). It reads no flag, model score,
-  controls file or label. Mutants: 17 of 18 killed in the module (the survivor equivalent:
-  `entry_level` already orders by `entry_id`), 11 of 11 in the command.
+  `ledgerlens sample`. Materiality comes from the command line only (`--materiality`; the
+  `--performance` and `--trivial` shares default to 0.75 and 0.05, below 1, to at most six
+  places, each figure rounded down to the cent and refused under a cent), every problem named
+  at once; numbers built by numpy are read by their value. The population is one fiscal year
+  (`--fiscal-year`, needed when the ledger spans several): its entries with a positive amount,
+  lines in `line_no` order first; entries of no amount and of a negative one are counted apart.
+  Monetary unit sampling: R = -ln(1 - confidence) (no expected misstatement; tolerable
+  misstatement = performance), n = ceil(book value x R / performance), interval exact
+  (`Fraction`), a seeded start, each entry's units counted from its bounds in one pass (no cap
+  on n; every entry of the interval or more is certain, and the memo names the whole cent from
+  which that holds). Stratified: everything at or above performance in full, a seeded draw of
+  `--size` from everything below it in bands of near-equal value, shared by largest remainder.
+  Clearly trivial sets nothing aside (the plan had it set aside: on the default ledger that was
+  $2.97M, 61% of the book value). Only `random.Random(seed).random()` is drawn, so a seed gives
+  one selection on every Python; the default ledger's FY2025 selections are pinned by id. The
+  memo states every figure, the seed (drawn and stated when not given) and what the population
+  leaves out; ledger text through `md_code` / `one_line`; `--out` through the summary's guard,
+  now shared (`_checked_out`). `--size`, `--strata`, `--seed` and `--fiscal-year` are checked
+  before the ledger is read, each refusal one `error:` line. It reads no flag, model score,
+  controls file or label. One review (no value read wrong; one high: numpy floats crashed
+  `Materiality`; mediums: the units-versus-entries refusal and its false reason, negative
+  entries counted as of no amount, a two-year population against one materiality), all fixed.
 - **Next** — week 6, PR 2: each entry's materiality band in the exception queue (`test`,
   `summary`, the workpaper, the dashboard), never folded into the risk score; then v1.2.0.
   Open, the maintainer's call: re-recording `docs/demo.gif` (its model scores predate
   v1.0.0's tie fix), the display-only sorts above, and week 5's model train/test split (a
   re-measurement under rule 10).
-- 1106 tests on 3.9 (1 skipped) / 1120 on 3.12 (the fourteen MCP tests need 3.10+), ruff clean.
+- 1136 tests on 3.9 (1 skipped) / 1150 on 3.12 (the fourteen MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
@@ -471,7 +478,7 @@ ledger CSV ──▶ ingest ──┼──▶ Isolation Forest ─────�
 | `ingest.py` | validation + derived columns; `entry_level()` collapses lines to entries; `ledger_digest()` / `ledger_identity()`, the review-store key (`csv:<sha256>`, or `qbo:<realm>` from a `.identity.json` sidecar) |
 | `controls.py` | a company's approver list (JET-12) and approval limit (JET-06) from `<stem>.controls.json` beside the ledger; `DEFAULT_CONTROLS` (the synthetic company's) when there is none; a file that cannot be used is refused, never replaced |
 | `jets.py` | 12 deterministic tests + severity-weighted risk score; JET-06 and JET-12 read a `Controls` |
-| `sampling.py` | `Materiality` (overall, performance, clearly trivial; given per run, never defaulted) and two seeded selections over entries' amounts: monetary unit sampling (no expected misstatement) and stratified random sampling; the selection memo (`collect_memo` / `render_memo`, text / markdown / JSON) |
+| `sampling.py` | `Materiality` (the overall figure given per run and never defaulted; the performance and clearly trivial shares default to 75% and 5%), the population (one fiscal year's entries with a positive amount), and two seeded selections: monetary unit sampling (no expected misstatement) and stratified random sampling; the selection memo (`collect_memo` / `render_memo`, text / markdown / JSON) |
 | `benford.py` | first-digit test, MAD (Nigrini bands) + chi-square |
 | `features.py` | 16 engineered per-entry features for the model tier |
 | `model.py` | Isolation Forest, rank-based flagging, tier comparison |
@@ -521,8 +528,8 @@ ledger CSV ──▶ ingest ──┼──▶ Isolation Forest ─────�
    recorded in `docs/tuning.md`.** Only JET-11's was chosen on the default ledger; the other
    settings are swept there and left, because that ledger cannot choose them. The approver list and approval limit (`controls.py`) are not thresholds:
    they are company facts, stated in a controls file and never tuned. Materiality
-   (`sampling.py`) is neither: it is the auditor's judgement, given for each run, never
-   defaulted and never tuned.
+   (`sampling.py`) is neither: it is the auditor's judgement, given for each run; the overall
+   figure is never defaulted (the two shares default to 75% and 5%), and none of it is tuned.
 8. **The LLM never decides anything.** It explains flags and suggests evidence. A named human
    records every accept / dismiss / escalate. Decisions and narratives are append-only, enforced
    by SQLite triggers, and each decision records the narrative it was made against. The MCP

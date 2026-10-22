@@ -60,6 +60,7 @@ from .sampling import (
     stratified_select,
 )
 from .sampling import FORMATS as SAMPLE_FORMATS
+from .sampling import check_parameters as check_sample_parameters
 from .schema import HeldOutType
 from .summary import FORMATS as SUMMARY_FORMATS
 from .summary import collect as collect_summary
@@ -524,7 +525,9 @@ def cmd_sample(args: argparse.Namespace) -> int:
 
     Nothing is printed but the memo, so `--format json` stays one document. A flag that
     does not apply to the method is refused rather than ignored: the memo states what the
-    selection was made with, and an ignored flag would be stated nowhere.
+    selection was made with, and an ignored flag would be stated nowhere. Every value is
+    checked before the ledger is read, and a bad one is one `error:` line: --size, --strata,
+    --seed and --fiscal-year are passed on as written for that, not parsed by argparse.
     """
     out = None
     if args.out:
@@ -548,6 +551,8 @@ def cmd_sample(args: argparse.Namespace) -> int:
             args.materiality,
             DEFAULT_PERFORMANCE_SHARE if args.performance is None else args.performance,
             DEFAULT_TRIVIAL_SHARE if args.trivial is None else args.trivial)
+        check_sample_parameters(args.method, confidence=args.confidence, size=args.size,
+                                strata=args.strata, seed=args.seed, fiscal_year=args.fiscal_year)
     except SamplingError as exc:
         print(f"error: {one_line(exc)}")
         return 2
@@ -559,13 +564,13 @@ def cmd_sample(args: argparse.Namespace) -> int:
         ledger_id = ledger_identity(df, args.ledger)
         if args.method == "mus":
             selection = mus_select(
-                df, materiality, seed=args.seed,
+                df, materiality, seed=args.seed, fiscal_year=args.fiscal_year,
                 confidence=DEFAULT_CONFIDENCE if args.confidence is None else args.confidence)
         else:
             selection = stratified_select(
-                df, materiality, size=args.size, seed=args.seed,
+                df, materiality, size=args.size, seed=args.seed, fiscal_year=args.fiscal_year,
                 strata=DEFAULT_STRATA if args.strata is None else args.strata)
-    except (OSError, ValueError) as exc:  # SamplingError, or an identity sidecar naming none
+    except (OSError, ValueError) as exc:  # the year or the population, or an identity sidecar
         print(f"error: cannot select from the ledger {args.ledger}: {one_line(exc)}")
         return 2
     text = render_memo(collect_memo(selection, ledger=args.ledger, ledger_id=ledger_id), args.format)
@@ -1152,11 +1157,14 @@ def build_parser() -> argparse.ArgumentParser:
                     help=f"clearly trivial as a share of overall (default {DEFAULT_TRIVIAL_SHARE})")
     sa.add_argument("--confidence", metavar="LEVEL",
                     help=f"mus only: the confidence level the sample is sized for (default {DEFAULT_CONFIDENCE})")
-    sa.add_argument("--size", type=_positive_int,
+    sa.add_argument("--fiscal-year", metavar="YEAR",
+                    help="the fiscal year to sample; needed when the ledger spans more than one, "
+                         "because materiality is set for one year's financial statements")
+    sa.add_argument("--size", metavar="N",
                     help="stratified only, and needed there: entries to draw below performance materiality")
-    sa.add_argument("--strata", type=_positive_int,
+    sa.add_argument("--strata", metavar="N",
                     help=f"stratified only: bands of value to draw from (default {DEFAULT_STRATA})")
-    sa.add_argument("--seed", type=int,
+    sa.add_argument("--seed", metavar="N",
                     help="repeat a selection; when not given one is drawn, and the memo states it")
     sa.add_argument("--format", choices=SAMPLE_FORMATS, default="text")
     sa.add_argument("--out", type=_path_arg,

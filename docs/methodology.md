@@ -154,21 +154,30 @@ starts: an entry decided under one approver list keeps its decision under the ne
 
 Materiality is the auditor's judgement of how large a misstatement has to be to matter (the
 framework is AU-C 320). `ledgerlens sample` takes the overall figure on its command line, with
-performance materiality (the share the work is planned against, 75% by default) and clearly
-trivial (the share below which a misstatement would be clearly trivial, AU-C 450; 5% by
-default) as shares of it, each rounded down to the cent. Nothing defaults the overall figure
-and nothing tunes any of the three.
+performance materiality (the share the work is planned against, below overall; 75% by
+default, the top of the 50% to 75% commonly used) and clearly trivial (the share below which a
+misstatement would be clearly trivial, AU-C 450; 5% by default) as shares of it, each rounded
+down to the cent. Nothing defaults the overall figure and nothing tunes any of the three.
+
+Materiality is set for one year's financial statements, so the population is one fiscal year:
+every entry of that year with a positive amount (the larger of its debits and credits), in
+every account and from every source. It is a journal-entry population, not one tied to an
+account balance or an assertion. A ledger that spans several years is refused unless the year
+is named. Entries of no amount, or of a negative one, hold no dollar to select: they are left
+out, counted in the memo, and need a procedure of their own.
 
 Two selections are offered, both of the kind AU-C 530 describes; neither claims to meet it.
 
-- **Monetary unit sampling.** Each dollar of the population (every entry with a positive
-  amount, the larger of its debits and credits) is a sampling unit. With a reliability factor
-  R = -ln(1 - confidence), the Poisson factor for no misstatement, the sample size is
+- **Monetary unit sampling.** Each dollar of the population is a sampling unit. With a
+  reliability factor R = -ln(1 - confidence), the Poisson factor for no misstatement, and
+  tolerable misstatement taken to be performance materiality, the sample size is
   n = ceil(book value x R / performance materiality) and the interval J = book value / n, both
-  computed exactly. A random start s in [0, J) selects the dollars s, s + J, s + 2J and so on,
-  the entries laid end to end in `entry_id` order, so an entry is selected with a chance of
-  about its amount / J, and an entry of J or more always. Expected misstatement is assumed to
-  be zero; expecting some calls for a larger sample than this one.
+  computed exactly. A random start s in [0, J) selects the dollars s, s + J, ..., s + (n - 1)J,
+  the entries laid end to end in `entry_id` order, each holding the dollars from its start up
+  to its end; an entry is selected with a chance of about its amount / J, and an entry of J or
+  more always (the top stratum). Each entry's count of units is computed from its bounds, so
+  the selection is one pass over the entries however large n is. Expected misstatement is
+  assumed to be zero; expecting some calls for a larger sample than this one.
 - **Stratified random sampling.** Every entry at or above performance materiality is examined
   in full. Every other entry is laid out in amount order and cut into bands of near-equal
   value, and the draws are shared among the bands in proportion to their value (largest

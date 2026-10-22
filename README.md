@@ -525,32 +525,39 @@ Ranking by risk says which entries look odd; it does not say which are big enoug
 of how the selection was made and how to repeat it:
 
 ```bash
-ledgerlens sample data/ledger.csv --method mus --materiality 50000 --seed 7
+ledgerlens sample data/ledger.csv --fiscal-year 2025 --method mus --materiality 50000 --seed 7
 ```
 
 - **Materiality is yours.** `--materiality` is the overall figure for the engagement; there is
-  no default and no file. Performance materiality and clearly trivial are shares of it
-  (`--performance 0.75` and `--trivial 0.05` by default), each rounded down to the cent.
-  Nothing tunes them.
+  no default and no file. Performance materiality and clearly trivial are shares of it,
+  `--performance 0.75` (the top of the 50% to 75% commonly used; a lower share gives a larger
+  sample) and `--trivial 0.05` by default, each rounded down to the cent. Nothing tunes them.
+- **One fiscal year.** Materiality is set for one year's financial statements, so the
+  population is one fiscal year: a ledger that spans several needs `--fiscal-year`, and the
+  memo names the year. It is every entry of that year with a positive amount, in every account
+  and from every source: a journal-entry population, not one tied to an account balance or an
+  assertion. Entries of no amount, or of a negative one, are left out and counted.
 - **Monetary unit sampling** (`--method mus`, the default) treats every dollar as a sampling
   unit, so an entry is selected in proportion to its amount, and every entry at or above the
   sampling interval is selected whatever the random start. The sample size is book value x
   reliability factor / performance materiality, rounded up, with the zero-error factor
-  -ln(1 - confidence), 2.9957 at the default 95%: it assumes no misstatement is expected, and
-  expecting some needs a larger sample. On the default ledger at $50,000 that is 389 units at
-  an interval of $12,493.80, landing on 368 entries.
+  -ln(1 - confidence), 2.9957 at the default 95%: tolerable misstatement is taken to be
+  performance materiality, no misstatement is assumed to be expected, and expecting some needs
+  a larger sample. For fiscal year 2025 of the default ledger at $50,000 that is 193 units at
+  an interval of $12,484.63, landing on 185 entries, 7 of them at or above the interval.
 - **Stratified random sampling** (`--method stratified --size N`) examines every entry at or
   above performance materiality in full and draws N of the rest at random, from bands of
   near-equal value (`--strata`, 3 by default). Clearly trivial sets nothing aside: it governs
-  which misstatements are added up, and the default ledger's 4,742 entries under $2,500 come to
-  $2.97 million. With `--size 40` the default ledger's 4 entries of $37,500 or more are examined
-  in full and 40 are drawn, from bands of 3,811, 965 and 305 entries.
+  which misstatements are added up, and the default ledger's 2,351 entries of fiscal year 2025
+  under $2,500 come to $1.46 million. With `--size 40` its 2 entries of $37,500 or more are
+  examined in full and 40 are drawn, from bands of 1,904, 473 and 149 entries.
 - **Repeatable.** The memo states every figure the selection came from, the seed among them.
   Without `--seed` one is drawn and stated, and running again with it gives the same selection,
   on Python 3.9 and 3.12 alike: the only random draws are the ones Python promises not to change.
 - **What it is not.** A selection is what to examine, not a finding: nothing in the memo says an
-  entry is misstated, and an entry left out is not cleared by being left out. It reads only the
-  amounts: no test's flags, no model score, no controls file and no labels.
+  entry is misstated, and an entry left out is not cleared by being left out. It reads the
+  ledger's entries only, their ids, fiscal years and amounts: no test's flags, no model score,
+  no controls file and no labels.
 
 The memo prints as text, or as markdown or JSON with `--format`. `--out` writes it to a file;
 inside a git checkout, as for the summary, only under `out/`, because a memo of real books

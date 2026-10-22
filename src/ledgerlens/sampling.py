@@ -3,12 +3,14 @@
 Ranking by risk says which entries look odd, not which are big enough to matter.
 ``Materiality`` holds the auditor's judgement of that: an overall figure, the share of
 it the work is planned against (performance materiality), and the share below which a
-misstatement would be clearly trivial (the framework is AU-C 320 and 450). It is given
-for each run, never read from a file and never defaulted, and never tuned against
-labels (rule 7): this module applies it and does not choose it.
+misstatement would be clearly trivial (the framework is AU-C 320 and 450). The overall
+figure is given for each run, never read from a file and never defaulted; the two shares
+default to 75% and 5%. None of them is tuned against labels (rule 7): this module applies
+them and does not choose them.
 
-Two ways of selecting entries, both of the kind AU-C 530 describes (nothing here claims
-to meet it):
+Materiality is set for one year's financial statements, so the population is one fiscal
+year: every entry of that year with a positive amount. Two ways of selecting from it,
+both of the kind AU-C 530 describes (nothing here claims to meet it):
 
 - Monetary unit sampling. Every dollar of the population is a sampling unit, so an
   entry is selected in proportion to its amount, and every entry at or above the
@@ -27,14 +29,14 @@ are whole cents, sizes and intervals are exact, and the only draws are
 
 from __future__ import annotations
 
-import bisect
 import itertools
 import json
+import numbers
+import operator
 import platform
 import random
 import secrets
 import textwrap
-from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal, InvalidOperation, localcontext
@@ -58,6 +60,9 @@ MAX_STRATA = 20
 #: below it a figure in whole cents has at most 14 digits, which a float holds exactly.
 CEILING = Decimal(10) ** 12
 _CENT = Decimal("0.01")
+#: A share is a percentage to four places at most; finer is a typing slip, and a share
+#: written 1E-999999999 would print a billion zeros as a percentage.
+_SHARE_STEP = Decimal("0.000001")
 #: A number given on the command line, not a document.
 _MAX_DIGITS = 40
 
@@ -67,19 +72,31 @@ SELECTION_CAVEAT = (
 )
 MATERIALITY_NOTE = (
     "Materiality is the auditor's judgement, given on the command line: this tool applies it "
-    "and does not choose it."
+    "and does not choose it. The shares default to 75% (performance) and 5% (clearly trivial); "
+    "performance materiality is commonly set at 50% to 75% of overall, and a lower share gives "
+    "a larger sample."
+)
+POPULATION_NOTE = (
+    "The population is every entry of one fiscal year with a positive amount, in every account "
+    "and from every source: a journal-entry population, not one tied to an account balance or "
+    "an assertion."
+)
+NEGATIVE_NOTE = (
+    "Entries with a negative amount hold no dollar to select, so they are not in this "
+    "population and need a procedure of their own."
 )
 MUS_NOTE = (
-    "The sample size assumes no misstatement is expected in the population. If some is "
-    "expected, the sample needs to be larger than this one."
+    "Tolerable misstatement is taken to be performance materiality, and the sample size assumes "
+    "no misstatement is expected in the population. If some is expected, the sample needs to be "
+    "larger than this one."
 )
 STRATIFIED_NOTE = (
     "Entries at or above performance materiality are examined in full and are not part of the "
     "random draw; the draw covers every other entry, in bands of near-equal value."
 )
 INPUT_NOTE = (
-    "The selection reads the ledger's amounts only: no test's flags, no model score, no "
-    "controls file and no labels."
+    "The selection reads the ledger's entries only, their ids, fiscal years and amounts: no "
+    "test's flags, no model score, no controls file and no labels."
 )
 
 
@@ -91,16 +108,17 @@ def _decimal(value: object, name: str) -> tuple[Decimal | None, str | None]:
     """``(value as a Decimal, None)``, or ``(None, why it is not a finite number)``.
 
     Read as written: a string is parsed by Decimal, never through a float, so 0.1 is
-    0.1; a float built in code is read by its repr for the same reason.
+    0.1. A number built in code is read by its value: an integer exactly, a float (numpy's
+    among them, whose repr in numpy 2 is ``np.float64(...)``) by the repr of its float.
     """
     if isinstance(value, bool):
         return None, f"{name} must be a number, got {value!r}"
     if isinstance(value, Decimal):
         number = value
-    elif isinstance(value, int):
-        number = Decimal(value)
-    elif isinstance(value, float):
-        number = Decimal(repr(value))
+    elif isinstance(value, numbers.Integral):
+        number = Decimal(operator.index(value))
+    elif isinstance(value, numbers.Real):
+        number = Decimal(repr(float(value)))
     elif isinstance(value, str):
         text = value.strip()
         if len(text) > _MAX_DIGITS:
@@ -117,6 +135,54 @@ def _decimal(value: object, name: str) -> tuple[Decimal | None, str | None]:
     return number, None
 
 
+def _whole(value: object, name: str, low: int, high: int | None = None) -> int:
+    """``value`` as a whole number from ``low`` (to ``high``), or a SamplingError.
+
+    A string is read as the command line passes it, so a bad --size or --seed is one
+    ``error:`` line like every other refusal, not argparse's usage text.
+    """
+    number = None
+    if isinstance(value, numbers.Integral) and not isinstance(value, bool):
+        number = operator.index(value)
+    elif isinstance(value, str):
+        text = value.strip()
+        if 0 < len(text) <= 20 and text.lstrip("+-").isdigit():
+            number = int(text)
+    span = f"of {low} or more" if high is None else f"from {low} to {high}"
+    if number is None or number < low or (high is not None and number > high):
+        raise SamplingError(f"{name} must be a whole number {span}, got {quote(value)}")
+    return number
+
+
+def _confidence(value: object) -> Decimal:
+    level, why = _decimal(value, "confidence")
+    if why:
+        raise SamplingError(why)
+    if not 0 < level < 1:
+        raise SamplingError(f"confidence must be above 0 and below 1, got {level}")
+    return level
+
+
+def _seed(seed: object) -> tuple[int, bool]:
+    if seed is None:
+        return secrets.randbelow(2 ** 32), True
+    return _whole(seed, "seed", 0), False
+
+
+def check_parameters(method: str, *, confidence: object = None, size: object = None,
+                     strata: object = None, seed: object = None, fiscal_year: object = None) -> None:
+    """Raise SamplingError for a parameter the method cannot use, before any ledger is read."""
+    if method == "mus":
+        _confidence(DEFAULT_CONFIDENCE if confidence is None else confidence)
+    else:
+        _whole(size, "size", 1)
+        _whole(DEFAULT_STRATA if strata is None else strata, "strata", 1, MAX_STRATA)
+    if seed is not None:
+        _seed(seed)
+    if fiscal_year is not None:
+        _whole(fiscal_year, "fiscal year", 1)
+
+
 def _percent(share: Decimal) -> str:
     return f"{(share * 100).normalize():f}%"
 
@@ -126,15 +192,25 @@ def _dollars(cents: int | Fraction) -> str:
     return f"${float(Fraction(cents)) / 100:,.2f}"
 
 
+def _share_problem(share: Decimal, name: str, below: Decimal | None) -> str | None:
+    if share <= 0 or share >= 1:
+        return f"{name} must be above 0 and below 1, got {share}"
+    if share != share.quantize(_SHARE_STEP):
+        return f"{name} must be given to at most six decimal places, got {share}"
+    if below is not None and share >= below:
+        return f"{name} ({share}) must be below the performance share ({below})"
+    return None
+
+
 @dataclass(frozen=True)
 class Materiality:
     """Overall materiality, and the two figures derived from it.
 
-    ``performance`` (the share of overall the work is planned against) and
-    ``clearly_trivial`` (the share below which a misstatement would be clearly trivial)
-    are rounded down to the cent: the lower figure is the cautious one, a larger sample
-    and fewer entries set aside. Every problem with the three is named in one
-    ``SamplingError``.
+    ``performance`` (the share of overall the work is planned against, below overall as
+    AU-C 320 has it) and ``clearly_trivial`` (the share below which a misstatement would be
+    clearly trivial) are rounded down to the cent: the lower figure is the cautious one, a
+    larger sample and more entries examined in full. Every problem with the three is named
+    in one ``SamplingError``.
     """
 
     overall: Decimal
@@ -154,26 +230,23 @@ class Materiality:
             # compared, not computed: below the ceiling the quantized value is exact
             problems.append(f"materiality {overall} is not a whole number of cents")
         performance, why = _decimal(self.performance_share, "performance share")
-        performance_ok = why is None and 0 < performance <= 1
+        why = why or _share_problem(performance, "performance share", None)
+        performance_ok = why is None
         if why:
             problems.append(why)
-        elif not performance_ok:
-            problems.append(f"performance share must be above 0 and at most 1, got {performance}")
         trivial, why = _decimal(self.trivial_share, "clearly trivial share")
+        why = why or _share_problem(trivial, "clearly trivial share",
+                                    performance if performance_ok else None)
         if why:
             problems.append(why)
-        elif trivial <= 0:
-            problems.append(f"clearly trivial share must be above 0, got {trivial}")
-        elif performance_ok and trivial >= performance:
-            problems.append(f"clearly trivial share ({trivial}) must be below the performance "
-                            f"share ({performance})")
         if not problems:
             object.__setattr__(self, "overall", overall)
             object.__setattr__(self, "performance_share", performance)
             object.__setattr__(self, "trivial_share", trivial)
-            if self.performance_cents < 1:
-                problems.append(f"performance materiality ({_percent(performance)} of {overall}) "
-                                "is less than a cent")
+            for figure, cents, share in (("performance materiality", self.performance_cents, performance),
+                                         ("clearly trivial", self.trivial_cents, trivial)):
+                if cents < 1:
+                    problems.append(f"{figure} ({_percent(share)} of {overall}) is less than a cent")
         if problems:
             raise SamplingError("; ".join(problems))
 
@@ -236,62 +309,77 @@ class Selection:
     items: pd.DataFrame = field(repr=False)
 
 
-def population(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
-    """The entries a sample is drawn from, in ``entry_id`` order, and how many were left out.
+def population(df: pd.DataFrame, fiscal_year: object = None) -> tuple[pd.DataFrame, dict]:
+    """The entries of one fiscal year a sample is drawn from, in ``entry_id`` order, and what
+    the population leaves out.
 
-    An entry's amount is ``entry_level``'s, the larger of its debits and its credits, in
-    whole cents. An entry with no positive amount holds no dollar to select, so it is left
-    out and counted. The order makes a selection independent of the order of the ledger's
-    rows; ``entry_id`` is unique per entry, so it is the whole order.
+    A ledger of one fiscal year is that year; a ledger of several needs ``fiscal_year``,
+    because materiality is set for one year's financial statements. An entry's amount is
+    ``entry_level``'s, the larger of its debits and its credits, in whole cents, and its
+    description is its first line's (lines are put in ``line_no`` order first, so it does
+    not depend on the order of the rows). An entry of no amount, or of a negative one, holds
+    no dollar to select: it is left out and counted. ``entry_id`` is unique per entry, so
+    it is the whole order.
     """
-    entries = entry_level(df)
-    cents = (entries["entry_amount"] * 100).round().astype("int64")
-    entries = entries.assign(cents=cents)
-    kept = entries[entries["cents"] > 0].sort_values("entry_id").reset_index(drop=True)
+    entries = entry_level(df.sort_values(["entry_id", "line_no"], kind="mergesort"))
+    years = sorted(int(year) for year in entries["fiscal_year"].unique())
+    if fiscal_year is None:
+        if len(years) > 1:
+            raise SamplingError(
+                "the ledger spans fiscal years {}, and materiality is set for one year's financial "
+                "statements: name the year to sample (--fiscal-year)".format(", ".join(map(str, years))))
+        year = years[0] if years else None
+    else:
+        year = _whole(fiscal_year, "fiscal year", 1)
+        if year not in years:
+            raise SamplingError("the ledger has no entry in fiscal year {} (it holds {})".format(
+                year, ", ".join(map(str, years)) or "no entries"))
+    in_year = entries if year is None else entries[entries["fiscal_year"] == year]
+    in_year = in_year.assign(cents=(in_year["entry_amount"] * 100).round().astype("int64"))
+    kept = in_year[in_year["cents"] > 0].sort_values("entry_id").reset_index(drop=True)
     kept = kept.assign(
         posting_date=pd.to_datetime(kept["posting_date"]).dt.strftime("%Y-%m-%d"),
         description=kept["description"].map(one_line),
     )
-    return kept[["entry_id", "posting_date", "fiscal_year", "description", "cents"]], len(entries) - len(kept)
-
-
-def _seed(seed: object) -> tuple[int, bool]:
-    if seed is None:
-        return secrets.randbelow(2 ** 32), True
-    if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
-        raise SamplingError(f"seed must be a whole number of 0 or more, got {quote(seed)}")
-    return seed, False
-
-
-def _population_facts(entries: pd.DataFrame, left_out: int) -> dict:
-    return {
-        "entries": len(entries) + left_out,
-        "sampled_from": len(entries),
-        "left_out_no_amount": left_out,
-        "book_value": int(entries["cents"].sum()) / 100,
-        "fiscal_years": sorted(int(year) for year in entries["fiscal_year"].unique()),
+    facts = {
+        "fiscal_year": year,
+        "entries_in_year": len(in_year),
+        "sampled_from": len(kept),
+        "left_out_no_amount": int((in_year["cents"] == 0).sum()),
+        "left_out_negative": int((in_year["cents"] < 0).sum()),
+        "other_years": len(entries) - len(in_year),
+        "book_value": int(kept["cents"].sum()) / 100,
     }
+    return kept[["entry_id", "posting_date", "fiscal_year", "description", "cents"]], facts
+
+
+def _nothing_to_select(facts: dict) -> SamplingError:
+    year = f" in fiscal year {facts['fiscal_year']}" if facts["fiscal_year"] is not None else ""
+    return SamplingError(f"the ledger has no entry with a positive amount to select{year}")
+
+
+def _ceil(value: Fraction) -> int:
+    return -((-value) // 1)
 
 
 def mus_select(df: pd.DataFrame, materiality: Materiality, confidence: object = DEFAULT_CONFIDENCE,
-               seed: int | None = None) -> Selection:
+               seed: object = None, fiscal_year: object = None) -> Selection:
     """Monetary unit sampling, sized for no expected misstatement.
 
     The reliability factor is the Poisson zero-error factor, -ln(1 - confidence) (3.00 at
-    95%). The sample size n is book value x factor / performance materiality, rounded up,
-    and the sampling interval J is book value / n, both exact. A random start s in [0, J)
-    selects the dollars s, s + J, s + 2J, ...; each falls in one entry, laid end to end
-    in ``entry_id`` order. An entry of J or more always holds one.
+    95%), and tolerable misstatement is taken to be performance materiality. The sample
+    size n is book value x factor / performance materiality, rounded up, and the sampling
+    interval J is book value / n, both exact. A random start s in [0, J) selects the dollars
+    s, s + J, ..., s + (n - 1)J of the entries laid end to end in ``entry_id`` order, each
+    entry holding the dollars [its start, its end). An entry of J or more always holds one;
+    each entry's count is computed from its bounds, so the work is one pass over the
+    entries however large n is.
     """
-    level, why = _decimal(confidence, "confidence")
-    if why:
-        raise SamplingError(why)
-    if not 0 < level < 1:
-        raise SamplingError(f"confidence must be above 0 and below 1, got {level}")
+    level = _confidence(confidence)
     seed, drawn = _seed(seed)
-    entries, left_out = population(df)
+    entries, facts = population(df, fiscal_year)
     if entries.empty:
-        raise SamplingError("the ledger has no entry with an amount to select")
+        raise _nothing_to_select(facts)
     cents = [int(c) for c in entries["cents"]]
     book = sum(cents)
     with localcontext() as ctx:
@@ -299,48 +387,43 @@ def mus_select(df: pd.DataFrame, materiality: Materiality, confidence: object = 
         factor = -(Decimal(1) - level).ln()
         size = int((Decimal(book) * factor / Decimal(materiality.performance_cents))
                    .to_integral_value(rounding=ROUND_CEILING))
-    size = max(size, 1)
-    if size > len(cents):
-        raise SamplingError(
-            f"at this materiality the sample is {size:,} units, more than the ledger's {len(cents):,} "
-            "entries with an amount: a sample that size is every entry, and examining every entry "
-            "is not sampling")
+    size = max(size, 1)  # a confidence so near 0 that its factor rounds to 0 still selects a unit
     interval = Fraction(book, size)
     start = Fraction(random.Random(seed).random()) * interval
-    upper = list(itertools.accumulate(cents))  # entry i holds the dollars [upper[i-1], upper[i])
-    hits: Counter = Counter()
-    first: dict = {}
-    for k in range(size):
-        point = start + k * interval
-        i = bisect.bisect_right(upper, point)
-        hits[i] += 1
-        first.setdefault(i, point)
-    rows = []
-    for i in sorted(hits):
-        row = entries.iloc[i]
-        rows.append({
-            "entry_id": row["entry_id"],
-            "posting_date": row["posting_date"],
-            "amount": cents[i] / 100,
-            "hits": hits[i],
-            "selected_dollar": round(float(first[i]) / 100, 2),
-            "why": ("at or above the sampling interval, so selected whatever the start"
-                    if cents[i] >= interval else "a selected dollar falls in it"),
-            "description": row["description"],
-        })
+    rows, certain, low = [], 0, 0
+    for i, amount in enumerate(cents):
+        high = low + amount
+        first = max(0, _ceil((low - start) / interval))
+        hits = min(size, _ceil((high - start) / interval)) - first
+        if hits > 0:
+            row = entries.iloc[i]
+            at = start + first * interval  # in cents, laid end to end; floored to the cent below
+            certain += amount >= interval
+            rows.append({
+                "entry_id": row["entry_id"],
+                "posting_date": row["posting_date"],
+                "amount": amount / 100,
+                "hits": hits,
+                "first_unit": int(at) / 100,
+                "why": ("at or above the sampling interval, so selected whatever the start"
+                        if amount >= interval else "a selected dollar falls in it"),
+                "description": row["description"],
+            })
+        low = high
     return Selection(
-        method="mus", seed=seed, seed_drawn=drawn, materiality=materiality,
-        population=_population_facts(entries, left_out),
+        method="mus", seed=seed, seed_drawn=drawn, materiality=materiality, population=facts,
         parameters={
             "confidence": float(level),
             "reliability_factor": round(float(factor), 4),
             "size": size,
             "interval": float(interval) / 100,
+            "certain_from": _ceil(interval) / 100,  # whole cents: every entry this large holds a unit
             "start": float(start) / 100,
             "entries_selected": len(rows),
+            "certain": certain,
         },
         items=pd.DataFrame(rows, columns=["entry_id", "posting_date", "amount", "hits",
-                                          "selected_dollar", "why", "description"]),
+                                          "first_unit", "why", "description"]),
     )
 
 
@@ -373,25 +456,24 @@ def _allocate(size: int, values: list[int], counts: list[int]) -> list[int]:
     return alloc
 
 
-def stratified_select(df: pd.DataFrame, materiality: Materiality, size: int,
-                      seed: int | None = None, strata: int = DEFAULT_STRATA) -> Selection:
+def stratified_select(df: pd.DataFrame, materiality: Materiality, size: object,
+                      seed: object = None, strata: object = DEFAULT_STRATA,
+                      fiscal_year: object = None) -> Selection:
     """Every entry at or above performance materiality, and a seeded draw from the rest.
 
     The rest (every entry below performance materiality) is laid out in amount order,
     ``entry_id`` breaking ties, and cut into ``strata`` bands of near-equal value: an entry
     falls in the band its first cent does. ``size`` entries are drawn from it, shared among
-    the bands in proportion to their value (``_allocate``). Within a band the entries with the smallest seeded keys are
-    drawn, ``entry_id`` breaking ties; the keys are drawn in the rest's order, so one seed
-    always gives one selection.
+    the bands in proportion to their value (``_allocate``). Within a band the entries with
+    the smallest seeded keys are drawn, ``entry_id`` breaking ties; the keys are drawn in
+    the rest's order, so one seed always gives one selection.
     """
-    if isinstance(size, bool) or not isinstance(size, int) or size < 1:
-        raise SamplingError(f"size must be a whole number of 1 or more, got {quote(size)}")
-    if isinstance(strata, bool) or not isinstance(strata, int) or not 1 <= strata <= MAX_STRATA:
-        raise SamplingError(f"strata must be a whole number from 1 to {MAX_STRATA}, got {quote(strata)}")
+    size = _whole(size, "size", 1)
+    strata = _whole(strata, "strata", 1, MAX_STRATA)
     seed, drawn = _seed(seed)
-    entries, left_out = population(df)
+    entries, facts = population(df, fiscal_year)
     if entries.empty:
-        raise SamplingError("the ledger has no entry with an amount to select")
+        raise _nothing_to_select(facts)
     pm = materiality.performance_cents
     full = entries[entries["cents"] >= pm]
     middle = (entries[entries["cents"] < pm]
@@ -437,8 +519,7 @@ def stratified_select(df: pd.DataFrame, materiality: Materiality, size: int,
             "drawn": alloc[b],
         })
     return Selection(
-        method="stratified", seed=seed, seed_drawn=drawn, materiality=materiality,
-        population=_population_facts(entries, left_out),
+        method="stratified", seed=seed, seed_drawn=drawn, materiality=materiality, population=facts,
         parameters={
             "size": size,
             "strata": strata,
@@ -457,7 +538,10 @@ def stratified_select(df: pd.DataFrame, materiality: Materiality, size: int,
 def collect_memo(selection: Selection, *, ledger: str | None, ledger_id: str,
                  today: date | None = None) -> dict:
     """The selection memo as one JSON-ready payload; the renderers below read only this."""
-    notes = [MATERIALITY_NOTE, MUS_NOTE if selection.method == "mus" else STRATIFIED_NOTE, INPUT_NOTE]
+    notes = [MATERIALITY_NOTE, POPULATION_NOTE]
+    if selection.population["left_out_negative"]:
+        notes.append(NEGATIVE_NOTE)
+    notes += [MUS_NOTE if selection.method == "mus" else STRATIFIED_NOTE, INPUT_NOTE]
     return {
         "run_date": (today or date.today()).isoformat(),
         "caveat": SELECTION_CAVEAT,
@@ -477,6 +561,10 @@ def collect_memo(selection: Selection, *, ledger: str | None, ledger_id: str,
     }
 
 
+def _count(n: int, one: str, many: str) -> str:
+    return f"{n:,} {one if n == 1 else many}"
+
+
 def _materiality_line(m: dict) -> str:
     return "${:,.2f} overall; performance ${:,.2f} ({}); clearly trivial ${:,.2f} ({})".format(
         m["overall"], m["performance"], _percent(Decimal(repr(m["performance_share"]))),
@@ -484,10 +572,19 @@ def _materiality_line(m: dict) -> str:
 
 
 def _population_line(p: dict) -> str:
-    years = ", ".join(str(y) for y in p["fiscal_years"]) or "none"
-    line = "{:,} entries, ${:,.2f}; fiscal years {}".format(p["sampled_from"], p["book_value"], years)
+    year = "no fiscal year" if p["fiscal_year"] is None else f"fiscal year {p['fiscal_year']}"
+    line = "{}: {}, ${:,.2f}".format(year, _count(p["sampled_from"], "entry", "entries"),
+                                     p["book_value"])
+    left = []
     if p["left_out_no_amount"]:
-        line += "; {:,} entries of no amount left out".format(p["left_out_no_amount"])
+        left.append(_count(p["left_out_no_amount"], "entry", "entries") + " of no amount")
+    if p["left_out_negative"]:
+        left.append(f"{p['left_out_negative']:,} with a negative amount")
+    if left:
+        line += "; " + " and ".join(left) + " left out"
+    if p["other_years"]:
+        line += "; {} of other fiscal years not in it".format(
+            _count(p["other_years"], "entry", "entries"))
     return line
 
 
@@ -505,30 +602,37 @@ def _method_rows(payload: dict) -> list[tuple[str, str]]:
             ("Confidence", _percent(Decimal(repr(p["confidence"])))),
             ("Reliability factor", "{:.4f} (-ln(1 - confidence): no misstatement expected)".format(
                 p["reliability_factor"])),
-            ("Sample size", "{:,} units (book value x factor / performance materiality, rounded up)"
-             .format(p["size"])),
+            ("Sample size", "{} (book value x factor / performance materiality, rounded up)"
+             .format(_count(p["size"], "unit", "units"))),
             ("Sampling interval", "${:,.2f} (book value / sample size)".format(p["interval"])),
             ("Random start", "${:,.2f} (in the first interval)".format(p["start"])),
-            ("Selected", "{:,} entries; an entry can hold several units, and every entry of "
-             "${:,.2f} or more is selected".format(p["entries_selected"], p["interval"])),
+            ("Selected", "{}; an entry can hold several units, and every entry of ${:,.2f} or more "
+             "is selected ({:,} here)".format(_count(p["entries_selected"], "entry", "entries"),
+                                              p["certain_from"], p["certain"])),
         ]
+    holding = sum(1 for b in p["bands"] if b["entries"])
+    bands = _count(holding, "band", "bands") + " of near-equal value"
+    if holding < p["strata"]:
+        bands += f" ({p['strata']} asked for, {p['strata'] - holding} holding no entry)"
     rows = [
-        ("Examined in full", "{:,} entries, ${:,.2f} (at or above performance materiality)".format(
-            p["examined_in_full"], p["examined_in_full_value"])),
-        ("Drawn", "{:,} of the {:,} entries below it (${:,.2f}), from {} band(s) of near-equal "
-         "value".format(p["size"], p["drawn_from"], p["drawn_from_value"], p["strata"])),
+        ("Examined in full", "{}, ${:,.2f} (at or above performance materiality)".format(
+            _count(p["examined_in_full"], "entry", "entries"), p["examined_in_full_value"])),
+        ("Drawn", "{:,} of the {} below it (${:,.2f}), from {}".format(
+            p["size"], _count(p["drawn_from"], "entry", "entries"), p["drawn_from_value"], bands)),
     ]
     for b in p["bands"]:
         span = ("${:,.2f} to ${:,.2f}".format(b["from"], b["to"]) if b["entries"] else "no entries")
-        rows.append((f"Band {b['band']}", "{} ({:,} entries, ${:,.2f}): {:,} drawn".format(
-            span, b["entries"], b["value"], b["drawn"])))
-    rows.append(("Selected", "{:,} entries".format(p["entries_selected"])))
+        rows.append((f"Band {b['band']}", "{} ({}, ${:,.2f}): {:,} drawn".format(
+            span, _count(b["entries"], "entry", "entries"), b["value"], b["drawn"])))
+    rows.append(("Selected", _count(p["entries_selected"], "entry", "entries")))
     return rows
 
 
 def _detail(payload: dict, row: dict) -> str:
-    return (f"{row['hits']} unit(s), first at ${row['selected_dollar']:,.2f}"
-            if payload["method"] == "mus" else f"band {row['band']}")
+    if payload["method"] == "mus":
+        return "{}, the first at cumulative ${:,.2f}".format(
+            _count(row["hits"], "unit", "units"), row["first_unit"])
+    return "examined in full" if row["band"] == "full" else f"band {row['band']}"
 
 
 def render_text(payload: dict) -> str:
