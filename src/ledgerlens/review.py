@@ -757,16 +757,22 @@ class ReviewStore:
         recorded = pd.to_numeric(out["narrative_id"]).astype("Int64")
         shown = recorded.fillna(newest)
         out["narrative_id"] = shown
-        out["narrative_summary"] = shown.map(versions["summary"])
-        out["narrative_confidence"] = shown.map(versions["confidence"])
+        # Looked up as objects: from pandas 3.1, map keeps a nullable integer's dtype, so a
+        # lookup that found no note came back Int64 and could not be filled with "".
+        lookup = shown.astype(object)
+        out["narrative_summary"] = lookup.map(versions["summary"])
+        out["narrative_confidence"] = lookup.map(versions["confidence"])
         out["narrative_superseded"] = (
             (shown.notna() & (shown != newest)).fillna(False).astype(bool)
         )
         decided = out["decision"].notna()
         # ISO-8601 UTC strings compare correctly as text; a note written in the
-        # same second as the decision is "unknown", the honest reading.
+        # same second as the decision is "unknown", the honest reading. As objects
+        # before the fill: a column with no time in it is float64, which pandas 3.1
+        # warns (and pandas 4 will refuse) to fill with "".
         written_after = (
-            shown.map(versions["generated_at"]).fillna("") > out["decided_at"].fillna("")
+            lookup.map(versions["generated_at"]).astype(object).fillna("")
+            > out["decided_at"].astype(object).fillna("")
         )
         seen = pd.Series("", index=out.index, dtype=object)
         seen[decided & recorded.notna()] = "yes"
