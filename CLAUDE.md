@@ -477,7 +477,7 @@ and the MCP SDK, so the two together cover every code path CI will see.
   with a block of the figures and the flagged entries by band (its notes first); right after
   the amount on the Exceptions sheet, with the figures on the Summary sheet and a Methodology
   section. Without the flag every output is byte for byte what it was, apart from the version
-string the summary's markdown and JSON print. The dashboard takes the
+  string the summary's markdown and JSON print. The dashboard takes the
   figure in its sidebar (a year choice for a multi-year ledger), adds the column, a band
   filter and a fourth metric; an unusable figure is said as text. One wording each:
   `materiality.BAND_NOTE` and `FISCAL_YEAR_NOTE` (the selection memo gained the latter).
@@ -488,7 +488,7 @@ string the summary's markdown and JSON print. The dashboard takes the
   re-measurement under rule 10), and the pandas 4 warnings (`ingest.py`'s `fillna` on a float
   column and `dt.dayofweek`, `features.py`'s `dt.dayofweek`: a model feature whose values must
   not move).
-- 1200 tests on 3.9 (1 skipped) / 1214 on 3.12 (the fourteen MCP tests need 3.10+), ruff clean.
+- 1207 tests on 3.9 (1 skipped) / 1221 on 3.12 (the fourteen MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
