@@ -141,6 +141,22 @@ def test_rewriting_a_narrative_keeps_every_version(store):
     assert len(store.narratives_frame(latest_only=False)) == 2
 
 
+@pytest.mark.filterwarnings("error")
+def test_review_state_of_decisions_that_no_note_matches(store):
+    """From pandas 3.1, map keeps a nullable integer's dtype: a lookup that found no note came
+    back Int64, so filling it with "" raised a TypeError, and an empty store's note columns
+    were Int64. Filling a float column with "" is a warning there, and an error in pandas 4."""
+    empty = store.review_state()
+    assert not pd.api.types.is_integer_dtype(empty["narrative_summary"])
+    store.record(Decision("JE-1", "escalate", "ana"))
+    store.record(Decision("JE-2", "dismiss", "ben", note="ok"))
+    state = store.review_state().set_index("entry_id")
+    assert state["narrative_summary"].isna().all() and state["narrative_confidence"].isna().all()
+    assert not pd.api.types.is_integer_dtype(state["narrative_summary"])
+    assert list(state["narrative_seen_by_reviewer"]) == ["", ""]
+    assert list(state["decision"]) == ["escalate", "dismiss"]
+
+
 def test_review_state_says_which_note_the_reviewer_saw(store):
     """The one answer the workpaper and the MCP server both read."""
     empty = store.review_state()
