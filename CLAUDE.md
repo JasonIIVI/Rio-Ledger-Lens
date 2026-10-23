@@ -462,12 +462,32 @@ and the MCP SDK, so the two together cover every code path CI will see.
   passed `isdigit` and int() raised; argparse had refused them before) and test gaps (seven
   of eight mutants survived, among them `certain_from` rounded to the nearest cent), fixed
   with a float32 read by its own text, a text `fiscal_year` column and a missing description.
-- **Next** — week 6, PR 2: each entry's materiality band in the exception queue (`test`,
-  `summary`, the workpaper, the dashboard), never folded into the risk score; then v1.2.0.
-  Open, the maintainer's call: re-recording `docs/demo.gif` (its model scores predate
-  v1.0.0's tie fix), the display-only sorts above, and week 5's model train/test split (a
-  re-measurement under rule 10).
-- 1154 tests on 3.9 (1 skipped) / 1168 on 3.12 (the fourteen MCP tests need 3.10+), ruff clean.
+- **Materiality band (week 6, PR 2, `week6/materiality-band`)** — `materiality.py` holds
+  `Materiality`, its parsers and `SamplingError` (moved from `sampling.py`, which lends them
+  back out; the module imports nothing from `summary`, so `summary`, `report` and the
+  dashboard reach it without a cycle), `to_cents` and `fiscal_year_for` (the population's own
+  rounding and year check, factored out and called by it), and `band_of_cents` / `bands` /
+  `count_by_band`: material, above performance, below performance (at or above each figure),
+  clearly trivial (at or below it), no amount, negative, other year. `test`, `summary` and
+  `report` take `--materiality`, `--performance`, `--trivial` and `--fiscal-year` as `sample`
+  does (one `_add_materiality_arguments`); a share or a year without the figure, or an
+  unusable figure, is refused before the ledger is read, a multi-year ledger without the year
+  after it, in `fiscal_year_for`'s words. The band goes beside the risk score, never into it
+  (rule 3): after each top entry's amount and in `test --out`'s csv; on each summary entry,
+  with a block of the figures and the flagged entries by band (its notes first); right after
+  the amount on the Exceptions sheet, with the figures on the Summary sheet and a Methodology
+  section. Without the flag every output is byte for byte what it was. The dashboard takes the
+  figure in its sidebar (a year choice for a multi-year ledger), adds the column, a band
+  filter and a fourth metric; an unusable figure is said as text. One wording each:
+  `materiality.BAND_NOTE` and `FISCAL_YEAR_NOTE` (the selection memo gained the latter).
+  Version 1.2.0.
+- **Next** — tag v1.2.0 on the merge commit, with claims-reviewed notes. Then the
+  maintainer's call. Open, unchanged: re-recording `docs/demo.gif` (its model scores predate
+  v1.0.0's tie fix), the display-only sorts above, week 5's model train/test split (a
+  re-measurement under rule 10), and the pandas 4 warnings (`ingest.py`'s `fillna` on a float
+  column and `dt.dayofweek`, `features.py`'s `dt.dayofweek`: a model feature whose values must
+  not move).
+- 1200 tests on 3.9 (1 skipped) / 1214 on 3.12 (the fourteen MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
@@ -498,7 +518,8 @@ ledger CSV ──▶ ingest ──┼──▶ Isolation Forest ─────�
 | `ingest.py` | validation + derived columns; `entry_level()` collapses lines to entries; `ledger_digest()` / `ledger_identity()`, the review-store key (`csv:<sha256>`, or `qbo:<realm>` from a `.identity.json` sidecar) |
 | `controls.py` | a company's approver list (JET-12) and approval limit (JET-06) from `<stem>.controls.json` beside the ledger; `DEFAULT_CONTROLS` (the synthetic company's) when there is none; a file that cannot be used is refused, never replaced |
 | `jets.py` | 12 deterministic tests + severity-weighted risk score; JET-06 and JET-12 read a `Controls` |
-| `sampling.py` | `Materiality` (the overall figure given per run and never defaulted; the performance and clearly trivial shares default to 75% and 5%), the population (one fiscal year's entries with a positive amount), and two seeded selections: monetary unit sampling (no expected misstatement) and stratified random sampling; the selection memo (`collect_memo` / `render_memo`, text / markdown / JSON) |
+| `materiality.py` | `Materiality` (the overall figure given per run and never defaulted; the performance and clearly trivial shares default to 75% and 5%), the fiscal year the figures are set for (`fiscal_year_for`), whole cents (`to_cents`), and each entry's band against the figures (`bands`, `count_by_band`): beside the risk score, never in it |
+| `sampling.py` | the population (one fiscal year's entries with a positive amount) and two seeded selections against a `Materiality`: monetary unit sampling (no expected misstatement) and stratified random sampling; the selection memo (`collect_memo` / `render_memo`, text / markdown / JSON) |
 | `benford.py` | first-digit test, MAD (Nigrini bands) + chi-square |
 | `features.py` | 16 engineered per-entry features for the model tier |
 | `model.py` | Isolation Forest, rank-based flagging, tier comparison |

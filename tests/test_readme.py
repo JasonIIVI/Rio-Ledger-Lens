@@ -201,3 +201,19 @@ def test_the_sampling_section_quotes_what_sample_selects_on_the_default_ledger(l
     assert (f"its {strat['examined_in_full']} entries of ${float(m.performance):,.0f} or more are "
             f"examined in full and 40 are drawn, from bands of {bands} and "
             f"{strat['bands'][-1]['entries']:,} entries" in README)
+
+
+def test_the_sampling_section_quotes_the_flagged_entries_by_band_on_the_default_ledger(ledger):
+    from ledgerlens import jets
+    from ledgerlens.materiality import Materiality, bands, count_by_band
+
+    flags = jets.run_all(ledger)
+    scored = jets.score_entries(ledger, flags)
+    flagged = scored[scored["risk_score"] > 0]
+    counts = count_by_band(bands(flagged, Materiality("50000"), 2025))
+    in_year = len(flagged) - counts["other year"]
+    assert counts["above performance"] == 0 and counts["no amount"] == 0 and counts["negative"] == 0
+    assert (f"Of the {len(flagged)} entries the rule tier flags on the default ledger, {in_year} are of "
+            f"fiscal year 2025; against $50,000, {counts['material']} of those are material, none sits "
+            f"between performance materiality and overall, {counts['below performance']} are below "
+            f"performance materiality and {counts['clearly trivial']} are clearly trivial.") in README
