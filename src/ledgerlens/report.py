@@ -10,6 +10,7 @@ Deliberately plain formatting. A workpaper is evidence, not a dashboard.
 
 from __future__ import annotations
 
+import textwrap
 from datetime import datetime
 from pathlib import Path
 
@@ -19,6 +20,16 @@ from openpyxl.utils import get_column_letter
 
 from .controls import DEFAULT_CONTROLS, Controls, format_approvers, format_limit
 from .evaluate import DETECTION_CAVEAT
+from .materiality import (
+    BAND_NOTE,
+    FISCAL_YEAR_NOTE,
+    Materiality,
+    bands,
+    count_by_band,
+    dollars,
+    fiscal_year_for,
+    percent,
+)
 from .review import ReviewStore
 
 HEADER_FILL = PatternFill("solid", fgColor="1F3864")
@@ -111,15 +122,23 @@ def build_workpaper(
     top_n: int = 250,
     store: ReviewStore | None = None,
     controls: Controls | None = None,
+    materiality: Materiality | None = None,
+    fiscal_year: int | None = None,
 ) -> Path:
     """Write the exception workpaper and return the path written.
 
     ``controls`` are the ones the flags were raised against (None: the synthetic
-    company's); the Summary sheet says which, and where they came from.
+    company's); the Summary sheet says which, and where they came from. With
+    ``materiality``, each exception carries its band beside its amount, and the
+    Summary sheet the figures, ``fiscal_year`` being the year they are set for.
     """
     controls = DEFAULT_CONTROLS if controls is None else controls
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    if materiality is not None:  # beside the score, never in it (rule 3)
+        if fiscal_year is None:  # the ledger's one year, or the population's refusal of several
+            fiscal_year = fiscal_year_for(scored)
+        scored = scored.assign(materiality_band=bands(scored, materiality, fiscal_year))
 
     exceptions = scored[scored["risk_score"] > 0].copy()
     if "model_score" in exceptions.columns:
@@ -130,7 +149,7 @@ def build_workpaper(
 
     keep = [c for c in (
         "entry_id", "posting_date", "entered_at", "source", "created_by",
-        "entry_amount", "risk_score", "model_score", "agreement", "n_flags",
+        "entry_amount", "materiality_band", "risk_score", "model_score", "agreement", "n_flags",
         "tests_fired", "reasons",
     ) if c in exceptions.columns]
     exceptions = exceptions[keep]
@@ -171,6 +190,20 @@ def build_workpaper(
             # sentences below it are; a path is measured like any other value.
             ("Controls file", controls.source or "none (synthetic defaults)"),
         ]
+        if materiality is not None:
+            counts = count_by_band(scored.loc[scored["risk_score"] > 0, "materiality_band"])
+            rows += [
+                ("", ""),
+                ("Overall materiality", dollars(materiality.overall_cents)),
+                ("Performance materiality", f"{dollars(materiality.performance_cents)} "
+                                            f"({percent(materiality.performance_share)} of overall)"),
+                ("Clearly trivial", f"{dollars(materiality.trivial_cents)} "
+                                    f"({percent(materiality.trivial_share)} of overall)"),
+                ("Fiscal year", fiscal_year if fiscal_year is not None else "none (the ledger holds no entry)"),
+                ("Flagged entries by band", ", ".join(f"{band} {n:,}" for band, n in counts.items())),
+                ("Read the band as", BAND_NOTE),
+                ("The fiscal year", FISCAL_YEAR_NOTE),
+            ]
         if metrics:
             # A ratio over nothing is not a figure: said so, as `summary` says it.
             flagged, truth = metrics.get("flagged", 0) > 0, metrics.get("true_anomalies", 0) > 0
@@ -273,6 +306,9 @@ def build_workpaper(
             "  Synthetic anomalies do not adapt to the controls looking for them.",
             "  This is a demonstration of technique. It is not an audit procedure or professional advice.",
         ]
+        if materiality is not None:
+            text += ["", "Materiality"] + [
+                "  " + line for note in (BAND_NOTE, FISCAL_YEAR_NOTE) for line in textwrap.wrap(note, 100)]
         if model_report:
             text += ["", "Model fit"] + ["  " + ln for ln in model_report.splitlines()]
         for i, line in enumerate(text, start=3):

@@ -194,6 +194,17 @@ seed among them. A selection is what to examine, not a finding. It is made from 
 ids, fiscal years and amounts, lists each with its posting date and description, and reads no
 flag, model score, controls file or label.
 
+The same figures put each entry's materiality band beside its risk score in `test`, `summary`,
+the workpaper and the dashboard: material (at or above overall), above performance (at or
+above performance materiality), below performance (above clearly trivial), clearly trivial (at
+or below it), no amount, negative, and other year for an entry outside the fiscal year the
+figures are set for. Amounts are compared in whole cents, as the population counts them, so the
+band reads an amount as the sample does, and an entry of exactly performance materiality is at
+or above it for both. The band is a label beside the score and never
+part of it: it ranks nothing, scores nothing and flags nothing, so the two tiers answer the
+questions they answered before and the band answers a third, how large the entry is against
+the engagement's materiality.
+
 ## References
 
 - AU-C 240, *Consideration of Fraud in a Financial Statement Audit* — journal entry

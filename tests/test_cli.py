@@ -2124,3 +2124,159 @@ def test_sample_files_a_ledger_under_its_identity(two_ledgers, tmp_path, capsys)
     capsys.readouterr()
     assert main(["sample", str(ledger), "--materiality", "50000", "--seed", "1"]) == 0
     assert "Identity     qbo:9130357" in capsys.readouterr().out
+
+
+# --- the materiality band beside the risk score: test, summary, report ---------------------
+
+def _two_year_ledger(tmp_path):
+    main(["generate", "--start", "2024-12-01", "--end", "2025-01-31", "--out-dir", str(tmp_path)])
+    return str(tmp_path / "ledger.csv")
+
+
+def test_test_prints_the_figures_and_each_top_entry_s_band(two_ledgers, capsys):
+    from ledgerlens.materiality import BAND_NOTE, FISCAL_YEAR_NOTE
+
+    ledger, _ = _pair(two_ledgers)
+    capsys.readouterr()
+    assert main(["test", ledger, "--materiality", "50000"]) == 0
+    out = capsys.readouterr().out
+    assert ("Materiality $50,000.00 overall; performance $37,500.00 (75%); clearly trivial "
+            "$2,500.00 (5%); fiscal year 2024\n") in out
+    counts = re.search(r"Flagged entries by materiality band: (.*)", out).group(1)
+    assert counts.startswith("material ") and counts.endswith(", other year 0")
+    flagged = int(re.search(r"flag\(s\) on ([\d,]+) entrie", out).group(1).replace(",", ""))
+    assert sum(int(n) for n in re.findall(r" (\d+)(?:,|$)", counts)) == flagged
+    top = out.split("by risk score:")[1].split("\n\n")[0].strip().splitlines()
+    assert top and all(re.search(r"\$[\d,]+\.\d\d  (material|above performance|below performance|"
+                                 r"clearly trivial)$", line) for line in top)
+    page = " ".join(out.split())
+    assert " ".join(BAND_NOTE.split()) in page and " ".join(FISCAL_YEAR_NOTE.split()) in page
+    assert main(["test", ledger]) == 0
+    plain = capsys.readouterr().out
+    assert "Materiality" not in plain and "band" not in plain and "fiscal year" not in plain
+
+
+def test_test_writes_the_band_to_its_csv_only_when_a_materiality_was_given(two_ledgers, tmp_path, capsys):
+    import pandas as pd
+
+    ledger, _ = _pair(two_ledgers)
+    out = tmp_path / "scored.csv"
+    assert main(["test", ledger, "--out", str(out), "--materiality", "50000"]) == 0
+    banded = pd.read_csv(out)
+    assert list(banded.columns).index("materiality_band") == list(banded.columns).index("risk_score") + 4
+    assert set(banded["materiality_band"]) <= {"material", "above performance", "below performance",
+                                               "clearly trivial", "no amount", "negative"}
+    assert main(["test", ledger, "--out", str(out)]) == 0
+    assert "materiality_band" not in pd.read_csv(out).columns
+
+
+@pytest.mark.parametrize("command", [["test"], ["summary"], ["report", "--no-model"]])
+@pytest.mark.parametrize("flag", [["--performance", "0.5"], ["--trivial", "0.01"], ["--fiscal-year", "2024"]])
+def test_a_share_or_a_year_without_the_figure_is_refused_before_the_ledger_is_read(
+        tmp_path, capsys, command, flag):
+    assert main([command[0], str(tmp_path / "missing.csv"), *command[1:], *flag]) == 2
+    assert capsys.readouterr().out == f"error: {flag[0]} needs --materiality, the figure it qualifies\n"
+
+
+@pytest.mark.parametrize("command", [["test"], ["summary"], ["report", "--no-model"]])
+def test_a_materiality_that_cannot_be_used_is_refused_before_the_ledger_is_read(tmp_path, capsys, command):
+    assert main([command[0], str(tmp_path / "missing.csv"), *command[1:], "--materiality", "-5"]) == 2
+    out = capsys.readouterr().out
+    assert out.startswith("error: materiality must be above 0") and out.count("\n") == 1
+
+
+@pytest.mark.parametrize("command", [["test"], ["summary", "--format", "json"], ["report", "--no-model"]])
+def test_a_ledger_of_several_years_needs_the_year_the_figures_are_set_for(tmp_path, capsys, command):
+    ledger = _two_year_ledger(tmp_path)
+    extra = ["--out", str(tmp_path / "wp.xlsx")] if command[0] == "report" else []
+    capsys.readouterr()
+    assert main([command[0], ledger, *command[1:], *extra, "--materiality", "50000"]) == 2
+    out = capsys.readouterr().out
+    assert out.startswith("error: the ledger spans fiscal years 2024, 2025") and out.count("\n") == 1
+    assert "--fiscal-year" in out
+    assert main([command[0], ledger, *command[1:], *extra, "--materiality", "50000",
+                 "--fiscal-year", "2025"]) == 0
+    out = capsys.readouterr().out
+    if command[0] == "summary":
+        block = json.loads(out)["materiality"]
+        assert block["fiscal_year"] == 2025 and sum(block["flagged_by_band"].values()) > 0
+    elif command[0] == "test":
+        assert "fiscal year 2025" in out
+
+
+def test_summary_carries_the_figures_the_bands_and_each_entry_s_band(two_ledgers, capsys):
+    from ledgerlens.materiality import BAND_NOTE, BANDS, FISCAL_YEAR_NOTE, OTHER_YEAR
+
+    ledger, _ = _pair(two_ledgers)
+    capsys.readouterr()
+    assert main(["summary", ledger, "--materiality", "50000", "--performance", "0.6",
+                 "--format", "json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    block = payload["materiality"]
+    assert list(block)[:2] == ["note", "fiscal_year_note"]
+    assert (block["note"], block["fiscal_year_note"]) == (BAND_NOTE, FISCAL_YEAR_NOTE)
+    assert (block["overall"], block["performance"], block["clearly_trivial"], block["fiscal_year"]) == (
+        50000.0, 30000.0, 2500.0, 2024)
+    assert list(block["flagged_by_band"]) == [*BANDS, OTHER_YEAR]
+    assert sum(block["flagged_by_band"].values()) == payload["flagged"]
+    assert payload["top_exceptions"] and all(e["materiality_band"] in BANDS for e in payload["top_exceptions"])
+    assert main(["summary", ledger, "--format", "json"]) == 0
+    plain = json.loads(capsys.readouterr().out)
+    assert "materiality" not in plain and all("materiality_band" not in e for e in plain["top_exceptions"])
+
+
+def test_report_puts_the_band_beside_the_amount_and_the_figures_on_the_summary_sheet(
+        two_ledgers, tmp_path, capsys):
+    import openpyxl
+
+    from ledgerlens.materiality import BAND_NOTE, BANDS
+
+    ledger, _ = _pair(two_ledgers)
+    out = tmp_path / "wp.xlsx"
+    assert main(["report", ledger, "--no-model", "--out", str(out), "--materiality", "50000"]) == 0
+    wb = openpyxl.load_workbook(out)
+    assert wb.sheetnames == ["Summary", "Exceptions", "All flags", "Benford", "Methodology"]
+    header = [c.value for c in wb["Exceptions"][1]]
+    assert header.index("materiality_band") == header.index("entry_amount") + 1
+    column = header.index("materiality_band")
+    values = {row[column] for row in wb["Exceptions"].iter_rows(min_row=2, values_only=True)}
+    assert values and values <= set(BANDS)
+    cells = {str(c.value) for row in wb["Summary"].iter_rows() for c in row if c.value}
+    assert {"Overall materiality", "$50,000.00", "Performance materiality", "$37,500.00 (75% of overall)",
+            "Clearly trivial", "$2,500.00 (5% of overall)", "Fiscal year", "2024",
+            "Flagged entries by band", "Read the band as", BAND_NOTE} <= cells
+    text = " ".join(str(c.value) for row in wb["Methodology"].iter_rows() for c in row if c.value)
+    assert "Materiality" in text and "never part of it" in text
+    assert main(["report", ledger, "--no-model", "--out", str(out)]) == 0
+    assert "materiality_band" not in [c.value for c in openpyxl.load_workbook(out)["Exceptions"][1]]
+
+
+def test_two_stray_flags_are_refused_in_the_plural(tmp_path, capsys):
+    assert main(["test", str(tmp_path / "missing.csv"), "--performance", "0.5", "--trivial", "0.01"]) == 2
+    assert capsys.readouterr().out == "error: --performance, --trivial need --materiality, the figure they qualify\n"
+
+
+def test_a_run_that_flags_nothing_still_prints_the_bands_without_a_second_blank_line(two_ledgers, capsys):
+    ledger, _ = _pair(two_ledgers)
+    capsys.readouterr()
+    assert main(["test", ledger, "--only", "JET-09", "--materiality", "50000"]) == 0
+    out = capsys.readouterr().out
+    assert "Flagged entries by materiality band: material 0," in out and "\n\n\n" not in out
+
+
+def test_summary_refuses_a_multi_year_ledger_before_either_tier_runs(tmp_path, capsys, monkeypatch):
+    from ledgerlens import cli
+
+    class NeverLoaded:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def load(self):
+            raise AssertionError("the tiers ran before the year was refused")
+
+    monkeypatch.setattr(cli, "LedgerContext", NeverLoaded)
+    ledger = _two_year_ledger(tmp_path)
+    capsys.readouterr()
+    assert main(["summary", ledger, "--materiality", "50000"]) == 2
+    out = capsys.readouterr().out
+    assert out.startswith("error: the ledger spans fiscal years 2024, 2025") and out.count("\n") == 1

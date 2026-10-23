@@ -42,6 +42,7 @@ from .env import load_dotenv
 from .generate import DEFAULT_SEED, HELD_OUT_SEED, ArchetypeSkipped, generate_ledger
 from .ingest import IdentityError, ledger_identity, load_csv, load_labels, quote
 from .ledger_context import LedgerContext
+from .materiality import BAND_NOTE, FISCAL_YEAR_NOTE, bands, count_by_band, fiscal_year_for
 from .model import combine, score_ledger
 from .narrate import DEFAULT_EFFORT, DEFAULT_MAX_TOKENS, DEFAULT_MODEL, NarrativeError, Narrator
 from .report import build_workpaper
@@ -175,6 +176,60 @@ def _say_controls(controls: Controls) -> None:
         print(f"Controls from {one_line(controls.source)}: {one_line(controls.describe())}")
 
 
+def _add_materiality_arguments(parser: argparse.ArgumentParser, required: bool = False) -> None:
+    """The flags a materiality is given with, the same on every command that takes one."""
+    parser.add_argument("--materiality", required=required, metavar="DOLLARS",
+                        help="overall materiality, your judgement for the engagement (no default)")
+    parser.add_argument("--performance", metavar="SHARE",
+                        help=f"performance materiality as a share of overall (default {DEFAULT_PERFORMANCE_SHARE})")
+    parser.add_argument("--trivial", metavar="SHARE",
+                        help=f"clearly trivial as a share of overall (default {DEFAULT_TRIVIAL_SHARE})")
+    parser.add_argument("--fiscal-year", metavar="YEAR",
+                        help="the fiscal year the figures are set for; needed when the ledger spans "
+                             "more than one, because materiality is set for one year's financial "
+                             "statements")
+
+
+def _materiality_from(args: argparse.Namespace) -> tuple[Materiality | None, str | None]:
+    """``(the figures, None)``; ``(None, None)`` when no materiality was given; or ``(None, the
+    line to print)``: a share or a year without the figure it qualifies, or a figure that
+    cannot be used. Settled before any ledger is read, as every other refusal of an argument."""
+    if args.materiality is None:
+        stray = [flag for flag, given in (("--performance", args.performance),
+                                          ("--trivial", args.trivial),
+                                          ("--fiscal-year", args.fiscal_year)) if given is not None]
+        if stray:
+            one = len(stray) == 1
+            return None, "error: {} {} --materiality, the figure {}".format(
+                ", ".join(stray), "needs" if one else "need", "it qualifies" if one else "they qualify")
+        return None, None
+    try:
+        return Materiality(
+            args.materiality,
+            DEFAULT_PERFORMANCE_SHARE if args.performance is None else args.performance,
+            DEFAULT_TRIVIAL_SHARE if args.trivial is None else args.trivial), None
+    except SamplingError as exc:
+        return None, f"error: {one_line(exc)}"
+
+
+def _year_for(df: pd.DataFrame, args: argparse.Namespace) -> tuple[int | None, str | None]:
+    """The fiscal year the band is given for, once the ledger is read, or the line to print:
+    a ledger of several years needs it named, as the sample does."""
+    try:
+        return fiscal_year_for(df, args.fiscal_year), None
+    except SamplingError as exc:
+        return None, f"error: {one_line(exc)}"
+
+
+def _say_bands(banded: pd.Series) -> None:
+    """The two notes, then the flagged entries by band, as `test` prints them."""
+    for note in (BAND_NOTE, FISCAL_YEAR_NOTE):  # ahead of the counts they qualify
+        print(textwrap.fill(note, 96, initial_indent="  ", subsequent_indent="  ",
+                            break_on_hyphens=False))
+    print("Flagged entries by materiality band: " + ", ".join(
+        f"{band} {count:,}" for band, count in count_by_band(banded).items()))
+
+
 def _inert(table: pd.DataFrame, column: str) -> pd.DataFrame:
     """``table`` with one text column made one line each.
 
@@ -208,6 +263,10 @@ def cmd_test(args: argparse.Namespace) -> int:
             print("error: unknown test id(s): {} (known: {} to {})".format(
                 ", ".join(quote(part) for part in unknown), known[0], known[-1]))
             return 2
+    materiality, problem = _materiality_from(args)
+    if problem:
+        print(problem)
+        return 2
     df, problem = _load_ledger(args.ledger)
     if problem:
         print(problem)
@@ -223,6 +282,13 @@ def cmd_test(args: argparse.Namespace) -> int:
             print(problem)
             return 2
     _say_controls(controls)
+    year = None
+    if materiality is not None:
+        year, problem = _year_for(df, args)
+        if problem:
+            print(problem)
+            return 2
+        print(f"Materiality {materiality.describe()}; fiscal year {year}")
     flags = jets.run_all(df, only=only, controls=controls)
 
     print("Ran {} test(s) over {:,} entries".format(
@@ -235,6 +301,11 @@ def cmd_test(args: argparse.Namespace) -> int:
         print(summary.to_string(index=False))
 
     scored = jets.score_entries(df, flags)
+    if materiality is not None:  # beside the score, never in it; the csv gets the column too
+        scored = scored.assign(materiality_band=bands(scored, materiality, year))
+        if not flags.empty:  # the flags table has no blank line after it; "Raised 0" has one
+            print()
+        _say_bands(scored.loc[scored["risk_score"] > 0, "materiality_band"])
     if args.out:
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
         scored.to_csv(args.out, index=False)
@@ -245,7 +316,8 @@ def cmd_test(args: argparse.Namespace) -> int:
         print(f"\nTop {len(top)} by risk score:")
         for r in top.itertuples():
             print(f"  {one_line(r.entry_id)}  score {r.risk_score:>4.1f}  {r.tests_fired}  "
-                  f"${r.entry_amount:,.2f}")
+                  f"${r.entry_amount:,.2f}"
+                  + (f"  {r.materiality_band}" if materiality is not None else ""))
 
     if labels is not None:
         metrics = evaluate.evaluate(flags, labels, df["entry_id"].unique())
@@ -362,6 +434,10 @@ def cmd_score(args: argparse.Namespace) -> int:
 
 def cmd_report(args: argparse.Namespace) -> int:
     """Write the Excel workpaper."""
+    materiality, problem = _materiality_from(args)
+    if problem:
+        print(problem)
+        return 2
     df, problem = _load_ledger(args.ledger)
     if problem:
         print(problem)
@@ -377,6 +453,12 @@ def cmd_report(args: argparse.Namespace) -> int:
             print(problem)
             return 2
     _say_controls(controls)
+    year = None
+    if materiality is not None:
+        year, problem = _year_for(df, args)
+        if problem:
+            print(problem)
+            return 2
     flags = jets.run_all(df, controls=controls)
     scored = jets.score_entries(df, flags)
 
@@ -410,7 +492,7 @@ def cmd_report(args: argparse.Namespace) -> int:
         scored, flags, args.out,
         benford=segmented_benford(df, by="account_code"),
         metrics=metrics, model_report=model_report, top_n=args.top, store=store,
-        controls=controls,
+        controls=controls, materiality=materiality, fiscal_year=year,
     )
     print(f"Workpaper written to {path}")
     print("  {:,} entries in population, {:,} flagged".format(
@@ -481,9 +563,19 @@ def cmd_summary(args: argparse.Namespace) -> int:
         if problem:
             print(problem)
             return 2
+    materiality, problem = _materiality_from(args)
+    if problem:
+        print(problem)
+        return 2
     context = None
     try:
         df = load_csv(args.ledger)
+        year = None
+        if materiality is not None:  # before either tier runs, as the labels are checked
+            year, problem = _year_for(df, args)
+            if problem:
+                print(problem)
+                return 2
         ledger_id = ledger_identity(df, args.ledger)
         # Read here, not by the context, which is handed a frame: said as test says it,
         # and not printed when used (the page names them; JSON stays one document).
@@ -505,7 +597,8 @@ def cmd_summary(args: argparse.Namespace) -> int:
         print(f"error: cannot summarise the ledger {args.ledger}: {one_line(exc)}")
         return 2
     try:
-        payload = collect_summary(context, labels=labels, top=args.top, ledger=args.ledger)
+        payload = collect_summary(context, labels=labels, top=args.top, ledger=args.ledger,
+                                  materiality=materiality, fiscal_year=year)
     except RuntimeError as exc:
         # A review database this version cannot read. SQLite's message quotes names
         # stored in the file, and the file is somebody else's: one line, no controls.
@@ -546,11 +639,11 @@ def cmd_sample(args: argparse.Namespace) -> int:
         print("error: --method stratified needs --size, the number of entries to draw below "
               "performance materiality")
         return 2
+    materiality, problem = _materiality_from(args)
+    if problem:
+        print(problem)
+        return 2
     try:
-        materiality = Materiality(
-            args.materiality,
-            DEFAULT_PERFORMANCE_SHARE if args.performance is None else args.performance,
-            DEFAULT_TRIVIAL_SHARE if args.trivial is None else args.trivial)
         check_sample_parameters(args.method, confidence=args.confidence, size=args.size,
                                 strata=args.strata, seed=args.seed, fiscal_year=args.fiscal_year)
     except SamplingError as exc:
@@ -1101,6 +1194,7 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--only", help="comma-separated test ids, e.g. JET-01,JET-05")
     t.add_argument("--out", help="write scored entries to this csv")
     t.add_argument("--top", type=int, default=10)
+    _add_materiality_arguments(t)
     t.set_defaults(func=cmd_test)
 
     b = sub.add_parser("benford", help="first-digit digit analysis")
@@ -1128,6 +1222,7 @@ def build_parser() -> argparse.ArgumentParser:
     rp.add_argument("--top", type=int, default=250, help="exceptions to include")
     rp.add_argument("--no-model", action="store_true", help="rule tier only")
     rp.add_argument("--db", help="review database; adds narrative and decision columns")
+    _add_materiality_arguments(rp)
     rp.set_defaults(func=cmd_report)
 
     sm = sub.add_parser("summary", help="one page on a ledger, as text, markdown or JSON")
@@ -1140,6 +1235,7 @@ def build_parser() -> argparse.ArgumentParser:
     sm.add_argument("--out", type=_path_arg,
                     help="write the summary here instead of printing it; inside a git "
                          "checkout only under out/")
+    _add_materiality_arguments(sm)
     sm.set_defaults(func=cmd_summary)
 
     sa = sub.add_parser("sample", help="select entries to examine against a materiality you give, "
@@ -1149,17 +1245,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="mus: monetary unit sampling (the default); stratified: every entry at "
                          "or above performance materiality, and a seeded draw from bands of value "
                          "below it")
-    sa.add_argument("--materiality", required=True, metavar="DOLLARS",
-                    help="overall materiality, your judgement for the engagement (no default)")
-    sa.add_argument("--performance", metavar="SHARE",
-                    help=f"performance materiality as a share of overall (default {DEFAULT_PERFORMANCE_SHARE})")
-    sa.add_argument("--trivial", metavar="SHARE",
-                    help=f"clearly trivial as a share of overall (default {DEFAULT_TRIVIAL_SHARE})")
+    _add_materiality_arguments(sa, required=True)
     sa.add_argument("--confidence", metavar="LEVEL",
                     help=f"mus only: the confidence level the sample is sized for (default {DEFAULT_CONFIDENCE})")
-    sa.add_argument("--fiscal-year", metavar="YEAR",
-                    help="the fiscal year to sample; needed when the ledger spans more than one, "
-                         "because materiality is set for one year's financial statements")
     sa.add_argument("--size", metavar="N",
                     help="stratified only, and needed there: entries to draw below performance materiality")
     sa.add_argument("--strata", metavar="N",

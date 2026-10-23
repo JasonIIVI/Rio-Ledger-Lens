@@ -566,12 +566,27 @@ The memo prints as text, or as markdown or JSON with `--format`. `--out` writes 
 inside a git checkout, as for the summary, only under `out/`, because a memo of real books
 carries their entries and descriptions.
 
+**Where each entry stands.** The same figures, given to the other commands, put each entry's
+materiality band beside its risk score: `ledgerlens test LEDGER --materiality 50000` prints it
+after each top entry's amount (and writes a `materiality_band` column with `--out`), `summary`
+carries it on each listed entry and counts the flagged entries by band, `report` puts it right
+after the amount on the Exceptions sheet with the figures on the Summary sheet, and the
+dashboard takes the figure in its sidebar. The bands are material (at or above overall
+materiality), above performance (at or above performance materiality), below performance
+(above clearly trivial), clearly trivial (at or below it), no amount and negative, and other
+year for an entry outside the fiscal year the figures are set for: a ledger of several years
+needs `--fiscal-year`, as the sample does. The band is a label beside the score and never part
+of it: nothing is ranked, scored, flagged or dropped by it. Of the 89 entries the rule tier
+flags on the default ledger, 48 are of fiscal year 2025; against $50,000, 2 of those are
+material, none sits between performance materiality and overall, 17 are below performance
+materiality and 29 are clearly trivial.
+
 ## One page, and a weekly run
 
 `ledgerlens summary` gathers what the other commands print piecemeal into one page: the rule
 tier's flags by test, the model tier's budget, how the two tiers agree, the riskiest entries,
-the controls JET-12 and JET-06 ran against, review progress when `--db` is given, and measured
-quality when `--labels` is.
+the controls JET-12 and JET-06 ran against, review progress when `--db` is given, measured
+quality when `--labels` is, and each listed entry's materiality band when `--materiality` is.
 
 ```bash
 ledgerlens summary data/ledger.csv --labels data/labels.csv                       # text, to the terminal
@@ -701,6 +716,8 @@ and reopen Claude Desktop:
       after the code was frozen, measuring the model tier against chance (v1.1.0)
 - [x] **Week 6, first part** — materiality and `ledgerlens sample`: monetary unit and
       stratified sampling, seeded and repeatable, with a memo of how each selection was made
+- [x] **Week 6, second part** — each entry's materiality band beside its risk score, in `test`,
+      `summary`, the workpaper and the dashboard, never folded into the score (v1.2.0)
 
 ## Limitations
 
