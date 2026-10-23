@@ -12,7 +12,7 @@ Audit analytics over general ledger data. Read this before changing anything.
 | Repo | `JasonIIVI/Rio-Ledger-Lens` (public, MIT) |
 | Working folder | `~/Library/Mobile Documents/com~apple~CloudDocs/LedgerGen project` (iCloud) |
 | Virtualenvs | `~/.venvs/ledgerlens` (3.9) and `~/.venvs/ledgerlens312` (3.12) — **deliberately outside iCloud**, one set per machine |
-| Python here | system 3.9.6 plus python.org **3.12.0** at `/usr/local/bin/python3.12`. Code must stay 3.9-compatible; only `mcp_server.py` needs 3.10+. pandas 2.2 or later (`ingest` imports `pandas.tseries.api.guess_datetime_format`), Streamlit 1.49 or later (`st.dataframe(width="stretch")`); CI and the venvs install the latest (pandas 2.3 and 3.0), so the floors themselves are not run |
+| Python here | system 3.9.6 plus python.org **3.12.0** at `/usr/local/bin/python3.12`. Code must stay 3.9-compatible; only `mcp_server.py` needs 3.10+. pandas 2.2 or later (`ingest` imports `pandas.tseries.api.guess_datetime_format`), Streamlit 1.49 or later (`st.dataframe(width="stretch")`); CI installs the latest (pandas 2.3 on 3.9, 3.1 on 3.11 and 3.12; the venvs have 2.3 and 3.0.6), so the floors themselves are not run, and a new pandas reaches CI before the venvs |
 | CI | GitHub Actions: pytest on 3.9 / 3.11 / 3.12 + a detection-quality gate + a `rule-1` job (no data or secret file tracked); `claude.yml` answers `@claude`; `weekly.yml` regenerates the default ledger on Mondays and opens an Issue with `ledgerlens summary` |
 
 ```bash
@@ -419,6 +419,19 @@ and the MCP SDK, so the two together cover every code path CI will see.
     `test`'s output again. No value moves. The other tables that only display rows
     (Benford by MAD, review counts, mean model score by archetype) still leave a tie to a
     one-key sort.
+- **pandas 3.1 (`fix/pandas-3.1-review-state`)** — pandas 3.1.0 (2026-10-22) keeps a nullable
+  integer's dtype through `Series.map` (GH 63903). In `review.review_state` the note shown is
+  `Int64`, so in a store with decisions and no note a lookup found nothing, came back `Int64`,
+  and `fillna("")` raised a TypeError: the workpaper (`report --db`), `summary` and the MCP
+  server's entry rows (`LedgerContext._attach_review`) crashed for such a store, and an empty
+  store's note columns turned `Int64`. Found by CI's 3.11 and 3.12 jobs on another branch, the
+  day 3.1.0 was released. The lookups now go
+  through an object copy, and the two time columns are filled as objects (filling a float64
+  column with "" warns in 3.1 and is to raise in pandas 4). Probed on five stores,
+  `review_state` gives what it gave before under 2.3 and 3.0.6, and under 3.1.0 what it gives
+  under 3.0.6, dtypes included. pandas 3.1 also warns of pandas 4 changes in `ingest.py` (a
+  `fillna("")` on a float column, `dt.dayofweek`) and `features.py` (`dt.dayofweek`); nothing
+  fails, and they are left for a later change.
 - **Materiality and sampling (week 6, PR 1, `week6/sampling`)** — `sampling.py` and
   `ledgerlens sample`. Materiality comes from the command line only (`--materiality`; the
   `--performance` and `--trivial` shares default to 0.75 and 0.05, below 1, to at most six
@@ -454,7 +467,7 @@ and the MCP SDK, so the two together cover every code path CI will see.
   Open, the maintainer's call: re-recording `docs/demo.gif` (its model scores predate
   v1.0.0's tie fix), the display-only sorts above, and week 5's model train/test split (a
   re-measurement under rule 10).
-- 1153 tests on 3.9 (1 skipped) / 1167 on 3.12 (the fourteen MCP tests need 3.10+), ruff clean.
+- 1154 tests on 3.9 (1 skipped) / 1168 on 3.12 (the fourteen MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
