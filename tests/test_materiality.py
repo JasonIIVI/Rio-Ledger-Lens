@@ -129,3 +129,13 @@ def test_the_names_sampling_lends_out_are_the_same_objects():
 def test_the_module_is_written_in_ascii():
     for path in (Path(materiality.__file__), Path(__file__)):
         assert path.read_text(encoding="utf-8").isascii(), path.name
+
+
+def test_counts_list_every_band_in_a_fixed_order_zeros_included():
+    from ledgerlens.materiality import count_by_band
+
+    counted = count_by_band(pd.Series(["material", "negative", "material", OTHER_YEAR]))
+    assert list(counted) == [*BANDS, OTHER_YEAR]
+    assert counted == {"material": 2, "above performance": 0, "below performance": 0,
+                       "clearly trivial": 0, "no amount": 0, "negative": 1, "other year": 1}
+    assert count_by_band(pd.Series([], dtype=object)) == {band: 0 for band in (*BANDS, OTHER_YEAR)}

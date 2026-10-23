@@ -259,6 +259,11 @@ def fiscal_year_for(entries: pd.DataFrame, fiscal_year: object = None) -> int | 
     return year
 
 
+def count_by_band(banded: pd.Series) -> dict[str, int]:
+    """How many entries fall in each band: every band, in one fixed order, zeros included."""
+    return {band: int((banded == band).sum()) for band in (*BANDS, OTHER_YEAR)}
+
+
 def band_of_cents(cents: int, materiality: Materiality) -> str:
     """The band of one amount in whole cents."""
     if cents < 0:

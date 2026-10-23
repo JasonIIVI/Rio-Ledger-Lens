@@ -283,3 +283,30 @@ def test_the_summary_sheet_names_the_controls_and_keeps_a_name_from_the_file_as_
     assert "They are facts about the company, not thresholds tuned against data." in methodology
     # only JET-11's threshold was chosen on the generator's ledger (docs/tuning.md)
     assert "Thresholds are tuned" not in methodology and "only JET-11's chosen there" in methodology
+
+
+def test_the_band_sits_beside_the_amount_and_the_figures_on_the_summary_sheet(ledger, labels, tmp_path):
+    from ledgerlens.materiality import BAND_NOTE, BANDS, OTHER_YEAR, Materiality
+
+    path, _ = _workpaper(ledger, labels, tmp_path, materiality=Materiality("50000"), fiscal_year=2025)
+    wb = openpyxl.load_workbook(path)
+    assert wb.sheetnames == ["Summary", "Exceptions", "All flags", "Benford", "Methodology"]
+    ws = wb["Exceptions"]
+    header = [c.value for c in ws[1]]
+    assert header.index("materiality_band") == header.index("entry_amount") + 1
+    band, amount = header.index("materiality_band"), header.index("entry_amount")
+    rows = list(ws.iter_rows(min_row=2, values_only=True))
+    assert {row[band] for row in rows} <= set(BANDS) | {OTHER_YEAR}
+    assert OTHER_YEAR in {row[band] for row in rows}  # the default ledger spans 2024 and 2025
+    for row in rows:
+        if row[band] == "material":
+            assert row[amount] >= 49999.995
+        if row[band] == "clearly trivial":
+            assert 0 < row[amount] < 2500.005
+    cells = [str(c.value) for row in wb["Summary"].iter_rows() for c in row if c.value]
+    for expected in ("Overall materiality", "$50,000.00", "Performance materiality",
+                     "$37,500.00 (75% of overall)", "Clearly trivial", "$2,500.00 (5% of overall)",
+                     "Fiscal year", "2025", "Flagged entries by band", "Read the band as", BAND_NOTE):
+        assert expected in cells, expected
+    text = " ".join(str(c.value) for row in wb["Methodology"].iter_rows() for c in row if c.value)
+    assert "Materiality" in text and "never part of it" in text and "calendar year" in text

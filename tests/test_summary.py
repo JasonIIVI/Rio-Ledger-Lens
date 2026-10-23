@@ -734,3 +734,44 @@ def test_a_controls_path_holding_a_control_character_is_printed_on_one_line(payl
     text = summary.render(page, "text")
     assert "from a b[2J.controls.json" in flat(text) and "\x1b" not in text
     assert summary.md_code(source) in summary.render(page, "markdown")
+
+
+def test_the_materiality_block_leads_with_its_notes_and_each_listed_entry_gets_its_band(context, small_ledger):
+    from ledgerlens.materiality import (
+        BAND_NOTE,
+        BANDS,
+        FISCAL_YEAR_NOTE,
+        OTHER_YEAR,
+        Materiality,
+        bands,
+    )
+
+    year = min(int(y) for y in context.lines["fiscal_year"])
+    m = Materiality("50000")
+    built = summary.collect(context, labels=small_ledger[1], top=5, today=TODAY,
+                            materiality=m, fiscal_year=year)
+    block = built["materiality"]
+    assert list(block) == ["note", "fiscal_year_note", "overall", "performance_share", "performance",
+                           "trivial_share", "clearly_trivial", "fiscal_year", "flagged_by_band"]
+    assert (block["note"], block["fiscal_year_note"], block["fiscal_year"]) == (BAND_NOTE, FISCAL_YEAR_NOTE, year)
+    assert list(block["flagged_by_band"]) == [*BANDS, OTHER_YEAR]
+    assert sum(block["flagged_by_band"].values()) == built["flagged"]
+    expected = dict(zip(context.combined["entry_id"], bands(context.combined, m, year)))
+    listed = built["top_exceptions"]
+    assert listed and [e["materiality_band"] for e in listed] == [expected[e["entry_id"]] for e in listed]
+    assert set(listed[0]) == set(ENTRY_COLUMNS) | {"materiality_band"}
+    assert json.loads(json.dumps(built)) == built
+    figures = ("$50,000.00 overall; performance $37,500.00 (75%); clearly trivial $2,500.00 (5%); "
+               f"fiscal year {year}")
+    for fmt in ("text", "markdown"):
+        page = flat(summary.render(built, fmt))
+        assert figures in page and "Flagged entries by band" in page and " material " in page
+        assert flat(BAND_NOTE) in page and flat(FISCAL_YEAR_NOTE) in page
+        assert page.count("budget") == 1, fmt  # the band's wording calls nothing a budget
+        assert page.index(flat(BAND_NOTE)) < page.index(figures)  # the note ahead of the figures
+    assert "| Entry | Posted | Amount | Band | Rule score |" in summary.render_markdown(built)
+    text = summary.render_text(built)
+    assert any(line.rstrip().endswith("  " + listed[0]["materiality_band"]) for line in text.splitlines())
+    without = summary.collect(context, labels=small_ledger[1], top=5, today=TODAY)
+    assert "materiality" not in without and "materiality_band" not in without["top_exceptions"][0]
+    assert "Band" not in summary.render_markdown(without) and "Materiality" not in summary.render_text(without)

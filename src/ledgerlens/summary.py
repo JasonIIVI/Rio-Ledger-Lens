@@ -24,6 +24,7 @@ import re
 import textwrap
 from dataclasses import asdict
 from datetime import date, datetime, timezone
+from decimal import Decimal
 
 import numpy as np
 import pandas as pd
@@ -33,6 +34,7 @@ from . import __version__, evaluate, jets
 from .connectors.qbo import SMALL_LEDGER
 from .controls import format_limit
 from .ledger_context import CAVEAT, ENTRY_COLUMNS, LedgerContext, records
+from .materiality import BAND_NOTE, FISCAL_YEAR_NOTE, Materiality, bands, count_by_band, percent
 from .narrative_eval import DEFAULT_LEDGER_SHA256
 from .review import DECISIONS
 from .schema import AnomalyType, HeldOutType
@@ -119,13 +121,17 @@ def collect(
     top: int = 10,
     ledger: str | None = None,
     today: date | None = None,
+    materiality: Materiality | None = None,
+    fiscal_year: int | None = None,
 ) -> dict:
     """Everything the renderers show, as plain JSON types.
 
     ``labels`` must already have passed ``evaluate.check_labels`` for this
     ledger. ``ledger`` is the path as the caller typed it, never resolved: a
     summary may be posted in public and has no business naming a home
-    directory. ``today`` is for tests; a run is dated in UTC.
+    directory. ``today`` is for tests; a run is dated in UTC. With ``materiality``, each listed entry
+    gets its band and the page a block of the figures and the flagged entries by band,
+    ``fiscal_year`` being the year the figures are set for (``materiality.fiscal_year_for``).
     """
     context.load()
     base = context.summary()
@@ -166,6 +172,21 @@ def collect(
         },
         "top_exceptions": [_entry(r) for r in context.top_exceptions(limit=top)["entries"]],
     }
+
+    if materiality is not None:
+        # Beside the score and never in it (rule 3): a label per entry, counts of the flagged
+        # entries by band, and the two notes ahead of the figures they qualify.
+        banded = bands(context.combined, materiality, fiscal_year)
+        by_id = dict(zip(context.combined["entry_id"], banded))
+        payload["materiality"] = {
+            "note": BAND_NOTE,
+            "fiscal_year_note": FISCAL_YEAR_NOTE,
+            **materiality.as_dict(),
+            "fiscal_year": fiscal_year,
+            "flagged_by_band": count_by_band(banded[context.combined["risk_score"] > 0]),
+        }
+        for entry in payload["top_exceptions"]:
+            entry["materiality_band"] = by_id.get(entry["entry_id"])
 
     if context.review_db is not None:
         status = base["review"]
@@ -403,6 +424,38 @@ def _review_sentences(review: dict) -> list[str]:
     return lines
 
 
+def _materiality_line(m: dict) -> str:
+    """The figures as one line, from the payload; the selection memo prints the same."""
+    line = "${:,.2f} overall; performance ${:,.2f} ({}); clearly trivial ${:,.2f} ({})".format(
+        m["overall"], m["performance"], percent(Decimal(repr(m["performance_share"]))),
+        m["clearly_trivial"], percent(Decimal(repr(m["trivial_share"]))))
+    if m["fiscal_year"] is not None:
+        line += f"; fiscal year {m['fiscal_year']}"
+    return line
+
+
+def _band_counts_line(counts: dict) -> str:
+    return ", ".join(f"{band} {count:,}" for band, count in counts.items())
+
+
+def _materiality_lines(payload: dict, wrap: textwrap.TextWrapper) -> list[str]:
+    if "materiality" not in payload:
+        return []
+    m = payload["materiality"]
+    return [*wrap.wrap(m["note"]), *wrap.wrap(m["fiscal_year_note"]),  # ahead of the figures
+            "Materiality " + _materiality_line(m),
+            "  Flagged entries by band: " + _band_counts_line(m["flagged_by_band"])]
+
+
+def _materiality_section(payload: dict) -> list[str]:
+    if "materiality" not in payload:
+        return []
+    m = payload["materiality"]
+    return ["", "### Materiality", "", m["note"], "", m["fiscal_year_note"], "",
+            *_table(("", ""), [("Figures", _materiality_line(m)),
+                                ("Flagged entries by band", _band_counts_line(m["flagged_by_band"]))])]
+
+
 def render_text(payload: dict) -> str:
     wrap = textwrap.TextWrapper(width=96, initial_indent="  ", subsequent_indent="  ")
     model, out = payload["model_tier"], []
@@ -418,6 +471,7 @@ def render_text(payload: dict) -> str:
         "Controls    " + _controls_sentence(payload["controls"], one_line),
         "Population  {:,} entries / {:,} lines; fiscal years {}".format(
             payload["entries"], payload["lines"], _years(payload)),
+        *_materiality_lines(payload, wrap),
         "",
         "Rule tier",
         "  {:,} of {:,} entries flagged ({:.2%}); {:,} flags raised (an entry can raise several)"
@@ -453,7 +507,7 @@ def render_text(payload: dict) -> str:
         out.append("  {:<{}}  {}  rule {:>4.1f}  model {:.3f}  {:<10}  {}  ${:,.2f}".format(
             one_line(e["entry_id"]), width, one_line(e["posting_date"]), e["risk_score"],
             e["model_score"], one_line(e["agreement"]), one_line(e["tests_fired"]),
-            e["entry_amount"]))
+            e["entry_amount"]) + (f"  {e['materiality_band']}" if "materiality_band" in e else ""))
     if not top:
         out.append("  no entry was flagged")
 
@@ -492,6 +546,7 @@ def render_markdown(payload: dict) -> str:
             ("Flags raised", "{:,} (an entry can raise several)".format(payload["flags_raised"])),
             ("Versions", versions),
         ]),
+        *_materiality_section(payload),
         "",
         "### Rule tier: flags by test",
         "",
@@ -539,13 +594,16 @@ def render_markdown(payload: dict) -> str:
     out += ["", f"### Top {len(top)} by rule score", "",
             "Ordered by the rule score; the model score only breaks ties.", ""]
     if top:
+        banded = "materiality_band" in top[0]  # the band is this tool's own word, never ledger text
         out += _table(
-            ("Entry", "Posted", "Amount", "Rule score", "Model score", "Tiers", "Tests", "Description"),
+            ("Entry", "Posted", "Amount", *(("Band",) if banded else ()),
+             "Rule score", "Model score", "Tiers", "Tests", "Description"),
             [(md_code(e["entry_id"]), md_code(e["posting_date"]), "{:,.2f}".format(e["entry_amount"]),
+              *((e["materiality_band"],) if banded else ()),
               "{:.1f}".format(e["risk_score"]), "{:.3f}".format(e["model_score"]),
               md_code(e["agreement"]), md_code(e["tests_fired"]), md_code(e["description"]))
              for e in top],
-            right=(2, 3, 4),
+            right=(2, 4, 5) if banded else (2, 3, 4),
         )
     else:
         out.append("No entry was flagged.")
