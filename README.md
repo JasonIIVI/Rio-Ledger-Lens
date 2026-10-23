@@ -518,6 +518,54 @@ was none.
 A controls file can name real people, so git ignores any `*.controls.json` and CI's rule-1
 check fails if one is ever committed.
 
+## Select a sample
+
+Ranking by risk says which entries look odd; it does not say which are big enough to matter.
+`ledgerlens sample` applies a materiality you give and selects entries to examine, with a memo
+of how the selection was made and how to repeat it:
+
+```bash
+ledgerlens sample data/ledger.csv --fiscal-year 2025 --method mus --materiality 50000 --seed 7
+```
+
+- **Materiality is yours.** `--materiality` is the overall figure for the engagement; there is
+  no default and no file. Performance materiality and clearly trivial are shares of it,
+  `--performance 0.75` (the top of the 50% to 75% commonly used; a lower share gives a larger
+  sample) and `--trivial 0.05` by default, each rounded down to the cent. Nothing tunes them.
+- **One fiscal year.** Materiality is set for one year's financial statements, so the
+  population is one fiscal year: a ledger that spans several needs `--fiscal-year`, and the
+  memo names the year. It is every entry of that year with a positive amount, in every account
+  and from every source: a journal-entry population, not one tied to an account balance or an
+  assertion. Entries of no amount, or of a negative one, are left out and counted. The year is
+  the ledger's `fiscal_year` column: a QuickBooks pull fills it with each posting date's
+  calendar year, so for a company whose fiscal year ends in another month it is a calendar year.
+- **Monetary unit sampling** (`--method mus`, the default) treats every dollar as a sampling
+  unit, so an entry is selected in proportion to its amount, and every entry at or above the
+  sampling interval is selected whatever the random start. The sample size is book value x
+  reliability factor / performance materiality, rounded up, with the zero-error factor
+  -ln(1 - confidence), 2.9957 at the default 95%: tolerable misstatement is taken to be
+  performance materiality, no misstatement is assumed to be expected, and expecting some needs
+  a larger sample. For fiscal year 2025 of the default ledger at $50,000 that is 193 units at
+  an interval of $12,484.63, landing on 185 entries, 7 of them at or above the interval.
+- **Stratified random sampling** (`--method stratified --size N`) examines every entry at or
+  above performance materiality in full and draws N of the rest at random, from bands of
+  near-equal value (`--strata`, 3 by default). Clearly trivial sets nothing aside: it governs
+  which misstatements are added up, and the default ledger's 2,351 entries of fiscal year 2025
+  under $2,500 come to $1.46 million. With `--size 40` its 2 entries of $37,500 or more are
+  examined in full and 40 are drawn, from bands of 1,904, 473 and 149 entries.
+- **Repeatable.** The memo states every figure the selection came from, the seed among them.
+  Without `--seed` one is drawn and stated, and running again with it gives the same selection,
+  on Python 3.9 and 3.12 alike: the only random draws are the ones Python promises not to change.
+- **What it is not.** A selection is what to examine, not a finding: nothing in the memo says an
+  entry is misstated, and an entry left out is not cleared by being left out. It selects from
+  the ledger's entries alone, by their ids, fiscal years and amounts, and lists each with its
+  posting date and description: it reads no test's flags, no model score, no controls file and
+  no labels.
+
+The memo prints as text, or as markdown or JSON with `--format`. `--out` writes it to a file;
+inside a git checkout, as for the summary, only under `out/`, because a memo of real books
+carries their entries and descriptions.
+
 ## One page, and a weekly run
 
 `ledgerlens summary` gathers what the other commands print piecemeal into one page: the rule
@@ -651,6 +699,8 @@ and reopen Claude Desktop:
 - [x] **Week 5, last part** — break the circularity: which test caught each archetype, every
       setting swept, and a held-out ledger of archetypes no rule describes, generated once
       after the code was frozen, measuring the model tier against chance (v1.1.0)
+- [x] **Week 6, first part** — materiality and `ledgerlens sample`: monetary unit and
+      stratified sampling, seeded and repeatable, with a memo of how each selection was made
 
 ## Limitations
 
