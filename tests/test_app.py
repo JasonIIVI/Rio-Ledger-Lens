@@ -700,3 +700,72 @@ def test_a_link_loop_written_after_the_first_load_is_refused_on_the_next_run(dat
     at.run()
     assert not at.exception, at.exception
     assert [e.value for e in at.error] == ["The controls file beside this ledger cannot be used."]
+
+
+def _run_with(data_dir, db, **state):
+    at = AppTest.from_file(str(APP), default_timeout=300)
+    at.session_state["ledger_path"] = str(data_dir / "ledger.csv")
+    at.session_state["labels_path"] = str(data_dir / "labels.csv")
+    at.session_state["db_path"] = str(db)
+    at.session_state["reviewer"] = ""
+    for key, value in state.items():
+        at.session_state[key] = value
+    at.run()
+    assert not at.exception, at.exception
+    return at
+
+
+def _queue_frame(at):
+    return next(f.value for f in at.dataframe
+                if {"entry_id", "risk_score", "decision"} <= set(f.value.columns))
+
+
+def test_a_materiality_in_the_sidebar_puts_each_entry_s_band_beside_its_scores(data_dir, tmp_path):
+    from ledgerlens.materiality import BANDS, Materiality, band_of_cents, to_cents
+
+    at = _run_with(data_dir, tmp_path / "review.sqlite", materiality="50000")
+    queue = _queue_frame(at)
+    columns = list(queue.columns)
+    assert columns.index("materiality_band") == columns.index("entry_amount") + 1
+    assert set(queue["materiality_band"]) <= set(BANDS)
+    m = Materiality("50000")
+    for amount, band in zip(queue["entry_amount"], queue["materiality_band"]):
+        assert band == band_of_cents(int(to_cents(__import__("pandas").Series([amount]))[0]), m)
+    assert {m.label: m.value for m in at.metric}["Materiality band"] in BANDS
+    assert "Materiality band" in [w.label for w in at.multiselect]
+    captions = " ".join(c.value for c in at.sidebar.caption)
+    assert "overall" in captions and "clearly trivial" in captions and "never part of it" in captions
+    assert "calendar year" in captions
+    assert "Rule score" in [m.label for m in at.metric]  # the two scores are still the two scores
+    # the band filter is the reviewer's, like the amount: choosing one band leaves that band
+    kept = [b for b in ("below performance", "clearly trivial") if b in set(queue["materiality_band"])]
+    at.multiselect(key="band_filter").set_value(kept[:1]).run()
+    assert not at.exception
+    assert set(_queue_frame(at)["materiality_band"]) == set(kept[:1])
+
+
+def test_a_materiality_that_cannot_be_used_is_said_as_text_and_changes_nothing(data_dir, tmp_path):
+    at = _run_with(data_dir, tmp_path / "review.sqlite", materiality="-5")
+    assert any("materiality must be above 0" in t.value for t in at.sidebar.text)
+    assert "materiality_band" not in _queue_frame(at).columns
+    assert "Materiality band" not in [m.label for m in at.metric]
+    plain = _run_with(data_dir, tmp_path / "review.sqlite")
+    assert "materiality_band" not in _queue_frame(plain).columns
+    assert "Materiality band" not in [m.label for m in plain.metric]
+    assert not any(w.key == "band_filter" for w in plain.multiselect)
+
+
+def test_a_ledger_of_several_years_asks_which_year_the_figures_are_set_for(tmp_path):
+    from ledgerlens.materiality import OTHER_YEAR
+
+    folder = tmp_path / "two-years"
+    main(["generate", "--start", "2024-12-01", "--end", "2025-01-31", "--out-dir", str(folder)])
+    at = _run_with(folder, tmp_path / "review.sqlite", materiality="50000")
+    chooser = at.selectbox(key="materiality_year")
+    assert chooser.options == ["2024", "2025"] and chooser.value == 2024
+    assert OTHER_YEAR in set(_queue_frame(at)["materiality_band"])  # January's entries
+    chooser.set_value(2025).run()
+    assert not at.exception
+    banded = _queue_frame(at)
+    assert OTHER_YEAR in set(banded["materiality_band"])  # now December's
+    assert any("fiscal year 2025" in c.value for c in at.sidebar.caption)

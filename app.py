@@ -22,6 +22,7 @@ from ledgerlens.benford import benford_test
 from ledgerlens.controls import ControlsError, controls_path, format_limit, load_controls
 from ledgerlens.env import load_dotenv
 from ledgerlens.ingest import identity_path, ledger_identity, load_csv, load_labels
+from ledgerlens.materiality import BAND_NOTE, FISCAL_YEAR_NOTE, Materiality, SamplingError, bands
 from ledgerlens.model import combine, score_ledger
 from ledgerlens.narrate import NarrativeError, Narrator, build_prompt, entry_context
 from ledgerlens.review import DECISIONS, LEGACY_LEDGER_ID, Decision, ReviewStore
@@ -138,6 +139,12 @@ db_path = st.sidebar.text_input("Review database", str(DATA / "review.sqlite"), 
 reviewer = st.sidebar.text_input(
     "Reviewer", key="reviewer", help="Every decision is recorded under this name.",
 ).strip()
+materiality_text = st.sidebar.text_input(
+    "Materiality (optional)", key="materiality",
+    help="Overall materiality for the engagement, in dollars; performance materiality is 75% "
+         "of it and clearly trivial 5%. Each entry then shows the band its amount falls in, "
+         "beside its scores and never in them.",
+).strip()
 
 if not Path(ledger_path).exists():
     st.warning("No ledger found. Run `ledgerlens generate` first.")
@@ -211,6 +218,28 @@ if LEGACY_LEDGER_ID in set(others["ledger_id"]) and ledger_id not in set(store.l
     )
 current = store.current()
 
+# ---- materiality: a band beside each entry's scores, never in them (rule 3) ----
+# Nothing below is cached: the band is one vector operation over the loaded frame, and the
+# figures are typed in, not read from a file.
+materiality = materiality_year = None
+if materiality_text:
+    try:
+        materiality = Materiality(materiality_text)
+    except SamplingError as exc:
+        # As text, never markdown: the reason quotes what was typed.
+        st.sidebar.text(f"Materiality not used: {exc}")
+    else:
+        years = sorted({int(year) for year in combined["fiscal_year"]})
+        if len(years) > 1:  # the figures are set for one year's statements, as the sample's are
+            materiality_year = st.sidebar.selectbox("Fiscal year for materiality", years,
+                                                    key="materiality_year")
+        else:
+            materiality_year = years[0] if years else None
+        combined = combined.assign(materiality_band=bands(combined, materiality, materiality_year))
+        st.sidebar.caption(md(f"Materiality {materiality.describe()}; fiscal year {materiality_year}"))
+        st.sidebar.caption(md(BAND_NOTE))
+        st.sidebar.caption(md(FISCAL_YEAR_NOTE))
+
 # ---- headline numbers ----
 c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("Entries", "{:,}".format(df["entry_id"].nunique()))
@@ -241,6 +270,12 @@ with tab_queue:
         min_amount = st.number_input("Minimum amount", value=0.0, step=1000.0)
         outstanding_only = st.checkbox("Outstanding only", value=False, key="outstanding_only",
                                        help="Hide entries that already have a decision.")
+        chosen_bands = None
+        if materiality is not None:
+            # a filter the reviewer chooses, as the amount is; the order is the bands' own
+            present = [b for b in dict.fromkeys(combined["materiality_band"])]
+            chosen_bands = st.multiselect("Materiality band", present, default=present,
+                                          key="band_filter")
 
     matching = flags[
         flags["severity"].isin(chosen_sev) & flags["test_id"].isin(chosen_tests)
@@ -252,6 +287,8 @@ with tab_queue:
         & combined["agreement"].isin(chosen_agree)
         & (combined["entry_amount"] >= min_amount)
     ]
+    if chosen_bands is not None:
+        queue = queue[queue["materiality_band"].isin(chosen_bands)]
     if outstanding_only:
         queue = queue[~queue["entry_id"].isin(store.decided_ids())]
     queue = queue.merge(current[["entry_id", "decision", "reviewer"]], on="entry_id", how="left")
@@ -260,6 +297,7 @@ with tab_queue:
         st.subheader(f"{len(queue):,} entries to review")
         st.dataframe(
             queue[["entry_id", "posting_date", "source", "created_by", "entry_amount",
+                   *(["materiality_band"] if materiality is not None else []),
                    "risk_score", "model_score", "agreement", "tests_fired", "decision",
                    "reviewer"]],
             width="stretch", hide_index=True, height=340,
@@ -274,10 +312,12 @@ with tab_queue:
         if flash:
             st.success(flash)
 
-        a, b, c = st.columns(3)
+        a, b, c, *rest = st.columns(4 if materiality is not None else 3)
         a.metric("Rule score", "{:.1f}".format(row["risk_score"]))
         b.metric("Model score", "{:.3f}".format(row["model_score"]))
         c.metric("Tier agreement", row["agreement"])
+        if rest:  # beside the two scores, never in them
+            rest[0].metric("Materiality band", row["materiality_band"])
 
         st.markdown("**Why it was flagged**")
         for f in flags[flags["entry_id"] == picked].itertuples():
