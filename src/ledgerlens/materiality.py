@@ -233,6 +233,14 @@ FISCAL_YEAR_NOTE = (
 )
 
 
+def figures_line(m: dict) -> str:
+    """The three figures as one line, from ``as_dict``'s keys: the memo and the summary print
+    this one, and ``Materiality.describe`` says the same."""
+    return "${:,.2f} overall; performance ${:,.2f} ({}); clearly trivial ${:,.2f} ({})".format(
+        m["overall"], m["performance"], percent(Decimal(repr(m["performance_share"]))),
+        m["clearly_trivial"], percent(Decimal(repr(m["trivial_share"]))))
+
+
 def to_cents(amounts: pd.Series) -> pd.Series:
     """Amounts as whole cents, rounded (never truncated), as the population counts them."""
     return (amounts * 100).round().astype("int64")

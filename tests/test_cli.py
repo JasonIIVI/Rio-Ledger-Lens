@@ -2249,3 +2249,34 @@ def test_report_puts_the_band_beside_the_amount_and_the_figures_on_the_summary_s
     assert "Materiality" in text and "never part of it" in text
     assert main(["report", ledger, "--no-model", "--out", str(out)]) == 0
     assert "materiality_band" not in [c.value for c in openpyxl.load_workbook(out)["Exceptions"][1]]
+
+
+def test_two_stray_flags_are_refused_in_the_plural(tmp_path, capsys):
+    assert main(["test", str(tmp_path / "missing.csv"), "--performance", "0.5", "--trivial", "0.01"]) == 2
+    assert capsys.readouterr().out == "error: --performance, --trivial need --materiality, the figure they qualify\n"
+
+
+def test_a_run_that_flags_nothing_still_prints_the_bands_without_a_second_blank_line(two_ledgers, capsys):
+    ledger, _ = _pair(two_ledgers)
+    capsys.readouterr()
+    assert main(["test", ledger, "--only", "JET-09", "--materiality", "50000"]) == 0
+    out = capsys.readouterr().out
+    assert "Flagged entries by materiality band: material 0," in out and "\n\n\n" not in out
+
+
+def test_summary_refuses_a_multi_year_ledger_before_either_tier_runs(tmp_path, capsys, monkeypatch):
+    from ledgerlens import cli
+
+    class NeverLoaded:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def load(self):
+            raise AssertionError("the tiers ran before the year was refused")
+
+    monkeypatch.setattr(cli, "LedgerContext", NeverLoaded)
+    ledger = _two_year_ledger(tmp_path)
+    capsys.readouterr()
+    assert main(["summary", ledger, "--materiality", "50000"]) == 2
+    out = capsys.readouterr().out
+    assert out.startswith("error: the ledger spans fiscal years 2024, 2025") and out.count("\n") == 1

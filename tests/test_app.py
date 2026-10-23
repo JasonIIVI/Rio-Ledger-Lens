@@ -739,7 +739,9 @@ def test_a_materiality_in_the_sidebar_puts_each_entry_s_band_beside_its_scores(d
     assert "Rule score" in [m.label for m in at.metric]  # the two scores are still the two scores
     # the band filter is the reviewer's, like the amount: choosing one band leaves that band
     kept = [b for b in ("below performance", "clearly trivial") if b in set(queue["materiality_band"])]
-    at.multiselect(key="band_filter").set_value(kept[:1]).run()
+    band_filter = next(w for w in at.multiselect if w.label == "Materiality band")
+    assert band_filter.options == [b for b in (*BANDS, "other year") if b in set(queue["materiality_band"])]
+    band_filter.set_value(kept[:1]).run()
     assert not at.exception
     assert set(_queue_frame(at)["materiality_band"]) == set(kept[:1])
 
@@ -752,7 +754,7 @@ def test_a_materiality_that_cannot_be_used_is_said_as_text_and_changes_nothing(d
     plain = _run_with(data_dir, tmp_path / "review.sqlite")
     assert "materiality_band" not in _queue_frame(plain).columns
     assert "Materiality band" not in [m.label for m in plain.metric]
-    assert not any(w.key == "band_filter" for w in plain.multiselect)
+    assert not any(w.label == "Materiality band" for w in plain.multiselect)
 
 
 def test_a_ledger_of_several_years_asks_which_year_the_figures_are_set_for(tmp_path):
@@ -762,10 +764,23 @@ def test_a_ledger_of_several_years_asks_which_year_the_figures_are_set_for(tmp_p
     main(["generate", "--start", "2024-12-01", "--end", "2025-01-31", "--out-dir", str(folder)])
     at = _run_with(folder, tmp_path / "review.sqlite", materiality="50000")
     chooser = at.selectbox(key="materiality_year")
-    assert chooser.options == ["2024", "2025"] and chooser.value == 2024
-    assert OTHER_YEAR in set(_queue_frame(at)["materiality_band"])  # January's entries
-    chooser.set_value(2025).run()
-    assert not at.exception
-    banded = _queue_frame(at)
-    assert OTHER_YEAR in set(banded["materiality_band"])  # now December's
+    assert chooser.options == ["2024", "2025"] and chooser.value == 2025  # the latest year first
+    assert OTHER_YEAR in set(_queue_frame(at)["materiality_band"])  # December's entries
     assert any("fiscal year 2025" in c.value for c in at.sidebar.caption)
+    chooser.set_value(2024).run()
+    assert not at.exception
+    assert OTHER_YEAR in set(_queue_frame(at)["materiality_band"])  # now January's
+
+
+def test_a_band_chosen_for_one_ledger_does_not_empty_the_queue_of_the_next(data_dir, tmp_path):
+    folder = tmp_path / "two-years"
+    main(["generate", "--start", "2024-12-01", "--end", "2025-01-31", "--out-dir", str(folder)])
+    at = _run_with(folder, tmp_path / "review.sqlite", materiality="50000")
+    band_filter = next(w for w in at.multiselect if w.label == "Materiality band")
+    band_filter.set_value(["other year"]).run()
+    assert set(_queue_frame(at)["materiality_band"]) == {"other year"}
+    at.text_input(key="ledger_path").set_value(str(data_dir / "ledger.csv")).run()  # one year: no "other year"
+    assert not at.exception
+    band_filter = next(w for w in at.multiselect if w.label == "Materiality band")
+    assert "other year" not in band_filter.options and band_filter.value == band_filter.options
+    assert len(_queue_frame(at)) > 0

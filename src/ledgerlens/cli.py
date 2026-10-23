@@ -199,7 +199,9 @@ def _materiality_from(args: argparse.Namespace) -> tuple[Materiality | None, str
                                           ("--trivial", args.trivial),
                                           ("--fiscal-year", args.fiscal_year)) if given is not None]
         if stray:
-            return None, f"error: {', '.join(stray)} needs --materiality, the figure it qualifies"
+            one = len(stray) == 1
+            return None, "error: {} {} --materiality, the figure {}".format(
+                ", ".join(stray), "needs" if one else "need", "it qualifies" if one else "they qualify")
         return None, None
     try:
         return Materiality(
@@ -221,7 +223,6 @@ def _year_for(df: pd.DataFrame, args: argparse.Namespace) -> tuple[int | None, s
 
 def _say_bands(banded: pd.Series) -> None:
     """The two notes, then the flagged entries by band, as `test` prints them."""
-    print()
     for note in (BAND_NOTE, FISCAL_YEAR_NOTE):  # ahead of the counts they qualify
         print(textwrap.fill(note, 96, initial_indent="  ", subsequent_indent="  ",
                             break_on_hyphens=False))
@@ -302,6 +303,8 @@ def cmd_test(args: argparse.Namespace) -> int:
     scored = jets.score_entries(df, flags)
     if materiality is not None:  # beside the score, never in it; the csv gets the column too
         scored = scored.assign(materiality_band=bands(scored, materiality, year))
+        if not flags.empty:  # the flags table has no blank line after it; "Raised 0" has one
+            print()
         _say_bands(scored.loc[scored["risk_score"] > 0, "materiality_band"])
     if args.out:
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
@@ -567,6 +570,12 @@ def cmd_summary(args: argparse.Namespace) -> int:
     context = None
     try:
         df = load_csv(args.ledger)
+        year = None
+        if materiality is not None:  # before either tier runs, as the labels are checked
+            year, problem = _year_for(df, args)
+            if problem:
+                print(problem)
+                return 2
         ledger_id = ledger_identity(df, args.ledger)
         # Read here, not by the context, which is handed a frame: said as test says it,
         # and not printed when used (the page names them; JSON stays one document).
@@ -587,12 +596,6 @@ def cmd_summary(args: argparse.Namespace) -> int:
         # cannot be fitted on. The reason can quote a cell of the file: one line, no controls.
         print(f"error: cannot summarise the ledger {args.ledger}: {one_line(exc)}")
         return 2
-    year = None
-    if materiality is not None:
-        year, problem = _year_for(df, args)
-        if problem:
-            print(problem)
-            return 2
     try:
         payload = collect_summary(context, labels=labels, top=args.top, ledger=args.ledger,
                                   materiality=materiality, fiscal_year=year)

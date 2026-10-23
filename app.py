@@ -22,7 +22,15 @@ from ledgerlens.benford import benford_test
 from ledgerlens.controls import ControlsError, controls_path, format_limit, load_controls
 from ledgerlens.env import load_dotenv
 from ledgerlens.ingest import identity_path, ledger_identity, load_csv, load_labels
-from ledgerlens.materiality import BAND_NOTE, FISCAL_YEAR_NOTE, Materiality, SamplingError, bands
+from ledgerlens.materiality import (
+    BAND_NOTE,
+    BANDS,
+    FISCAL_YEAR_NOTE,
+    OTHER_YEAR,
+    Materiality,
+    SamplingError,
+    bands,
+)
 from ledgerlens.model import combine, score_ledger
 from ledgerlens.narrate import NarrativeError, Narrator, build_prompt, entry_context
 from ledgerlens.review import DECISIONS, LEGACY_LEDGER_ID, Decision, ReviewStore
@@ -219,8 +227,8 @@ if LEGACY_LEDGER_ID in set(others["ledger_id"]) and ledger_id not in set(store.l
 current = store.current()
 
 # ---- materiality: a band beside each entry's scores, never in them (rule 3) ----
-# Nothing below is cached: the band is one vector operation over the loaded frame, and the
-# figures are typed in, not read from a file.
+# Nothing below is cached: the band is one pass over the loaded frame, and the figures are
+# typed in, not read from a file.
 materiality = materiality_year = None
 if materiality_text:
     try:
@@ -231,8 +239,9 @@ if materiality_text:
     else:
         years = sorted({int(year) for year in combined["fiscal_year"]})
         if len(years) > 1:  # the figures are set for one year's statements, as the sample's are
+            # the latest year first: the one usually under audit
             materiality_year = st.sidebar.selectbox("Fiscal year for materiality", years,
-                                                    key="materiality_year")
+                                                    index=len(years) - 1, key="materiality_year")
         else:
             materiality_year = years[0] if years else None
         combined = combined.assign(materiality_band=bands(combined, materiality, materiality_year))
@@ -272,10 +281,12 @@ with tab_queue:
                                        help="Hide entries that already have a decision.")
         chosen_bands = None
         if materiality is not None:
-            # a filter the reviewer chooses, as the amount is; the order is the bands' own
-            present = [b for b in dict.fromkeys(combined["materiality_band"])]
-            chosen_bands = st.multiselect("Materiality band", present, default=present,
-                                          key="band_filter")
+            # a filter the reviewer chooses, as the amount is, in the bands' own order. Not
+            # keyed, like the other filters: a choice kept across a change of ledger would
+            # empty the queue of a ledger that holds none of the band chosen.
+            seen = set(combined["materiality_band"])
+            present = [b for b in (*BANDS, OTHER_YEAR) if b in seen]
+            chosen_bands = st.multiselect("Materiality band", present, default=present)
 
     matching = flags[
         flags["severity"].isin(chosen_sev) & flags["test_id"].isin(chosen_tests)

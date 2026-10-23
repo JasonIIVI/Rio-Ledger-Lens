@@ -1,6 +1,7 @@
 import time
 
 import openpyxl
+import pytest
 
 from ledgerlens import evaluate, jets
 from ledgerlens.benford import segmented_benford
@@ -310,3 +311,14 @@ def test_the_band_sits_beside_the_amount_and_the_figures_on_the_summary_sheet(le
         assert expected in cells, expected
     text = " ".join(str(c.value) for row in wb["Methodology"].iter_rows() for c in row if c.value)
     assert "Materiality" in text and "never part of it" in text and "calendar year" in text
+
+
+def test_the_workpaper_names_the_year_itself_for_one_year_and_refuses_several(ledger, labels, tmp_path, small_ledger):
+    from ledgerlens.materiality import Materiality, SamplingError
+
+    with pytest.raises(SamplingError) as refused:  # the default ledger spans 2024 and 2025
+        _workpaper(ledger, labels, tmp_path, materiality=Materiality("50000"))
+    assert "spans fiscal years 2024, 2025" in str(refused.value)
+    path, _ = _workpaper(small_ledger[0], small_ledger[1], tmp_path, materiality=Materiality("50000"))
+    cells = [str(c.value) for row in openpyxl.load_workbook(path)["Summary"].iter_rows() for c in row if c.value]
+    assert "2024" in cells[cells.index("Fiscal year"):cells.index("Fiscal year") + 2]

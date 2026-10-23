@@ -27,6 +27,7 @@ from .materiality import (
     bands,
     count_by_band,
     dollars,
+    fiscal_year_for,
     percent,
 )
 from .review import ReviewStore
@@ -135,6 +136,8 @@ def build_workpaper(
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if materiality is not None:  # beside the score, never in it (rule 3)
+        if fiscal_year is None:  # the ledger's one year, or the population's refusal of several
+            fiscal_year = fiscal_year_for(scored)
         scored = scored.assign(materiality_band=bands(scored, materiality, fiscal_year))
 
     exceptions = scored[scored["risk_score"] > 0].copy()
@@ -196,7 +199,7 @@ def build_workpaper(
                                             f"({percent(materiality.performance_share)} of overall)"),
                 ("Clearly trivial", f"{dollars(materiality.trivial_cents)} "
                                     f"({percent(materiality.trivial_share)} of overall)"),
-                ("Fiscal year", fiscal_year if fiscal_year is not None else "the ledger's one year"),
+                ("Fiscal year", fiscal_year if fiscal_year is not None else "none (the ledger holds no entry)"),
                 ("Flagged entries by band", ", ".join(f"{band} {n:,}" for band, n in counts.items())),
                 ("Read the band as", BAND_NOTE),
                 ("The fiscal year", FISCAL_YEAR_NOTE),

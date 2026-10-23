@@ -139,3 +139,13 @@ def test_counts_list_every_band_in_a_fixed_order_zeros_included():
     assert counted == {"material": 2, "above performance": 0, "below performance": 0,
                        "clearly trivial": 0, "no amount": 0, "negative": 1, "other year": 1}
     assert count_by_band(pd.Series([], dtype=object)) == {band: 0 for band in (*BANDS, OTHER_YEAR)}
+
+
+def test_the_figures_line_is_one_wording_for_the_memo_the_summary_and_describe():
+    from ledgerlens import summary
+    from ledgerlens.materiality import figures_line
+
+    m = Materiality(50000, "0.6", "0.03")
+    assert figures_line(m.as_dict()) == m.describe()
+    assert sampling._materiality_line(m.as_dict()) == m.describe()
+    assert summary._materiality_line({**m.as_dict(), "fiscal_year": 2024}) == m.describe() + "; fiscal year 2024"

@@ -24,7 +24,6 @@ import re
 import textwrap
 from dataclasses import asdict
 from datetime import date, datetime, timezone
-from decimal import Decimal
 
 import numpy as np
 import pandas as pd
@@ -34,7 +33,15 @@ from . import __version__, evaluate, jets
 from .connectors.qbo import SMALL_LEDGER
 from .controls import format_limit
 from .ledger_context import CAVEAT, ENTRY_COLUMNS, LedgerContext, records
-from .materiality import BAND_NOTE, FISCAL_YEAR_NOTE, Materiality, bands, count_by_band, percent
+from .materiality import (
+    BAND_NOTE,
+    FISCAL_YEAR_NOTE,
+    Materiality,
+    bands,
+    count_by_band,
+    figures_line,
+    fiscal_year_for,
+)
 from .narrative_eval import DEFAULT_LEDGER_SHA256
 from .review import DECISIONS
 from .schema import AnomalyType, HeldOutType
@@ -176,6 +183,8 @@ def collect(
     if materiality is not None:
         # Beside the score and never in it (rule 3): a label per entry, counts of the flagged
         # entries by band, and the two notes ahead of the figures they qualify.
+        if fiscal_year is None:  # the ledger's one year, or the population's refusal of several
+            fiscal_year = fiscal_year_for(context.combined)
         banded = bands(context.combined, materiality, fiscal_year)
         by_id = dict(zip(context.combined["entry_id"], banded))
         payload["materiality"] = {
@@ -425,10 +434,9 @@ def _review_sentences(review: dict) -> list[str]:
 
 
 def _materiality_line(m: dict) -> str:
-    """The figures as one line, from the payload; the selection memo prints the same."""
-    line = "${:,.2f} overall; performance ${:,.2f} ({}); clearly trivial ${:,.2f} ({})".format(
-        m["overall"], m["performance"], percent(Decimal(repr(m["performance_share"]))),
-        m["clearly_trivial"], percent(Decimal(repr(m["trivial_share"]))))
+    """The figures as one line, from the payload (the selection memo prints the same), and
+    the fiscal year they are set for."""
+    line = figures_line(m)
     if m["fiscal_year"] is not None:
         line += f"; fiscal year {m['fiscal_year']}"
     return line

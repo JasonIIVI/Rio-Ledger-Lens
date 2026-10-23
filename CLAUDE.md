@@ -476,7 +476,8 @@ and the MCP SDK, so the two together cover every code path CI will see.
   (rule 3): after each top entry's amount and in `test --out`'s csv; on each summary entry,
   with a block of the figures and the flagged entries by band (its notes first); right after
   the amount on the Exceptions sheet, with the figures on the Summary sheet and a Methodology
-  section. Without the flag every output is byte for byte what it was. The dashboard takes the
+  section. Without the flag every output is byte for byte what it was, apart from the version
+string the summary's markdown and JSON print. The dashboard takes the
   figure in its sidebar (a year choice for a multi-year ledger), adds the column, a band
   filter and a fourth metric; an unusable figure is said as text. One wording each:
   `materiality.BAND_NOTE` and `FISCAL_YEAR_NOTE` (the selection memo gained the latter).

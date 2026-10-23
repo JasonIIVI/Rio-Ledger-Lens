@@ -775,3 +775,14 @@ def test_the_materiality_block_leads_with_its_notes_and_each_listed_entry_gets_i
     without = summary.collect(context, labels=small_ledger[1], top=5, today=TODAY)
     assert "materiality" not in without and "materiality_band" not in without["top_exceptions"][0]
     assert "Band" not in summary.render_markdown(without) and "Materiality" not in summary.render_text(without)
+
+
+def test_the_year_is_the_ledgers_one_when_the_caller_names_none_and_refused_for_several(context, small_ledger, default_context):
+    from ledgerlens.materiality import Materiality, SamplingError
+
+    built = summary.collect(context, labels=small_ledger[1], top=3, today=TODAY, materiality=Materiality("50000"))
+    assert built["materiality"]["fiscal_year"] == min(int(y) for y in context.lines["fiscal_year"])
+    assert built["materiality"]["flagged_by_band"]["other year"] == 0
+    with pytest.raises(SamplingError) as refused:  # the default ledger spans 2024 and 2025
+        summary.collect(default_context, top=3, today=TODAY, materiality=Materiality("50000"))
+    assert "spans fiscal years 2024, 2025" in str(refused.value) and "--fiscal-year" in str(refused.value)

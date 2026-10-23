@@ -60,6 +60,7 @@ from .materiality import (
     SamplingError,
     _decimal,
     _whole,
+    figures_line,
     fiscal_year_for,
     to_cents,
 )
@@ -408,9 +409,7 @@ def _count(n: int, one: str, many: str) -> str:
 
 
 def _materiality_line(m: dict) -> str:
-    return "${:,.2f} overall; performance ${:,.2f} ({}); clearly trivial ${:,.2f} ({})".format(
-        m["overall"], m["performance"], _percent(Decimal(repr(m["performance_share"]))),
-        m["clearly_trivial"], _percent(Decimal(repr(m["trivial_share"]))))
+    return figures_line(m)
 
 
 def _population_line(p: dict) -> str:
