@@ -515,7 +515,9 @@ class ReviewStore:
         # sort together. Readers name only the kinds this version records anyway.
         kinds = current["decision"].map(lambda v: v if isinstance(v, str) else repr(v))
         out = current.assign(decision=kinds).groupby("decision").size().reset_index(name="entries")
-        return out.sort_values("entries", ascending=False).reset_index(drop=True)
+        # Kinds tied on the count go by name (text by now, so they sort): a one-key sort keeps
+        # tied rows in input order up to 16 rows and scrambles them from 17.
+        return out.sort_values(["entries", "decision"], ascending=[False, True]).reset_index(drop=True)
 
     def outstanding(self, scored: pd.DataFrame) -> pd.DataFrame:
         """Flagged entries with no decision yet - the actual work queue."""

@@ -99,6 +99,18 @@ def test_summary_counts_decisions_of_any_type_a_hand_made_file_may_hold(store, m
     assert out["entries"].tolist() == [1, 1, 1, 1, 1]
 
 
+def test_summary_lists_decisions_tied_on_count_in_name_order(store, monkeypatch):
+    """Twenty kinds of one decision each tie on the count, and one more, last by name, holds
+    two. A one-key sort keeps tied rows in input order up to 16 rows and scrambles them from
+    17; the kind breaks the tie, and the odd kind shows the count is still the first key."""
+    kinds = [f"k{i:02d}" for i in range(20)]
+    current = pd.DataFrame({"entry_id": kinds + ["Z1", "Z2"], "decision": kinds + ["zz", "zz"]})
+    monkeypatch.setattr(store, "current", lambda: current)
+    out = store.summary()
+    assert out["entries"].tolist() == [2] + [1] * 20
+    assert out["decision"].tolist() == ["zz"] + kinds
+
+
 def test_outstanding_is_the_flagged_entries_without_a_decision(store, small_ledger):
     ledger, _ = small_ledger
     flags = jets.run_all(ledger)

@@ -322,3 +322,18 @@ def test_the_workpaper_names_the_year_itself_for_one_year_and_refuses_several(le
     path, _ = _workpaper(small_ledger[0], small_ledger[1], tmp_path, materiality=Materiality("50000"))
     cells = [str(c.value) for row in openpyxl.load_workbook(path)["Summary"].iter_rows() for c in row if c.value]
     assert "2024" in cells[cells.index("Fiscal year"):cells.index("Fiscal year") + 2]
+
+
+def test_exceptions_tied_on_risk_and_model_score_come_in_id_order(ledger, tmp_path):
+    """With a model score the Exceptions sheet is re-sorted by risk and model score. Tied on
+    both (entries with identical features score alike), the id breaks the tie: a one-key sort
+    keeps tied rows in input order up to 16 rows and scrambles them from 17."""
+    flags = jets.run_all(ledger)
+    scored = jets.score_entries(ledger, flags)
+    flagged = scored["risk_score"] > 0
+    tied = scored.assign(risk_score=scored["risk_score"].where(~flagged, 4.0), model_score=0.5)
+    path = build_workpaper(tied, flags, tmp_path / "tied.xlsx")
+    rows = list(openpyxl.load_workbook(path)["Exceptions"].iter_rows(values_only=True))
+    ids = [row[rows[0].index("entry_id")] for row in rows[1:]]
+    assert len(ids) == int(flagged.sum()) > 16
+    assert ids == sorted(ids)
