@@ -499,7 +499,7 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
     out["amount"] = out["debit"] - out["credit"]
     out["abs_amount"] = out["amount"].abs()
     out["entered_hour"] = out["entered_at"].dt.hour
-    out["entered_dow"] = out["entered_at"].dt.dayofweek
+    out["entered_dow"] = out["entered_at"].dt.day_of_week
     out["is_weekend"] = out["entered_dow"] >= 5
     out["is_holiday"] = out["entered_at"].dt.date.map(is_us_holiday)
     out["posting_lag_days"] = (
@@ -533,8 +533,11 @@ _TRUTH = {"true": True, "false": False, "1": True, "0": False, "1.0": True, "0.0
 def load_labels(path: str | Path) -> pd.DataFrame:
     """Read the ground-truth label file produced by the generator."""
     # Ids as text, like load_csv: a numeric-looking id must not lose its zeros.
-    # and only an empty field is missing, as load_csv reads it: an entry id "NA" is an id
-    df = pd.read_csv(path, dtype={"entry_id": "string", "is_anomaly": "string"},
+    # and only an empty field is missing, as load_csv reads it: an entry id "NA" is an id.
+    # The type as text too: read by its cells, a column with every cell blank was float64,
+    # which filling with "" is to raise on in pandas 4.
+    df = pd.read_csv(path, dtype={"entry_id": "string", "is_anomaly": "string",
+                                  "anomaly_type": "string"},
                      keep_default_na=False, na_values=[""])
     # Read strictly. astype(bool) made a blank cell, "no" and "false " all True, and
     # every such row then counted as an injected anomaly.
@@ -548,7 +551,7 @@ def load_labels(path: str | Path) -> pd.DataFrame:
             f"is_anomaly must be true/false or 1/0 on every row; {int(unread.sum())} row(s) are "
             f"blank or something else, the first is data row {first}")
     df["is_anomaly"] = truth.astype(bool)
-    df["anomaly_type"] = df["anomaly_type"].fillna("").astype("string")
+    df["anomaly_type"] = df["anomaly_type"].fillna("")
     return df
 
 
