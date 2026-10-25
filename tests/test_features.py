@@ -42,6 +42,19 @@ def test_cyclical_encoding_wraps(ledger):
         assert X[col].between(-1, 1).all()
 
 
+def test_dow_features_are_the_weekday_encoded(ledger):
+    """dow_sin and dow_cos put the entry's weekday (Monday 0, from its first line's entered_at)
+    on the unit circle. They are the model's only view of the day, so their values must not
+    move: this pins them to datetime.weekday, not to the pandas accessor that computes them."""
+    from ledgerlens.ingest import entry_level
+
+    X = build_features(ledger)
+    weekday = entry_level(ledger).set_index("entry_id")["entered_at"].map(lambda t: t.weekday())
+    radians = 2 * np.pi * weekday.reindex(X.index).to_numpy() / 7
+    assert np.allclose(X["dow_sin"].to_numpy(), np.sin(radians), rtol=0, atol=1e-12)
+    assert np.allclose(X["dow_cos"].to_numpy(), np.cos(radians), rtol=0, atol=1e-12)
+
+
 def test_deterministic(ledger):
     a = build_features(ledger)
     b = build_features(ledger)

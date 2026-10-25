@@ -138,7 +138,7 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     out["hour_sin"] = hour_sin.values
     out["hour_cos"] = hour_cos.values
 
-    dow = work["entered_at"].dt.dayofweek
+    dow = work["entered_at"].dt.day_of_week
     dow_sin, dow_cos = _cyclical(dow, 7)
     out["dow_sin"] = dow_sin.values
     out["dow_cos"] = dow_cos.values

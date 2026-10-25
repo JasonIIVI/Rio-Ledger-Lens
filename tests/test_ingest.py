@@ -19,6 +19,12 @@ def test_weekend_flag_matches_day_of_week(ledger):
     assert (ledger["is_weekend"] == (ledger["entered_dow"] >= 5)).all()
 
 
+def test_entered_dow_is_the_weekday_of_the_entry_time(ledger):
+    """Monday 0 to Sunday 6, what datetime.weekday gives: JET-02 reads is_weekend from it."""
+    expected = ledger["entered_at"].map(lambda t: t.weekday())
+    assert ledger["entered_dow"].tolist() == expected.tolist()
+
+
 def test_missing_column_is_rejected(ledger):
     broken = ledger.drop(columns=["debit"])
     with pytest.raises(SchemaError) as excinfo:
@@ -87,6 +93,49 @@ def test_load_labels_reads_entry_ids_as_text(tmp_path):
     assert labels["entry_id"].tolist() == ["000123", "000124"]
     assert labels["is_anomaly"].tolist() == [True, False]
     assert labels["anomaly_type"].tolist() == ["round_amount", ""]
+
+
+@pytest.mark.parametrize("cells", [["007", "7", "010"], ["7", ""], ["True", "FALSE"], ["inf", "Infinity"]])
+def test_load_labels_reads_anomaly_types_as_written(tmp_path, cells):
+    """A type that looks like a number, a boolean or an infinity is the text written, as an id
+    is. Read by its cells, 007 was 7, a 7 beside a blank 7.0, FALSE False and Infinity inf."""
+    from ledgerlens.ingest import load_labels
+
+    path = tmp_path / "labels.csv"
+    path.write_text("entry_id,is_anomaly,anomaly_type\n" + "".join(
+        f"JE-{i},True,{cell}\n" for i, cell in enumerate(cells)))
+    assert load_labels(path)["anomaly_type"].tolist() == cells
+
+
+def test_prepare_labels_and_features_raise_no_pandas_deprecation(raw_ledger, tmp_path):
+    """pandas lays its deprecation warning at the caller's line. Under pandas 3.1 three were
+    laid at ours: dt.dayofweek in prepare and in build_features, and fillna("") on the float64
+    column that a labels file with every anomaly_type blank was read as. CI installs the
+    newest pandas, so a new deprecation in these three paths fails here, where it is seen,
+    instead of printing a warning that is not."""
+    import warnings
+    from pathlib import Path
+
+    import ledgerlens
+    from ledgerlens.features import build_features
+    from ledgerlens.ingest import load_labels
+
+    lines, labels = raw_ledger
+    blank = tmp_path / "labels.csv"
+    labels.assign(anomaly_type="").to_csv(blank, index=False)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        prepared = prepare(lines.head(400))
+        load_labels(blank)
+        build_features(prepared)
+    package = Path(ledgerlens.__file__).resolve().parent
+    deprecations = [
+        f"{Path(w.filename).name}:{w.lineno}: {w.category.__name__}: {w.message}"
+        for w in caught
+        if issubclass(w.category, (DeprecationWarning, FutureWarning, PendingDeprecationWarning))
+        and Path(w.filename).resolve().is_relative_to(package)
+    ]
+    assert deprecations == []
 
 
 @pytest.mark.parametrize("cells, expected", [

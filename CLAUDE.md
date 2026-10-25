@@ -25,7 +25,11 @@ and the MCP SDK, so the two together cover every code path CI will see.
 
 ## Current state
 
-- **v1.1.0** is #12 to #15 (#15, `week5/held-out`, squash-merged 2026-10-21 as `e0a2b02`) and
+- **v1.2.0** is #18 to #20 (#18 `fix/pandas-3.1-review-state`, squash-merged 2026-10-23 as
+  `8fcee26`; #19 `week6/sampling`, 2026-10-23, `540d078`; #20 `week6/materiality-band`,
+  2026-10-23, `1f11203`), tagged on `1f11203` (annotated; the release published 2026-10-24
+  00:31 UTC) with release notes reviewed against the code and covering all three.
+  **v1.1.0** is #12 to #15 (#15, `week5/held-out`, squash-merged 2026-10-21 as `e0a2b02`) and
   #17 (`fix/pandas-floor-and-tie-order`, squash-merged 2026-10-22 as `5c99403`), tagged on
   `5c99403` with release notes reviewed against the code.
   **v1.0.0** was PR #9 (`week4/automation-and-readme`, squash-merged 2026-10-07 as `039a3ad`,
@@ -429,9 +433,9 @@ and the MCP SDK, so the two together cover every code path CI will see.
   through an object copy, and the two time columns are filled as objects (filling a float64
   column with "" warns in 3.1 and is to raise in pandas 4). Probed on five stores,
   `review_state` gives what it gave before under 2.3 and 3.0.6, and under 3.1.0 what it gives
-  under 3.0.6, dtypes included. pandas 3.1 also warns of pandas 4 changes in `ingest.py` (a
+  under 3.0.6, dtypes included. pandas 3.1 also warned of pandas 4 changes in `ingest.py` (a
   `fillna("")` on a float column, `dt.dayofweek`) and `features.py` (`dt.dayofweek`); nothing
-  fails, and they are left for a later change.
+  failed, and they were fixed after v1.2.0 (the pandas 4 bullet below).
 - **Materiality and sampling (week 6, PR 1, `week6/sampling`)** — `sampling.py` and
   `ledgerlens sample`. Materiality comes from the command line only (`--materiality`; the
   `--performance` and `--trivial` shares default to 0.75 and 0.05, below 1, to at most six
@@ -482,13 +486,47 @@ and the MCP SDK, so the two together cover every code path CI will see.
   filter and a fourth metric; an unusable figure is said as text. One wording each:
   `materiality.BAND_NOTE` and `FISCAL_YEAR_NOTE` (the selection memo gained the latter).
   Version 1.2.0.
-- **Next** — tag v1.2.0 on the merge commit, with claims-reviewed notes. Then the
-  maintainer's call. Open, unchanged: re-recording `docs/demo.gif` (its model scores predate
-  v1.0.0's tie fix), the display-only sorts above, week 5's model train/test split (a
-  re-measurement under rule 10), and the pandas 4 warnings (`ingest.py`'s `fillna` on a float
-  column and `dt.dayofweek`, `features.py`'s `dt.dayofweek`: a model feature whose values must
-  not move).
-- 1207 tests on 3.9 (1 skipped) / 1221 on 3.12 (the fourteen MCP tests need 3.10+), ruff clean.
+- **pandas 4 warnings (`fix/pandas-4-warnings`, after v1.2.0)** — pandas 3.1.0 (installed by
+  CI's 3.11 and 3.12 jobs; the venvs' 2.3.3 and 3.0.6 print nothing) laid three
+  `Pandas4Warning`s at our lines. `Series.dt.dayofweek` is deprecated: `entered_dow`
+  (`ingest.prepare`, the weekday JET-02 reads) and `dow_sin` / `dow_cos`
+  (`features.build_features`, a model feature) now come through `day_of_week`, the same
+  property under its name since pandas 1.2. `load_labels` read `anomaly_type` by its cells, so
+  a labels file with every type blank came back float64 (`na_values=[""]` makes a blank
+  missing) and `fillna("")` on it is to raise in pandas 4: the column is now read as text like
+  `entry_id` and `is_anomaly`. A blank is "" and a type is the text written; read by its
+  cells, a type that looked like a number, a boolean or an infinity had been converted (`007`
+  to 7, a `7` beside a blank to 7.0, `FALSE` to False, `Infinity` to inf), and the generator's
+  archetype names are words, so no labels file the project has written reads differently. The
+  `string` dtype is as before, and the `astype("string")` after the fill is gone. No value
+  moved: on the default ledger the weekday columns, the feature matrix, the rule flags and the
+  model scores are bit for bit the previous code's under pandas 2.3.3, 3.0.6 and 3.1.0, `test`
+  and `score` print the same bytes, and `load_labels` gives the same frames and dtypes for the
+  default labels and an all-blank copy. Tests pin `entered_dow` to `datetime.weekday` (the
+  weekend test compared only `is_weekend` with `entered_dow`, so a day-of-year mutant passed
+  it), `dow_sin` / `dow_cos` to the weekday on the unit circle, and a type that looks like a
+  number, a boolean or an infinity to the text written (it fails on the previous code), and
+  `test_prepare_labels_and_features_raise_no_pandas_deprecation` fails on any deprecation
+  warning, pandas' or another library's, laid at a `ledgerlens` line in `prepare`,
+  `load_labels` or `build_features`: under 3.1.0 it failed on `1f11203` with the three and
+  passes now, and under 2.3.3 and 3.0.6 it passes on both. CI installs the newest pandas, so a
+  new deprecation in those three paths fails that test there instead of printing a warning (a
+  pandas or numpy release can now fail CI over a warning: the trade-off chosen). pandas 3.1.0
+  was run from a `pip --target` folder in the scratchpad put ahead of the 3.12 venv on
+  `PYTHONPATH`, neither venv changed, and the whole suite passes under it; the only warnings
+  left are Streamlit's own, from its package. A
+  review (one reviewer on a scratch clone: 22 hand-written label files under the three pandas
+  versions from both trees, every reader of labels downstream, the pandas source for the
+  accessor, the new test under each version) found no value read wrong on any labels file the
+  project writes, no crash and no regression, and three claims corrected before the push: the
+  accessor's name dates from pandas 1.2, not 1.1; the converted spellings above had been
+  called "as before"; the release date needed its clock. Version unchanged (1.2.0).
+- **Next** — the maintainer's call. Open, unchanged: re-recording `docs/demo.gif` (its model
+  scores predate v1.0.0's tie fix), the display-only sorts above, week 5's model train/test
+  split (a re-measurement under rule 10), week 7 (multi-line entries change the default ledger,
+  so every figure, the eval cases and the held-out measurement are re-measured), and week 8
+  (PyPI).
+- 1214 tests on 3.9 (1 skipped) / 1228 on 3.12 (the fourteen MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
