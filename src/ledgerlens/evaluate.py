@@ -451,5 +451,8 @@ def score_by_archetype(model_scores: pd.Series, labels: pd.DataFrame) -> pd.Data
     # The columns are named so that labels marking no anomaly give an empty table, as
     # recall_by_archetype does, and not a frame with nothing to sort by.
     columns = ["anomaly_type", "n", "mean_model_score", "vs_normal"]
-    out = pd.DataFrame(rows, columns=columns).sort_values("mean_model_score", ascending=False)
+    # Archetypes tied on the mean go by name: a one-key sort keeps tied rows in input order up
+    # to 16 rows and scrambles them from 17, as recall_by_archetype's did before #17.
+    out = pd.DataFrame(rows, columns=columns).sort_values(
+        ["mean_model_score", "anomaly_type"], ascending=[False, True])
     return out.reset_index(drop=True)

@@ -142,8 +142,9 @@ def build_workpaper(
 
     exceptions = scored[scored["risk_score"] > 0].copy()
     if "model_score" in exceptions.columns:
+        # Tied on both (entries with identical features score alike), the id decides.
         exceptions = exceptions.sort_values(
-            ["risk_score", "model_score"], ascending=False
+            ["risk_score", "model_score", "entry_id"], ascending=[False, False, True]
         )
     exceptions = exceptions.head(top_n)
 

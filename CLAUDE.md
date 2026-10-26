@@ -421,8 +421,8 @@ and the MCP SDK, so the two together cover every code path CI will see.
     the 12-row precision table). Two keys go through a stable lexsort, so the order no longer
     depends on the platform's sort, and `tests/test_limitations.py` compares the whole of
     `test`'s output again. No value moves. The other tables that only display rows
-    (Benford by MAD, review counts, mean model score by archetype) still leave a tie to a
-    one-key sort.
+    (Benford by MAD, review counts, mean model score by archetype) left a tie to a one-key
+    sort until the display-sort bullet below.
 - **pandas 3.1 (`fix/pandas-3.1-review-state`)** — pandas 3.1.0 (2026-10-22) keeps a nullable
   integer's dtype through `Series.map` (GH 63903). In `review.review_state` the note shown is
   `Int64`, so in a store with decisions and no note a lookup found nothing, came back `Int64`,
@@ -521,12 +521,44 @@ and the MCP SDK, so the two together cover every code path CI will see.
   project writes, no crash and no regression, and three claims corrected before the push: the
   accessor's name dates from pandas 1.2, not 1.1; the converted spellings above had been
   called "as before"; the release date needed its clock. Version unchanged (1.2.0).
+- **Display-only sort ties (`fix/display-sort-ties`, after v1.2.0)** — the three tables that
+  only display rows and still left a tie to a one-key sort (the #17 bullet above) have a second
+  key through pandas' stable lexsort: `benford.segmented_benford` by MAD then `label`,
+  `evaluate.score_by_archetype` by mean score then `anomaly_type`, `ReviewStore.summary` by
+  count then `decision` (text by then). Measured here on pandas 2.3.3 and 3.0.6: a one-key
+  sort on any key but pandas 3's `str` (numbers, object text, categories) keeps tied rows in
+  input order up to 16 rows and scrambles them from 17 (the Linux runners scrambled 16 in
+  #17; pandas 3's `str` keys stay in order at any size), and a two-key sort keeps them at any
+  size (checked at 20 and 5,085 tied rows). Two cuts that sorted on two keys with no third
+  now say how their tie breaks, as the context layer's cuts did: `jets.score_entries` (risk
+  score, amount, then `entry_id`; `test` prints its top, and the default ledger ties at the
+  tenth row: `JE-2024-005006`, `JE-2024-005009` and `JE-2025-005002` at 4.0 and $75,000.00)
+  and the workpaper's re-sort of the Exceptions sheet by risk and model score
+  (then `entry_id`). The entries' order could not change: `entry_level` hands the sort its
+  rows in id order and the stable sort kept them, so the tenth row was the lower id on every
+  platform; the sheet's ties kept the entries' amount order and now go by id, and the default
+  workpaper has none. On the default ledger every output is byte for byte what it was: `test`
+  (the top ten, `--top 25` and `--out`'s csv of 5,085 rows), `benford --by` account, user and
+  source, `score --labels`, `summary --db` and `report` (every sheet, cell for cell, with and
+  without the model) on a copy of the review database, and the context layer's
+  `review_status` and `benford`; the one tie among them, accounts 1510 and 6800 at MAD
+  0.007229 in the 17-row account table, already stood in label order on this Mac, and the
+  copy held no decision, so the review table was empty there. One test per sort: twenty tied
+  rows in the tie-break order, which is also the order `groupby` hands the sort, plus one row
+  `groupby` puts last that the first key puts first; each of the three fails on `b0434a2`
+  under 2.3.3 and 3.0.6, passes under both and 3.1.0, and fails again with no sort, with the
+  second key dropped, or with it turned round; the sheet's fails on `b0434a2` (ties kept
+  amount order) and the entries' only when its key is turned round (the order was already
+  the id's). A review (one reviewer on a scratch clone: the threshold on five key dtypes,
+  sixty sort sites, the outputs re-run, the tests under a sort-removed mutant) found the two
+  unstated cuts, the 17 rows miscounted as 18, the `str` caveat, the tests passing with no
+  sort, and the empty review table; all fixed before the push, and its reading of the
+  entries' cut as platform-dependent corrected to the above. Version unchanged (1.2.0).
 - **Next** — the maintainer's call. Open, unchanged: re-recording `docs/demo.gif` (its model
-  scores predate v1.0.0's tie fix), the display-only sorts above, week 5's model train/test
-  split (a re-measurement under rule 10), week 7 (multi-line entries change the default ledger,
-  so every figure, the eval cases and the held-out measurement are re-measured), and week 8
-  (PyPI).
-- 1214 tests on 3.9 (1 skipped) / 1228 on 3.12 (the fourteen MCP tests need 3.10+), ruff clean.
+  scores predate v1.0.0's tie fix), week 5's model train/test split (a re-measurement under
+  rule 10), week 7 (multi-line entries change the default ledger, so every figure, the eval
+  cases and the held-out measurement are re-measured), and week 8 (PyPI).
+- 1219 tests on 3.9 (1 skipped) / 1233 on 3.12 (the fourteen MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
@@ -669,9 +701,12 @@ unhelpful. Say so wherever the number is quoted.
 - Tests live beside the module they cover; the session-scoped `ledger` fixture is in
   `tests/conftest.py`.
 - Comments explain *why*, not *what*. Existing code sets the density — match it.
-- A sort that picks one row or cuts a top-N says how a tie breaks (a second key, or an
-  index sort and then a stable `kind`). A one-key pandas sort is not stable, and the order
-  it gave tied lines differed between a Mac and the x86-64 Linux runners.
+- A sort that picks one row, cuts a top-N or prints rows says how a tie breaks (a second
+  key, or an index sort and then a stable `kind`). A one-key pandas sort is not stable: on any
+  key but pandas 3's `str` it keeps tied rows in input order up to 16 rows and scrambles them
+  from 17 (pandas 2.3 and 3.0 alike), and the order it gave tied lines differed between a Mac
+  and the x86-64 Linux runners. A table that cannot reach 17 rows (the dashboard's four
+  agreement counts) may rest on that.
 - Run `ruff check src tests app.py` and both venvs' test suites before every commit.
 - The Claude API is never called from a test: `tests/conftest.py` has the fake client
   (`llm` fixture) shaped like the real responses, thinking block included.

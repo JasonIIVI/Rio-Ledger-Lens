@@ -442,4 +442,7 @@ def score_entries(df: pd.DataFrame, flags: pd.DataFrame) -> pd.DataFrame:
     out["n_flags"] = out["n_flags"].fillna(0).astype(int)
     out["tests_fired"] = out["tests_fired"].fillna("")
     out["reasons"] = out["reasons"].fillna("")
-    return out.sort_values(["risk_score", "entry_amount"], ascending=False).reset_index(drop=True)
+    # Entries tied on score and amount go by id, as the context layer's cuts already do: `test`
+    # prints the top of this order, and the default ledger ties at its tenth row.
+    return out.sort_values(["risk_score", "entry_amount", "entry_id"],
+                           ascending=[False, False, True]).reset_index(drop=True)

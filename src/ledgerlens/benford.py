@@ -122,4 +122,6 @@ def segmented_benford(
         [{k: r[k] for k in ("label", "n", "sufficient_sample", "chi_square",
                             "exceeds_critical", "mad", "conformity")} for r in rows]
     )
-    return out.sort_values("mad", ascending=False).reset_index(drop=True)
+    # Segments tied on MAD go by label. A one-key sort keeps tied rows in input order up to 16
+    # rows and scrambles them from 17, and differently on a Mac and on CI's Linux runners.
+    return out.sort_values(["mad", "label"], ascending=[False, True]).reset_index(drop=True)

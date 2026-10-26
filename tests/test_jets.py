@@ -303,3 +303,20 @@ def test_an_approver_matches_the_user_name_case_included(ledger):
     """The README says names match as written, case included: "Controller" is not "controller"."""
     assert jets.run_all(_entry_at(ledger, 50.0, "controller"), only=["JET-12"]).empty
     assert len(jets.run_all(_entry_at(ledger, 50.0, "Controller"), only=["JET-12"])) == 1
+
+
+def test_entries_tied_on_score_and_amount_come_in_id_order(raw_ledger):
+    """Twenty entries of one amount, each flagged once alike, tie on score and amount, and
+    `test` prints the top of this order. A one-key sort keeps tied rows in input order up to
+    16 rows and scrambles them from 17; the id breaks the tie, as the context layer's cuts do."""
+    lines, _ = raw_ledger
+    sizes = lines.groupby("entry_id").size()
+    ids = sorted(sizes[sizes == 2].index)[:20]
+    part = lines[lines["entry_id"].isin(ids)].copy()
+    part["debit"] = part["debit"].where(part["debit"] == 0, 100.0)
+    part["credit"] = part["credit"].where(part["credit"] == 0, 100.0)
+    flags = pd.DataFrame({"entry_id": ids, "test_id": "JET-01", "test_name": "t",
+                          "severity": jets.MEDIUM, "reason": "r"})
+    scored = jets.score_entries(prepare(part), flags)
+    assert scored["risk_score"].nunique() == 1 and scored["entry_amount"].nunique() == 1
+    assert scored["entry_id"].tolist() == ids

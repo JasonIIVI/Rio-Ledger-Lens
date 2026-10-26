@@ -375,6 +375,24 @@ def test_score_by_archetype_of_labels_that_mark_no_anomaly_is_an_empty_table(led
     assert list(table.columns) == ["anomaly_type", "n", "mean_model_score", "vs_normal"]
 
 
+def test_archetypes_tied_on_mean_score_print_in_name_order():
+    """Twenty archetypes whose entries score alike tie on the mean, and one more, last by name,
+    scores above them. A one-key sort keeps tied rows in input order up to 16 rows and
+    scrambles them from 17; the name breaks the tie, and the odd archetype shows the mean is
+    still the first key."""
+    names = [f"t{i:02d}" for i in range(20)]
+    labels = pd.DataFrame({
+        "entry_id": [f"A{i}" for i in range(20)] + ["Z", "N1", "N2"],
+        "is_anomaly": [True] * 21 + [False, False],
+        "anomaly_type": names + ["zz", "", ""],
+    })
+    scores = pd.Series(0.5, index=labels["entry_id"])
+    scores["Z"] = 0.9
+    table = evaluate.score_by_archetype(scores, labels)
+    assert table["mean_model_score"].tolist()[:2] == [0.9, 0.5]
+    assert table["anomaly_type"].tolist() == ["zz"] + names
+
+
 def test_model_lift_breaks_a_tie_at_the_cut_by_entry_id():
     """Entries with identical features score identically, so a cut can fall inside a tie.
     The scores decide first, and a tie goes to the lower entry ids, whatever order the scores

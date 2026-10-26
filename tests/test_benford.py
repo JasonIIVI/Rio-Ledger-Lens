@@ -67,3 +67,18 @@ def test_segmenting_skips_thin_segments(ledger):
 def test_segmenting_returns_empty_frame_when_nothing_qualifies(ledger):
     result = segmented_benford(ledger, by="account_code", min_n=10**9)
     assert result.empty
+
+
+def test_segments_tied_on_mad_print_in_label_order():
+    """Twenty segments of the same amounts tie on MAD, and one more, last by name, stands above
+    them. A one-key sort keeps tied rows in input order up to 16 rows and scrambles them from
+    17; the label breaks the tie, and the odd segment shows MAD is still the first key."""
+    amounts = [float(v) for v in range(1, 31)]
+    labels = [f"s{i:02d}" for i in range(20)]
+    df = pd.DataFrame({
+        "account_code": [label for label in labels for _ in amounts] + ["zz"] * len(amounts),
+        "abs_amount": amounts * len(labels) + [9.0] * len(amounts),
+    })
+    out = segmented_benford(df, by="account_code", min_n=len(amounts))
+    assert out["mad"].nunique() == 2 and out["mad"].iloc[0] > out["mad"].iloc[1]
+    assert out["label"].tolist() == ["zz"] + labels
