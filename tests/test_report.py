@@ -4,7 +4,7 @@ import openpyxl
 import pytest
 
 from ledgerlens import evaluate, jets
-from ledgerlens.benford import segmented_benford
+from ledgerlens.benford import SMALL_SAMPLE_NOTE, segmented_benford
 from ledgerlens.model import combine, score_ledger
 from ledgerlens.report import build_workpaper
 
@@ -64,6 +64,10 @@ def test_methodology_records_the_model_fit(ledger, labels, tmp_path):
     # It said "count of distinct tests"; JET-09 and JET-11 judge lines, so a test can count twice.
     assert "sum over the flags raised" in text and "counts twice" in text
     assert "distinct tests" not in text
+    # The Benford sheet reads "insufficient data" for a segment under 300 amounts; say why, under
+    # Benford's heading. Wrapped at 100 as the other notes are, so read with the breaks undone.
+    flat = " ".join(text.split())
+    assert flat.index("Benford's Law") < flat.index(SMALL_SAMPLE_NOTE) < flat.index("Limitations")
 
 
 def _note(summary, confidence="medium"):

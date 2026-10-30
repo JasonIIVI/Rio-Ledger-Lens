@@ -2,11 +2,14 @@
 
 import json
 import sqlite3
+from datetime import date
 from pathlib import Path
 
 import pytest
 
-from ledgerlens.ingest import ledger_identity
+from ledgerlens.benford import SMALL_SAMPLE_NOTE, benford_test
+from ledgerlens.generate import generate_ledger
+from ledgerlens.ingest import ledger_identity, prepare
 from ledgerlens.ledger_context import ENV_LEDGER, ENV_REVIEW_DB, LedgerContext, records
 from ledgerlens.review import Decision, ReviewStore
 from ledgerlens.schema import REQUIRED_COLUMNS
@@ -191,6 +194,44 @@ def test_benford_for_the_population_and_per_segment(context):
     assert all(s["n"] >= 50 for s in segments["segments"])
     with pytest.raises(KeyError):
         context.benford(by="not_a_column")
+    # Enough amounts: the band is given, and nothing says otherwise.
+    assert population["n"] >= 300 and population["sufficient_sample"]
+    assert "small_sample" not in population and population["conformity"] != "insufficient data"
+
+
+@pytest.mark.filterwarnings("ignore::ledgerlens.generate.ArchetypeSkipped")  # ten days lack some
+def test_benford_gives_no_band_below_300_amounts_and_says_why():
+    """A client was shown the band for any n: the 297 amounts of a sandbox pull read
+    "nonconformity", with only ``sufficient_sample: false`` beside it to say otherwise."""
+    lines, _ = generate_ledger(start=date(2024, 1, 1), end=date(2024, 1, 10))
+    context = LedgerContext(prepare(lines)).load()
+    population = context.benford()
+    json.dumps(population)
+    assert population["n"] == 180 and population["conformity"] == "insufficient data"
+    assert list(population)[0] == "small_sample"  # ahead of the figures it qualifies
+    assert population["small_sample"] == SMALL_SAMPLE_NOTE
+    segments = context.benford(by="source", min_n=50)
+    json.dumps(segments)
+    assert list(segments)[0] == "small_sample" and segments["small_sample"] == SMALL_SAMPLE_NOTE
+    assert segments["segments"]
+    assert {s["conformity"] for s in segments["segments"]} == {"insufficient data"}
+    assert "small_sample" not in context.benford(by="source")  # no segment kept, nothing short
+
+
+def test_benford_names_a_short_segment_among_sufficient_ones_and_only_then(ledger):
+    """On the default ledger at min_n 50, account 6200 (299 amounts) is the one short segment:
+    the note comes first and that row alone has no band. With every kept segment at 300
+    amounts or more there is no note, and the results keep the keys and order they had."""
+    context = LedgerContext(ledger).load()
+    mixed = context.benford(by="account_code", min_n=50)
+    assert list(mixed) == ["small_sample", "scope", "min_n", "segments", "caveat"]
+    short = [(s["label"], s["n"], s["conformity"]) for s in mixed["segments"] if not s["sufficient_sample"]]
+    assert short == [("6200", 299, "insufficient data")]
+    assert all(s["conformity"] != "insufficient data" for s in mixed["segments"] if s["sufficient_sample"])
+    for by in ("account_code", "created_by", "source"):
+        assert list(context.benford(by=by)) == ["scope", "min_n", "segments", "caveat"], by
+    population = context.benford()
+    assert list(population) == list(benford_test(ledger["abs_amount"])) + ["scope", "caveat"]
 
 
 def test_from_env_reads_the_paths(monkeypatch):

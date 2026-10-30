@@ -554,11 +554,45 @@ and the MCP SDK, so the two together cover every code path CI will see.
   unstated cuts, the 17 rows miscounted as 18, the `str` caveat, the tests passing with no
   sort, and the empty review table; all fixed before the push, and its reading of the
   entries' cut as platform-dependent corrected to the above. Version unchanged (1.2.0).
+- **Benford's floor (`fix/benford-small-sample`, after v1.2.0)** — `benford_test` gave a
+  Nigrini band for any n of 1 or more ("insufficient data" only at 0). Only the CLI warned
+  under 300, and it printed the band on the next line. The dashboard's Conformity metric,
+  the context layer and the MCP tool showed it with no warning. The recorded sandbox pull's
+  297 amounts read "nonconformity" (MAD 0.0278). Under `MIN_SAMPLE` amounts (zeros not
+  counted; one flag, `sufficient_sample`, drives the band and every note) the band is now
+  "insufficient data", with MAD and chi-square still computed. `benford.SMALL_SAMPLE_NOTE`
+  is the one wording, ahead of the figures whenever a test falls short: the CLI's
+  population line and once before a segment table, an `st.warning` before the dashboard's
+  metrics, and the first key (`small_sample`) of the context layer's result, which the MCP
+  tool returns; the workpaper's Methodology section states it, and so does the MCP tool's
+  description. Segments are still kept by their rows (`min_n`), so a kept one can be short,
+  and the CLI's "had at least N entries" now says rows. On the default ledger every Benford
+  output at the default settings is byte for byte what it was, and the workpaper cell for
+  cell apart from the two Methodology lines it adds (the rows after them move down two). What
+  changes there is a segment kept by a
+  lowered `min_n`: at 16 to 299 (and over MCP, whose floor is 50) account 6200's 299
+  amounts no longer read "marginal conformity", and below 16 the accounts with fewer rows
+  lose "nonconformity" as `min_n` reaches them (6900 at 15, seven of them at 1). 300 is Nigrini's minimum, not a calibration: drawn from the law
+  itself, 297 and 300 amounts both read "nonconformity" about a third of the time, 1,000
+  almost never (`docs/tuning.md`'s table, each size seeded, recomputed by
+  `tests/test_tuning.py`). No baseline for a ledger's own n is built. A review (one
+  reviewer, scratch clone) found no value read wrong, crash or regression; fixed before the
+  push: the docs had called the floor justified, the context layer put the note after the
+  figures, "the one changed reading" missed `--min-n` 15 and below, the mixed and the
+  all-sufficient segment tables were untested (four surviving mutants), and two figures were
+  unpinned. A verification of those fixes (one agent) found no regression and four lows, also
+  fixed: the smaller accounts change one by one as `min_n` falls (the sentence had all seven
+  at 15), the chi-square aside now names its rule, the population's keys are pinned whole,
+  and the note's first place is pinned at the MCP layer. The note still says the test is not
+  meaningful below 300, which is true; it does not say 300 is enough, and `docs/tuning.md`
+  says it is not. Version unchanged (1.2.0).
 - **Next** — the maintainer's call. Open, unchanged: re-recording `docs/demo.gif` (its model
   scores predate v1.0.0's tie fix), week 5's model train/test split (a re-measurement under
   rule 10), week 7 (multi-line entries change the default ledger, so every figure, the eval
-  cases and the held-out measurement are re-measured), and week 8 (PyPI).
-- 1219 tests on 3.9 (1 skipped) / 1233 on 3.12 (the fourteen MCP tests need 3.10+), ruff clean.
+  cases and the held-out measurement are re-measured), and week 8 (PyPI). Also open: a
+  Benford baseline for a ledger's own size (the bands still depend on n above 300), and a
+  note's model as the API response reports it (`save_narrative` stores the one requested).
+- 1230 tests on 3.9 (1 skipped) / 1245 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
@@ -591,7 +625,7 @@ ledger CSV ──▶ ingest ──┼──▶ Isolation Forest ─────�
 | `jets.py` | 12 deterministic tests + severity-weighted risk score; JET-06 and JET-12 read a `Controls` |
 | `materiality.py` | `Materiality` (the overall figure given per run and never defaulted; the performance and clearly trivial shares default to 75% and 5%), the fiscal year the figures are set for (`fiscal_year_for`), whole cents (`to_cents`), and each entry's band against the figures (`bands`, `count_by_band`): beside the risk score, never in it |
 | `sampling.py` | the population (one fiscal year's entries with a positive amount) and two seeded selections against a `Materiality`: monetary unit sampling (no expected misstatement) and stratified random sampling; the selection memo (`collect_memo` / `render_memo`, text / markdown / JSON) |
-| `benford.py` | first-digit test, MAD (Nigrini bands) + chi-square |
+| `benford.py` | first-digit test, MAD (Nigrini bands) + chi-square; no band under 300 amounts (`SMALL_SAMPLE_NOTE`) |
 | `features.py` | 16 engineered per-entry features for the model tier |
 | `model.py` | Isolation Forest, rank-based flagging, tier comparison |
 | `evaluate.py` | precision/recall, by archetype, by test, tier comparison, model lift; `attribution` (which test caught each archetype), `budget_recall_by_archetype` / `held_out_budget` (the model's budget against chance), `sweep`; `check_labels` (labels must cover exactly the ledger's entries) and the two caveat constants |

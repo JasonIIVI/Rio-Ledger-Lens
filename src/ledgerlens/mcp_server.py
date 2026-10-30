@@ -167,10 +167,11 @@ def ledgerlens_search_entries(
 @mcp.tool(title="Benford analysis", annotations=READ_ONLY)
 def ledgerlens_benford(
     by: Annotated[Literal["account_code", "created_by", "source"] | None, Field(description="Segment the population by this column; omit for the whole ledger.")] = None,
-    min_n: Annotated[int, Field(ge=50, description="Smallest segment worth testing; Nigrini's floor is 300.")] = 300,
+    min_n: Annotated[int, Field(ge=50, description="Smallest segment worth testing, in rows; Nigrini's floor is 300, and a segment under 300 amounts gets no band.")] = 300,
 ) -> dict[str, Any]:
     """First-digit (Benford) analysis: MAD with Nigrini's conformity bands and chi-square, for
-    the whole population or per segment. Non-conformity is a pointer, not a finding.
+    the whole population or per segment. Under 300 amounts no band is given ("insufficient
+    data", with a small_sample note). Non-conformity is a pointer, not a finding.
     """
     return _call("benford", by=by, min_n=min_n)
 

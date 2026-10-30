@@ -18,7 +18,7 @@ import pandas as pd
 import streamlit as st
 
 from ledgerlens import evaluate, jets
-from ledgerlens.benford import benford_test
+from ledgerlens.benford import SMALL_SAMPLE_NOTE, benford_test
 from ledgerlens.controls import ControlsError, controls_path, format_limit, load_controls
 from ledgerlens.env import load_dotenv
 from ledgerlens.ingest import identity_path, ledger_identity, load_csv, load_labels
@@ -476,6 +476,8 @@ with tab_tiers:
 # ---- benford ----
 with tab_benford:
     result = benford_test(df["abs_amount"], "population")
+    if not result["sufficient_sample"]:
+        st.warning(SMALL_SAMPLE_NOTE)
     a, b, c = st.columns(3)
     a.metric("MAD", "{:.5f}".format(result["mad"]))
     b.metric("Conformity", result["conformity"])

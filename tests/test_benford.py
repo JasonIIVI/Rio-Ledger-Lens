@@ -3,11 +3,20 @@ import pandas as pd
 
 from ledgerlens.benford import (
     EXPECTED_FIRST_DIGIT,
+    MIN_SAMPLE,
+    SMALL_SAMPLE_NOTE,
     benford_test,
     first_digit,
     mad_conformity,
     segmented_benford,
 )
+
+BANDS = ("close conformity", "acceptable conformity", "marginal conformity", "nonconformity")
+
+
+def _ones(count):
+    """Amounts that all lead with a 1: nonconformity at any size, so a band is easy to see."""
+    return [1.0 + i / 1000 for i in range(count)]
 
 
 def test_expected_frequencies_match_the_law():
@@ -82,3 +91,41 @@ def test_segments_tied_on_mad_print_in_label_order():
     out = segmented_benford(df, by="account_code", min_n=len(amounts))
     assert out["mad"].nunique() == 2 and out["mad"].iloc[0] > out["mad"].iloc[1]
     assert out["label"].tolist() == ["zz"] + labels
+
+
+def test_no_band_below_the_floor_and_one_at_it():
+    """It gave a band for any n from 1: 297 amounts of a sandbox pull read "nonconformity" on the
+    dashboard. The statistics are still computed below the floor; only the reading is withheld."""
+    full = benford_test(pd.Series(_ones(MIN_SAMPLE)))
+    short = benford_test(pd.Series(_ones(MIN_SAMPLE - 1)))
+    assert full["n"] == MIN_SAMPLE and full["conformity"] == "nonconformity"
+    assert short["n"] == MIN_SAMPLE - 1 and short["conformity"] == "insufficient data"
+    assert short["sufficient_sample"] is False and full["sufficient_sample"] is True
+    assert short["mad"] == full["mad"] > 0.015 and short["chi_square"] > 15.507
+
+
+def test_the_floor_counts_amounts_not_rows():
+    """A zero has no leading digit: 300 values with one zero among them are 299 amounts."""
+    result = benford_test(pd.Series([0.0] + _ones(MIN_SAMPLE - 1)))
+    assert result["n"] == MIN_SAMPLE - 1 and result["conformity"] == "insufficient data"
+    assert result["sufficient_sample"] is False  # what every surface keys its note on
+
+
+def test_a_segment_below_the_floor_gets_no_band_however_it_was_kept():
+    """Segments are kept by their rows (``min_n``), so a segment of 300 rows with a zero, or any
+    segment once ``min_n`` is lowered, can hold fewer than 300 amounts: no band for those."""
+    df = pd.DataFrame({
+        "account_code": ["A"] * MIN_SAMPLE + ["B"] * MIN_SAMPLE + ["C"] * 50,
+        "abs_amount": [0.0] + _ones(MIN_SAMPLE - 1) + _ones(MIN_SAMPLE) + _ones(50),
+    })
+    rows = segmented_benford(df, by="account_code").set_index("label")
+    assert rows.loc["A", "n"] == MIN_SAMPLE - 1 and rows.loc["A", "conformity"] == "insufficient data"
+    assert rows.loc["B", "conformity"] == "nonconformity" and "C" not in rows.index
+    rows = segmented_benford(df, by="account_code", min_n=50).set_index("label")
+    assert rows.loc["C", "conformity"] == "insufficient data"
+    assert rows.loc["B", "conformity"] == "nonconformity"
+
+
+def test_the_small_sample_note_names_the_floor_and_is_ascii():
+    assert SMALL_SAMPLE_NOTE.isascii() and str(MIN_SAMPLE) in SMALL_SAMPLE_NOTE
+    assert not any(band in SMALL_SAMPLE_NOTE for band in BANDS)

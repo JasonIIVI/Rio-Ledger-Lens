@@ -251,3 +251,23 @@ async def test_the_summary_tool_names_the_controls_the_tests_ran_against(bare_cl
     assert result.structured_content["controls"] == {
         "source": None, "default": True, "manual_entry_approvers": ["controller", "mchen"],
         "approval_limit": 10_000.0}
+
+
+@pytest.mark.anyio
+async def test_benford_over_mcp_gives_no_band_under_300_amounts_and_the_note_first(tmp_path):
+    """The note comes ahead of the figures it qualifies in what the client reads, as it does in
+    the context layer; a sorted or rebuilt result would put it among them."""
+    import json
+
+    from ledgerlens.benford import SMALL_SAMPLE_NOTE
+    from ledgerlens.cli import main
+
+    main(["generate", "--start", "2024-01-01", "--end", "2024-01-10", "--out-dir", str(tmp_path)])
+    mcp_server.use_context(LedgerContext(tmp_path / "ledger.csv"))
+    async with Client(mcp_server.mcp, raise_exceptions=True) as c:
+        for args in ({}, {"by": "source", "min_n": 50}):
+            result = await c.call_tool("ledgerlens_benford", args)
+            assert not result.is_error, args
+            for shown in (result.structured_content, json.loads(result.content[0].text)):
+                assert next(iter(shown)) == "small_sample" and shown["small_sample"] == SMALL_SAMPLE_NOTE
+            assert "nonconformity" not in result.content[0].text.replace("Non-conformity", "")

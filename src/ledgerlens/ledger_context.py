@@ -19,7 +19,7 @@ from pathlib import Path
 import pandas as pd
 
 from . import jets
-from .benford import benford_test, segmented_benford
+from .benford import SMALL_SAMPLE_NOTE, benford_test, segmented_benford
 from .controls import DEFAULT_CONTROLS, Controls, load_controls
 from .ingest import ledger_identity, load_csv
 from .model import combine, score_ledger
@@ -73,6 +73,12 @@ def _jsonable(value):
     if hasattr(value, "item"):  # numpy scalar
         return value.item()
     return value
+
+
+def _small_sample_first(result: dict, sufficient: bool) -> dict:
+    """Benford's small-sample note as the first key, ahead of the figures it qualifies, and only
+    when a test fell under the floor, so a ledger with enough amounts reads as it did."""
+    return result if sufficient else {"small_sample": SMALL_SAMPLE_NOTE, **result}
 
 
 class LedgerContext:
@@ -311,16 +317,17 @@ class LedgerContext:
             result = _jsonable(benford_test(self.lines["abs_amount"], label="population"))
             result["scope"] = "population"
             result["caveat"] = BENFORD_CAVEAT
-            return result
+            return _small_sample_first(result, result["sufficient_sample"])
         if by not in self.lines.columns:
             raise KeyError(f"cannot segment by {by!r}; not a ledger column")
         segments = segmented_benford(self.lines, by=by, min_n=min_n)
-        return {
+        result = {
             "scope": by,
             "min_n": min_n,
             "segments": records(segments),
             "caveat": BENFORD_CAVEAT,
         }
+        return _small_sample_first(result, bool(segments["sufficient_sample"].all()))
 
     def review_status(self) -> dict:
         """How far the human loop has got. Zeros, not an error, when nobody has started."""

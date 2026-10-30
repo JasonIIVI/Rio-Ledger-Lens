@@ -4,11 +4,16 @@ going stale. The sweep changes no default: it shows what the default ledger can 
 about each one."""
 
 import inspect
+import math
+from collections import Counter
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
 import pytest
 
 from ledgerlens import evaluate, jets
+from ledgerlens.benford import EXPECTED_FIRST_DIGIT, benford_test, mad_conformity
 
 DOC = " ".join((Path(__file__).resolve().parents[1] / "docs" / "tuning.md").read_text(encoding="utf-8").split())
 
@@ -89,3 +94,33 @@ def test_the_sweep_counts_what_it_says(ledger, labels):
     no_intent = evaluate.sweep(lambda v: jets.jet_large_value_outlier(ledger, z_threshold=v), (3.5,),
                                labels, "JET-11")
     assert no_intent.iloc[0].intended_n is None
+
+
+def _benford_draws(rng, n, draws):
+    """What Nigrini's bands read for ``draws`` samples of ``n`` amounts that follow the law."""
+    mads = [benford_test(pd.Series(100 * 10 ** rng.random(n)))["mad"] for _ in range(draws)]
+    return float(np.mean(mads)), Counter(mad_conformity(m) for m in mads)
+
+
+def _pct(count, draws):
+    return f"{round(100 * count / draws)}%"
+
+
+#: amounts, draws, and how the notes' table names the row; the default ledger's size is added
+#: from the ledger itself, so a change to the generator moves the row instead of leaving it stale
+BENFORD_SIZES = ((297, 5000, "297 (the recorded sandbox pull's size)"), (300, 5000, "300"),
+                 (500, 2000, "500"), (1000, 2000, "1,000"))
+
+
+def test_the_benford_floor_table_is_the_one_the_notes_quote(ledger):
+    """What Nigrini's bands read for amounts drawn from Benford's law itself, by size: every row of
+    the notes' table is recomputed here, each size from its own seed."""
+    n = benford_test(ledger["abs_amount"])["n"]
+    for size, draws, label in BENFORD_SIZES + ((n, 500, f"{n:,} (the default ledger's)"),):
+        mean, bands = _benford_draws(np.random.default_rng([20261030, size]), size, draws)
+        row = (f"| {label} | {draws:,} | {mean:.4f} | {_pct(bands['nonconformity'], draws)} | "
+               f"{_pct(bands['close conformity'], draws)} |")
+        assert row in DOC, row
+    assert "`numpy.random.default_rng([20261030, n])`" in DOC
+    # The chi-square aside: under this many amounts a leading 9 is expected fewer than five times.
+    assert math.ceil(5 / EXPECTED_FIRST_DIGIT[9]) == 110 and "below about 110 amounts" in DOC
