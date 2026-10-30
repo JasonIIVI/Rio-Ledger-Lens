@@ -30,8 +30,15 @@ MAD_BANDS = (
 )
 
 #: Below this many observations the test is not meaningful, no matter what the
-#: statistic says. Nigrini suggests at least 300-500; we warn under 300.
+#: statistic says. Nigrini suggests at least 300-500; under 300 no band is given.
 MIN_SAMPLE = 300
+
+#: One wording, printed ahead of the figures wherever a test falls under the floor. The
+#: bands were set for large populations, and a small conformant one reads high by chance.
+SMALL_SAMPLE_NOTE = (
+    f"Below {MIN_SAMPLE} amounts the first-digit test is not meaningful (Nigrini suggests at "
+    "least 300 to 500), so no conformity band is given; MAD and chi-square are shown as computed."
+)
 
 
 def first_digit(values: pd.Series) -> pd.Series:
@@ -61,6 +68,11 @@ def benford_test(values: pd.Series, label: str = "population") -> dict:
     and the MAD conformity band. Chi-square is reported because it is what
     textbooks use; MAD is reported because chi-square rejects conformity on
     almost any large population, which makes it useless at audit scale.
+
+    Under ``MIN_SAMPLE`` amounts (zeros have no leading digit and are not
+    counted) the band is "insufficient data". A small population that follows
+    the law still reads high by chance, so a band there would be a reading the
+    test cannot make; the statistics are returned all the same.
     """
     digits = first_digit(values)
     n = int(digits.size)
@@ -85,7 +97,7 @@ def benford_test(values: pd.Series, label: str = "population") -> dict:
         "chi_square_critical_5pct": 15.507,
         "exceeds_critical": chi_square > 15.507,
         "mad": round(mad, 6),
-        "conformity": mad_conformity(mad) if n else "insufficient data",
+        "conformity": mad_conformity(mad) if n >= MIN_SAMPLE else "insufficient data",
         "observed": {int(d): int(c) for d, c in counts.items()},
         "observed_prop": {int(d): round(float(p), 4) for d, p in observed_prop.items()},
         "expected_prop": {int(d): round(float(p), 4) for d, p in expected_prop.items()},

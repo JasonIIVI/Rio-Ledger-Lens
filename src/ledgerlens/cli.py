@@ -28,7 +28,7 @@ from pathlib import Path
 import pandas as pd
 
 from . import evaluate, jets, narrative_eval
-from .benford import benford_test, segmented_benford
+from .benford import SMALL_SAMPLE_NOTE, benford_test, segmented_benford
 from .connectors import qbo
 from .connectors.tokens import (
     Tokens,
@@ -344,15 +344,18 @@ def cmd_benford(args: argparse.Namespace) -> int:
     if args.by:
         result = segmented_benford(df, by=args.by, min_n=args.min_n)
         if result.empty:
-            print(f"No segment of '{args.by}' had at least {args.min_n} entries.")
+            # Segments are kept by their rows (lines), not by entries.
+            print(f"No segment of '{args.by}' had at least {args.min_n} rows.")
             return 0
         print(f"Benford first-digit test, segmented by {args.by} (>= {args.min_n} rows):\n")
+        if not result["sufficient_sample"].all():
+            print(f"WARNING: {SMALL_SAMPLE_NOTE}\n")
         print(_inert(result, "label").to_string(index=False))
     else:
         r = benford_test(df["abs_amount"], label="ALL")
         print("Benford first-digit test over {:,} amounts".format(r["n"]))
         if not r["sufficient_sample"]:
-            print("WARNING: sample below 300, result is not meaningful")
+            print(f"WARNING: {SMALL_SAMPLE_NOTE}")
         print("  MAD         {:.5f}  ({})".format(r["mad"], r["conformity"]))
         print("  chi-square  {:.2f}  (critical 15.507 at 5%, 8 df) -> {}".format(
             r["chi_square"], "exceeds" if r["exceeds_critical"] else "within"))

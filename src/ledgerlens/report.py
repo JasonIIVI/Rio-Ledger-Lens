@@ -18,6 +18,7 @@ import pandas as pd
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
+from .benford import SMALL_SAMPLE_NOTE
 from .controls import DEFAULT_CONTROLS, Controls, format_approvers, format_limit
 from .evaluate import DETECTION_CAVEAT
 from .materiality import (
@@ -299,6 +300,7 @@ def build_workpaper(
             "Benford's Law",
             "  MAD is reported with Nigrini's conformity bands alongside chi-square. Chi-square rejects",
             "  conformity on almost any large population, so MAD is the operative statistic.",
+            *["  " + line for line in textwrap.wrap(SMALL_SAMPLE_NOTE, 100)],
             "  Non-conformity is a pointer, not a finding.",
             "",
             "Limitations",

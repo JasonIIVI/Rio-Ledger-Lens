@@ -19,7 +19,7 @@ from pathlib import Path
 import pandas as pd
 
 from . import jets
-from .benford import benford_test, segmented_benford
+from .benford import SMALL_SAMPLE_NOTE, benford_test, segmented_benford
 from .controls import DEFAULT_CONTROLS, Controls, load_controls
 from .ingest import ledger_identity, load_csv
 from .model import combine, score_ledger
@@ -310,17 +310,23 @@ class LedgerContext:
         if by is None:
             result = _jsonable(benford_test(self.lines["abs_amount"], label="population"))
             result["scope"] = "population"
+            # Only when it applies, so a ledger with enough amounts reads as it did.
+            if not result["sufficient_sample"]:
+                result["small_sample"] = SMALL_SAMPLE_NOTE
             result["caveat"] = BENFORD_CAVEAT
             return result
         if by not in self.lines.columns:
             raise KeyError(f"cannot segment by {by!r}; not a ledger column")
         segments = segmented_benford(self.lines, by=by, min_n=min_n)
-        return {
+        result = {
             "scope": by,
             "min_n": min_n,
             "segments": records(segments),
-            "caveat": BENFORD_CAVEAT,
         }
+        if not segments["sufficient_sample"].all():
+            result["small_sample"] = SMALL_SAMPLE_NOTE
+        result["caveat"] = BENFORD_CAVEAT
+        return result
 
     def review_status(self) -> dict:
         """How far the human loop has got. Zeros, not an error, when nobody has started."""

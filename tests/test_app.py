@@ -784,3 +784,26 @@ def test_a_band_chosen_for_one_ledger_does_not_empty_the_queue_of_the_next(data_
     band_filter = next(w for w in at.multiselect if w.label == "Materiality band")
     assert "other year" not in band_filter.options and band_filter.value == band_filter.options
     assert len(_queue_frame(at)) > 0
+
+
+def _benford_tab(at):
+    tab = next(t for t in at.tabs if t.label == "Benford")
+    return tab, [type(node).__name__ for node in tab]
+
+
+def test_the_benford_tab_gives_no_band_below_300_amounts_and_warns_first(data_dir, tmp_path):
+    """Its Conformity metric showed a band for any n, with no warning: the 297 amounts of a
+    sandbox pull read "nonconformity"."""
+    from ledgerlens.benford import SMALL_SAMPLE_NOTE
+
+    folder = tmp_path / "ten-days"
+    main(["generate", "--start", "2024-01-01", "--end", "2024-01-10", "--out-dir", str(folder)])
+    at = _run(folder, tmp_path / "review.sqlite")
+    tab, kinds = _benford_tab(at)
+    assert {m.label: m.value for m in tab.metric}["Conformity"] == "insufficient data"
+    assert [w.value for w in tab.warning] == [SMALL_SAMPLE_NOTE]
+    assert kinds.index("Warning") < kinds.index("Metric")  # ahead of the figures it qualifies
+
+    tab, kinds = _benford_tab(_run(data_dir, tmp_path / "other.sqlite"))  # 4 months: enough
+    assert "Warning" not in kinds
+    assert {m.label: m.value for m in tab.metric}["Conformity"] != "insufficient data"

@@ -7,8 +7,11 @@ from types import SimpleNamespace
 
 import pytest
 
+from ledgerlens.benford import MAD_BANDS, SMALL_SAMPLE_NOTE
 from ledgerlens.cli import build_parser, main
 from ledgerlens.controls import DEFAULT_CONTROLS, controls_path
+
+BANDS = tuple(label for _, label in MAD_BANDS)
 
 
 def test_generate_writes_both_files(tmp_path):
@@ -140,6 +143,31 @@ def test_benford_command_reports_conformity(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "MAD" in out
     assert "conformity" in out
+    assert SMALL_SAMPLE_NOTE not in out and "insufficient data" not in out
+
+
+def test_benford_gives_no_band_below_300_amounts_and_says_so_first(tmp_path, capsys):
+    """It printed a warning and then the band anyway ("MAD 0.02782 (nonconformity)" for the 297
+    amounts of a sandbox pull); with ``--min-n`` lowered the table gave bands with no warning."""
+    main(["generate", "--start", "2024-01-01", "--end", "2024-01-10", "--out-dir", str(tmp_path)])
+    capsys.readouterr()
+    main(["benford", str(tmp_path / "ledger.csv")])
+    out = capsys.readouterr().out
+    assert "over 180 amounts" in out
+    assert out.count(SMALL_SAMPLE_NOTE) == 1 and out.index(SMALL_SAMPLE_NOTE) < out.index("MAD ")
+    assert "(insufficient data)" in out and not any(band in out for band in BANDS)
+
+    main(["benford", str(tmp_path / "ledger.csv"), "--by", "source", "--min-n", "1"])
+    out = capsys.readouterr().out
+    assert out.count(SMALL_SAMPLE_NOTE) == 1 and out.index(SMALL_SAMPLE_NOTE) < out.index("label")
+    assert "insufficient data" in out and not any(band in out for band in BANDS)
+
+
+def test_benford_says_when_no_segment_has_enough_rows(tmp_path, capsys):
+    main(["generate", "--start", "2024-01-01", "--end", "2024-01-10", "--out-dir", str(tmp_path)])
+    capsys.readouterr()
+    assert main(["benford", str(tmp_path / "ledger.csv"), "--by", "source"]) == 0
+    assert capsys.readouterr().out == "No segment of 'source' had at least 300 rows.\n"
 
 
 def test_bad_date_is_rejected():
