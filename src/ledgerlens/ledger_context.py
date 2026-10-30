@@ -75,6 +75,12 @@ def _jsonable(value):
     return value
 
 
+def _small_sample_first(result: dict, sufficient: bool) -> dict:
+    """Benford's small-sample note as the first key, ahead of the figures it qualifies, and only
+    when a test fell under the floor, so a ledger with enough amounts reads as it did."""
+    return result if sufficient else {"small_sample": SMALL_SAMPLE_NOTE, **result}
+
+
 class LedgerContext:
     """A ledger, scored by both tiers once, answering questions many times.
 
@@ -310,11 +316,8 @@ class LedgerContext:
         if by is None:
             result = _jsonable(benford_test(self.lines["abs_amount"], label="population"))
             result["scope"] = "population"
-            # Only when it applies, so a ledger with enough amounts reads as it did.
-            if not result["sufficient_sample"]:
-                result["small_sample"] = SMALL_SAMPLE_NOTE
             result["caveat"] = BENFORD_CAVEAT
-            return result
+            return _small_sample_first(result, result["sufficient_sample"])
         if by not in self.lines.columns:
             raise KeyError(f"cannot segment by {by!r}; not a ledger column")
         segments = segmented_benford(self.lines, by=by, min_n=min_n)
@@ -322,11 +325,9 @@ class LedgerContext:
             "scope": by,
             "min_n": min_n,
             "segments": records(segments),
+            "caveat": BENFORD_CAVEAT,
         }
-        if not segments["sufficient_sample"].all():
-            result["small_sample"] = SMALL_SAMPLE_NOTE
-        result["caveat"] = BENFORD_CAVEAT
-        return result
+        return _small_sample_first(result, bool(segments["sufficient_sample"].all()))
 
     def review_status(self) -> dict:
         """How far the human loop has got. Zeros, not an error, when nobody has started."""

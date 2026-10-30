@@ -108,6 +108,7 @@ def test_the_floor_counts_amounts_not_rows():
     """A zero has no leading digit: 300 values with one zero among them are 299 amounts."""
     result = benford_test(pd.Series([0.0] + _ones(MIN_SAMPLE - 1)))
     assert result["n"] == MIN_SAMPLE - 1 and result["conformity"] == "insufficient data"
+    assert result["sufficient_sample"] is False  # what every surface keys its note on
 
 
 def test_a_segment_below_the_floor_gets_no_band_however_it_was_kept():

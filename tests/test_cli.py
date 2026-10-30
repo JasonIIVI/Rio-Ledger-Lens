@@ -145,6 +145,18 @@ def test_benford_command_reports_conformity(tmp_path, capsys):
     assert "conformity" in out
     assert SMALL_SAMPLE_NOTE not in out and "insufficient data" not in out
 
+    # Every segment kept has 300 amounts or more: no note.
+    main(["benford", str(tmp_path / "ledger.csv"), "--by", "source"])
+    out = capsys.readouterr().out
+    assert SMALL_SAMPLE_NOTE not in out and "insufficient data" not in out and "conformity" in out
+    # One short segment among the rest (account 6200, 299 amounts): the note once, first, and
+    # that row alone without a band.
+    main(["benford", str(tmp_path / "ledger.csv"), "--by", "account_code", "--min-n", "50"])
+    out = capsys.readouterr().out
+    assert out.count(SMALL_SAMPLE_NOTE) == 1 and out.index(SMALL_SAMPLE_NOTE) < out.index("label")
+    short = [line.split()[:2] for line in out.splitlines() if line.endswith("insufficient data")]
+    assert short == [["6200", "299"]] and "acceptable conformity" in out
+
 
 def test_benford_gives_no_band_below_300_amounts_and_says_so_first(tmp_path, capsys):
     """It printed a warning and then the band anyway ("MAD 0.02782 (nonconformity)" for the 297

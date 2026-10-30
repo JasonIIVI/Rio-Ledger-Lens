@@ -76,6 +76,8 @@ def benford_test(values: pd.Series, label: str = "population") -> dict:
     """
     digits = first_digit(values)
     n = int(digits.size)
+    # One flag for the band and for every surface's note, so the two cannot part.
+    sufficient = n >= MIN_SAMPLE
 
     counts = digits.value_counts().reindex(range(1, 10), fill_value=0).sort_index()
     observed_prop = (counts / n) if n else counts.astype(float)
@@ -91,13 +93,13 @@ def benford_test(values: pd.Series, label: str = "population") -> dict:
     return {
         "label": label,
         "n": n,
-        "sufficient_sample": n >= MIN_SAMPLE,
+        "sufficient_sample": sufficient,
         "chi_square": round(chi_square, 4),
         # 8 degrees of freedom, alpha = 0.05
         "chi_square_critical_5pct": 15.507,
         "exceeds_critical": chi_square > 15.507,
         "mad": round(mad, 6),
-        "conformity": mad_conformity(mad) if n >= MIN_SAMPLE else "insufficient data",
+        "conformity": mad_conformity(mad) if sufficient else "insufficient data",
         "observed": {int(d): int(c) for d, c in counts.items()},
         "observed_prop": {int(d): round(float(p), 4) for d, p in observed_prop.items()},
         "expected_prop": {int(d): round(float(p), 4) for d, p in expected_prop.items()},

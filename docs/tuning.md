@@ -194,27 +194,36 @@ wrong.
 ## Sample size floor
 
 Below 300 amounts no conformity band is given. `benford_test` reads "insufficient data",
-and the CLI, the dashboard and the MCP tool give one note (`benford.SMALL_SAMPLE_NOTE`)
-ahead of the figures whenever a test falls short; the workpaper's Methodology section
-states it. MAD and chi-square are still shown as computed.
+and one note (`benford.SMALL_SAMPLE_NOTE`) comes ahead of the figures whenever a test falls
+short: on the CLI, on the dashboard's Benford tab, and as the first key of the context
+layer's result, which the MCP tool returns. The workpaper's Methodology section states it.
+MAD and chi-square are still shown as computed; below about 110 amounts the chi-square
+approximation itself does not hold (a leading 9 is expected fewer than five times).
 
-Nigrini suggests 300–500 as the practical floor for the first-digit test. Below it the
-bands cannot be read: amounts drawn from Benford's law itself, 297 at a time (the size of
-the recorded sandbox pull), give a mean MAD of 0.0136, and 34% of those draws fall in
-"nonconformity" and 1% in "close conformity". The amounts are `100 * 10**u` with `u`
-uniform on [0, 1), drawn from `numpy.random.default_rng(20261030)`: 5,000 samples of 297,
-then the two sizes below, each read by `benford_test` with its MAD put into Nigrini's
-bands. `tests/test_tuning.py` recomputes every figure here.
+300 is Nigrini's suggested minimum (he gives 300–500), not a point where the bands start
+to work. Amounts drawn from Benford's law itself, by size, read as follows (the share of
+draws whose MAD falls in each band):
+
+| amounts | draws | mean MAD | nonconformity | close conformity |
+|---|---|---|---|---|
+| 297 (the recorded sandbox pull's size) | 5,000 | 0.0137 | 34% | 1% |
+| 300 | 5,000 | 0.0135 | 32% | 1% |
+| 500 | 2,000 | 0.0104 | 7% | 5% |
+| 1,000 | 2,000 | 0.0074 | 0% | 27% |
+| 10,170 (the default ledger's) | 500 | 0.0023 | 0% | 100% |
+
+So the floor withholds a band where a third of samples that follow the law would read
+"nonconformity", and gives one from 300 amounts, where they still do; by 1,000 almost none
+do. Nothing here calibrates the bands to a ledger's size, and a baseline for a ledger's
+own n is not built. The amounts are `100 * 10**u` with `u` uniform on [0, 1), each size
+drawn from `numpy.random.default_rng([20261030, n])`, read by `benford_test` and its MAD
+put into Nigrini's bands; `tests/test_tuning.py` recomputes the table.
 
 The floor counts amounts with a leading digit (a zero has none). `segmented_benford` keeps
-a segment by its rows (`min_n`: 300 by default, set lower with `--min-n`, down to 50 over
-MCP), so a kept segment can hold fewer than 300 amounts: its statistics are shown, with no
-band.
+a segment by its rows (`min_n`: 300 by default; lower with `--min-n`, which has no lower
+bound, or down to 50 over MCP), so a kept segment can hold fewer than 300 amounts: its
+statistics are shown, with no band.
 
 Until 2026-10-30 a band was given for any n of 1 or more, with a warning on the CLI only:
-the dashboard showed the sandbox pull's 297 amounts (MAD 0.0278) as "nonconformity".
-
-Above the floor the bands still depend on size, and nothing here calibrates them. At 1,000
-amounts drawn from the law the mean MAD is 0.0074 and 27% of 2,000 draws read "close
-conformity"; at the default ledger's 10,170 it is 0.0023, and all 500 draws read close. A
-baseline for a ledger's own size is not built.
+the dashboard showed the sandbox pull's 297 amounts (MAD 0.0278) as "nonconformity"
+(`tests/test_qbo.py` recomputes that reading).

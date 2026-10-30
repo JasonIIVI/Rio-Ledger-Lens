@@ -551,6 +551,19 @@ def test_the_pull_replays_every_fixture_and_builds_a_prepared_balanced_ledger(pu
     assert set(frame["created_by"]) == {"qbo-user-1"} and not frame["entered_at_estimated"].any()
 
 
+def test_the_recorded_pull_is_under_benfords_floor_as_the_tuning_notes_say(pulled):
+    """docs/tuning.md says the dashboard read this pull's amounts as "nonconformity" before the
+    floor: that reading is recomputed here, beside the one given now."""
+    from ledgerlens.benford import benford_test, mad_conformity
+
+    frame, _ = pulled
+    result = benford_test(frame["abs_amount"])
+    assert (result["n"], result["sufficient_sample"], result["conformity"]) == (297, False, "insufficient data")
+    assert mad_conformity(result["mad"]) == "nonconformity"  # the band it was given
+    notes = " ".join((Path(__file__).resolve().parents[1] / "docs" / "tuning.md").read_text(encoding="utf-8").split())
+    assert f"the sandbox pull's {result['n']} amounts (MAD {result['mad']:.4f}) as \"nonconformity\"" in notes
+
+
 def lines_of(frame, entry_id):
     return frame[frame["entry_id"] == entry_id].sort_values("line_no")
 

@@ -559,27 +559,34 @@ and the MCP SDK, so the two together cover every code path CI will see.
   under 300, and it printed the band on the next line. The dashboard's Conformity metric,
   the context layer and the MCP tool showed it with no warning. The recorded sandbox pull's
   297 amounts read "nonconformity" (MAD 0.0278). Under `MIN_SAMPLE` amounts (zeros not
-  counted) the band is now "insufficient data", with MAD and chi-square still computed.
-  `benford.SMALL_SAMPLE_NOTE` is the one wording, ahead of the figures whenever a test falls
-  short: the CLI's population line and once before a segment table, an `st.warning` before
-  the dashboard's metrics, and a `small_sample` key in the context layer's results; the
-  workpaper's Methodology section states it, and so does the MCP tool's description.
-  Segments are still kept by their rows (`min_n`), so a kept one can be short, and the CLI's
-  "had at least N entries" now says rows. On the default ledger every Benford output at the
-  default settings is byte for byte what it was, and the workpaper cell for cell apart from
-  the two Methodology lines. The one changed reading is `--by account_code --min-n 50` (and the
-  same over MCP): account 6200's 299 amounts no longer read "marginal conformity". Why the
-  floor holds: 297 amounts drawn from the law itself give a mean MAD of 0.0136, and a third
-  of those draws read "nonconformity" (`docs/tuning.md`, recomputed by `tests/test_tuning.py`
-  from a named seed). Above the floor the bands still
-  depend on size, and no baseline for a ledger's own n is built. Version unchanged (1.2.0).
+  counted; one flag, `sufficient_sample`, drives the band and every note) the band is now
+  "insufficient data", with MAD and chi-square still computed. `benford.SMALL_SAMPLE_NOTE`
+  is the one wording, ahead of the figures whenever a test falls short: the CLI's
+  population line and once before a segment table, an `st.warning` before the dashboard's
+  metrics, and the first key (`small_sample`) of the context layer's result, which the MCP
+  tool returns; the workpaper's Methodology section states it, and so does the MCP tool's
+  description. Segments are still kept by their rows (`min_n`), so a kept one can be short,
+  and the CLI's "had at least N entries" now says rows. On the default ledger every Benford
+  output at the default settings is byte for byte what it was, and the workpaper cell for
+  cell apart from the two Methodology lines. What changes there is a segment kept by a
+  lowered `min_n`: at 16 to 299 (and over MCP, whose floor is 50) account 6200's 299
+  amounts no longer read "marginal conformity", and at 15 or below seven smaller accounts
+  lose "nonconformity" too. 300 is Nigrini's minimum, not a calibration: drawn from the law
+  itself, 297 and 300 amounts both read "nonconformity" about a third of the time, 1,000
+  almost never (`docs/tuning.md`'s table, each size seeded, recomputed by
+  `tests/test_tuning.py`). No baseline for a ledger's own n is built. A review (one
+  reviewer, scratch clone) found no value read wrong, crash or regression; fixed before the
+  push: the docs had called the floor justified, the context layer put the note after the
+  figures, "the one changed reading" missed `--min-n` 15 and below, the mixed and the
+  all-sufficient segment tables were untested (four surviving mutants), and two figures were
+  unpinned. Version unchanged (1.2.0).
 - **Next** — the maintainer's call. Open, unchanged: re-recording `docs/demo.gif` (its model
   scores predate v1.0.0's tie fix), week 5's model train/test split (a re-measurement under
   rule 10), week 7 (multi-line entries change the default ledger, so every figure, the eval
   cases and the held-out measurement are re-measured), and week 8 (PyPI). Also open: a
   Benford baseline for a ledger's own size (the bands still depend on n above 300), and a
   note's model as the API response reports it (`save_narrative` stores the one requested).
-- 1228 tests on 3.9 (1 skipped) / 1242 on 3.12 (the fourteen MCP tests need 3.10+), ruff clean.
+- 1230 tests on 3.9 (1 skipped) / 1244 on 3.12 (the fourteen MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth

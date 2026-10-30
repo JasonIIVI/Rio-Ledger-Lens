@@ -4,6 +4,7 @@ going stale. The sweep changes no default: it shows what the default ledger can 
 about each one."""
 
 import inspect
+import math
 from collections import Counter
 from pathlib import Path
 
@@ -12,7 +13,7 @@ import pandas as pd
 import pytest
 
 from ledgerlens import evaluate, jets
-from ledgerlens.benford import benford_test, mad_conformity
+from ledgerlens.benford import EXPECTED_FIRST_DIGIT, benford_test, mad_conformity
 
 DOC = " ".join((Path(__file__).resolve().parents[1] / "docs" / "tuning.md").read_text(encoding="utf-8").split())
 
@@ -105,18 +106,21 @@ def _pct(count, draws):
     return f"{round(100 * count / draws)}%"
 
 
-def test_the_benford_floor_simulation_is_the_one_the_notes_quote():
-    """The floor is justified by amounts drawn from Benford's law itself; every figure the notes
-    give for it is recomputed here, from the seed and the order of draws they name."""
-    rng = np.random.default_rng(20261030)
-    mean, bands = _benford_draws(rng, 297, 5000)
-    assert (f"297 at a time (the size of the recorded sandbox pull), give a mean MAD of {mean:.4f}, "
-            f"and {_pct(bands['nonconformity'], 5000)} of those draws fall in \"nonconformity\" and "
-            f"{_pct(bands['close conformity'], 5000)} in \"close conformity\"") in DOC
-    assert "5,000 samples of 297" in DOC
-    mean, bands = _benford_draws(rng, 1000, 2000)
-    assert (f"At 1,000 amounts drawn from the law the mean MAD is {mean:.4f} and "
-            f"{_pct(bands['close conformity'], 2000)} of 2,000 draws read \"close conformity\"") in DOC
-    mean, bands = _benford_draws(rng, 10170, 500)
-    assert bands == Counter({"close conformity": 500})
-    assert f"at the default ledger's 10,170 it is {mean:.4f}, and all 500 draws read close" in DOC
+#: amounts, draws, and how the notes' table names the row; the default ledger's size is added
+#: from the ledger itself, so a change to the generator moves the row instead of leaving it stale
+BENFORD_SIZES = ((297, 5000, "297 (the recorded sandbox pull's size)"), (300, 5000, "300"),
+                 (500, 2000, "500"), (1000, 2000, "1,000"))
+
+
+def test_the_benford_floor_table_is_the_one_the_notes_quote(ledger):
+    """What Nigrini's bands read for amounts drawn from Benford's law itself, by size: every row of
+    the notes' table is recomputed here, each size from its own seed."""
+    n = benford_test(ledger["abs_amount"])["n"]
+    for size, draws, label in BENFORD_SIZES + ((n, 500, f"{n:,} (the default ledger's)"),):
+        mean, bands = _benford_draws(np.random.default_rng([20261030, size]), size, draws)
+        row = (f"| {label} | {draws:,} | {mean:.4f} | {_pct(bands['nonconformity'], draws)} | "
+               f"{_pct(bands['close conformity'], draws)} |")
+        assert row in DOC, row
+    assert "`numpy.random.default_rng([20261030, n])`" in DOC
+    # The chi-square aside: under this many amounts a leading 9 is expected fewer than five times.
+    assert math.ceil(5 / EXPECTED_FIRST_DIGIT[9]) == 110 and "below about 110 amounts" in DOC

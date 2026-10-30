@@ -300,7 +300,8 @@ def build_workpaper(
             "Benford's Law",
             "  MAD is reported with Nigrini's conformity bands alongside chi-square. Chi-square rejects",
             "  conformity on almost any large population, so MAD is the operative statistic.",
-            *["  " + line for line in textwrap.wrap(SMALL_SAMPLE_NOTE, 100)],
+            # Not at a hyphen: "first-digit" and "chi-square" stay whole on one line.
+            *["  " + line for line in textwrap.wrap(SMALL_SAMPLE_NOTE, 100, break_on_hyphens=False)],
             "  Non-conformity is a pointer, not a finding.",
             "",
             "Limitations",

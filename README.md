@@ -196,9 +196,9 @@ large population because its power grows with sample size, which is precisely wh
 Nigrini's MAD bands are the standard in audit practice and why LedgerLens reports both.
 Quoting only the chi-square here would produce a confident, wrong conclusion.
 
-Below 300 amounts no band is given at all ("insufficient data", with a note ahead of the
-figures): a small sample drawn from the law itself still reads high by chance.
-`docs/tuning.md` has the simulation.
+Below 300 amounts no band is given at all ("insufficient data", with a note saying why): a
+small sample drawn from the law itself still reads high by chance. 300 is Nigrini's minimum,
+not a point where the bands start to work; `docs/tuning.md` has the simulation by size.
 
 ## The second tier, and what it is actually worth
 
