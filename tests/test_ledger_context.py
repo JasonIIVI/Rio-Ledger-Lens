@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from ledgerlens.benford import SMALL_SAMPLE_NOTE
+from ledgerlens.benford import SMALL_SAMPLE_NOTE, benford_test
 from ledgerlens.generate import generate_ledger
 from ledgerlens.ingest import ledger_identity, prepare
 from ledgerlens.ledger_context import ENV_LEDGER, ENV_REVIEW_DB, LedgerContext, records
@@ -231,7 +231,7 @@ def test_benford_names_a_short_segment_among_sufficient_ones_and_only_then(ledge
     for by in ("account_code", "created_by", "source"):
         assert list(context.benford(by=by)) == ["scope", "min_n", "segments", "caveat"], by
     population = context.benford()
-    assert "small_sample" not in population and list(population)[-2:] == ["scope", "caveat"]
+    assert list(population) == list(benford_test(ledger["abs_amount"])) + ["scope", "caveat"]
 
 
 def test_from_env_reads_the_paths(monkeypatch):

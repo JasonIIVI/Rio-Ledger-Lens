@@ -197,8 +197,9 @@ Below 300 amounts no conformity band is given. `benford_test` reads "insufficien
 and one note (`benford.SMALL_SAMPLE_NOTE`) comes ahead of the figures whenever a test falls
 short: on the CLI, on the dashboard's Benford tab, and as the first key of the context
 layer's result, which the MCP tool returns. The workpaper's Methodology section states it.
-MAD and chi-square are still shown as computed; below about 110 amounts the chi-square
-approximation itself does not hold (a leading 9 is expected fewer than five times).
+MAD and chi-square are still shown as computed. By the usual rule for chi-square (every
+expected count at least five) its approximation does not hold below about 110 amounts
+either, where a leading 9 is expected fewer than five times.
 
 300 is Nigrini's suggested minimum (he gives 300–500), not a point where the bands start
 to work. Amounts drawn from Benford's law itself, by size, read as follows (the share of

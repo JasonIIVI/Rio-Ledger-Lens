@@ -568,10 +568,11 @@ and the MCP SDK, so the two together cover every code path CI will see.
   description. Segments are still kept by their rows (`min_n`), so a kept one can be short,
   and the CLI's "had at least N entries" now says rows. On the default ledger every Benford
   output at the default settings is byte for byte what it was, and the workpaper cell for
-  cell apart from the two Methodology lines. What changes there is a segment kept by a
+  cell apart from the two Methodology lines it adds (the rows after them move down two). What
+  changes there is a segment kept by a
   lowered `min_n`: at 16 to 299 (and over MCP, whose floor is 50) account 6200's 299
-  amounts no longer read "marginal conformity", and at 15 or below seven smaller accounts
-  lose "nonconformity" too. 300 is Nigrini's minimum, not a calibration: drawn from the law
+  amounts no longer read "marginal conformity", and below 16 the accounts with fewer rows
+  lose "nonconformity" as `min_n` reaches them (6900 at 15, seven of them at 1). 300 is Nigrini's minimum, not a calibration: drawn from the law
   itself, 297 and 300 amounts both read "nonconformity" about a third of the time, 1,000
   almost never (`docs/tuning.md`'s table, each size seeded, recomputed by
   `tests/test_tuning.py`). No baseline for a ledger's own n is built. A review (one
@@ -579,14 +580,19 @@ and the MCP SDK, so the two together cover every code path CI will see.
   push: the docs had called the floor justified, the context layer put the note after the
   figures, "the one changed reading" missed `--min-n` 15 and below, the mixed and the
   all-sufficient segment tables were untested (four surviving mutants), and two figures were
-  unpinned. Version unchanged (1.2.0).
+  unpinned. A verification of those fixes (one agent) found no regression and four lows, also
+  fixed: the smaller accounts change one by one as `min_n` falls (the sentence had all seven
+  at 15), the chi-square aside now names its rule, the population's keys are pinned whole,
+  and the note's first place is pinned at the MCP layer. The note still says the test is not
+  meaningful below 300, which is true; it does not say 300 is enough, and `docs/tuning.md`
+  says it is not. Version unchanged (1.2.0).
 - **Next** — the maintainer's call. Open, unchanged: re-recording `docs/demo.gif` (its model
   scores predate v1.0.0's tie fix), week 5's model train/test split (a re-measurement under
   rule 10), week 7 (multi-line entries change the default ledger, so every figure, the eval
   cases and the held-out measurement are re-measured), and week 8 (PyPI). Also open: a
   Benford baseline for a ledger's own size (the bands still depend on n above 300), and a
   note's model as the API response reports it (`save_narrative` stores the one requested).
-- 1230 tests on 3.9 (1 skipped) / 1244 on 3.12 (the fourteen MCP tests need 3.10+), ruff clean.
+- 1230 tests on 3.9 (1 skipped) / 1245 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
