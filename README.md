@@ -196,6 +196,10 @@ large population because its power grows with sample size, which is precisely wh
 Nigrini's MAD bands are the standard in audit practice and why LedgerLens reports both.
 Quoting only the chi-square here would produce a confident, wrong conclusion.
 
+Below 300 amounts no band is given at all ("insufficient data", with a note ahead of the
+figures): a small sample drawn from the law itself still reads high by chance.
+`docs/tuning.md` has the simulation.
+
 ## The second tier, and what it is actually worth
 
 Week 2 added an Isolation Forest over 16 engineered per-entry features. No feature encodes a
