@@ -446,8 +446,9 @@ def response_model(response) -> str:
     decision points at a note that must say truthfully which model wrote it. A
     response that names none is refused rather than filed under the requested
     id, which would be the very claim this avoids. The API's schema requires the
-    field, but the SDK does not check a response against its types, so a missing,
-    null or non-text value arrives here as it was sent.
+    field, but the client built here does not check a response against its types
+    (the SDK's strict validation is off by default), so a missing, null or
+    non-text value arrives here as it was sent.
     """
     model = getattr(response, "model", None)
     if model is None or (isinstance(model, str) and not model.strip()):
@@ -459,8 +460,9 @@ def response_model(response) -> str:
         raise NarrativeError(
             f"the response's model is {type(model).__name__}, not text; the note was not kept"
         )
-    # Visible by the test an approver's name is held to (``summary.one_line``'s):
-    # a filler drawn blank or a doubled space would show as another model's name.
+    # Visible by the test an approver's name is held to (``isprintable()`` and
+    # ``summary.one_line``'s), so a change to that rule changes this one: a filler
+    # drawn blank or a doubled space would show as another model's name.
     if not _visible(model) or len(model) > MAX_MODEL_LENGTH:
         raise NarrativeError(
             f"the response named its model as {ascii(model[:MAX_MODEL_LENGTH])}"

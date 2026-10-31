@@ -203,10 +203,11 @@ def test_a_response_that_names_no_model_is_an_error_here_and_nothing_is_stored(
     assert ReviewStore(db, identity).get_narrative(picked) is None
 
 
-def test_a_refusal_that_quotes_the_response_is_drawn_inert(
+def test_a_refusal_that_quotes_the_response_forms_no_markdown(
         data_dir, tmp_path, identity, monkeypatch, llm):
     """st.error draws markdown, and ascii() leaves ASCII markup as it is: an image
-    named as the model would be fetched when the error is drawn."""
+    named as the model would be fetched when the error is drawn. md() escapes it, as
+    it does the note's prose (a bare URL is still linked there too)."""
     _narrating_with(monkeypatch, [llm.response(model=" ![x](http://127.0.0.1:9/x.png)")], llm)
     db = tmp_path / "review.sqlite"
     at = _run(data_dir, db, reviewer="ana")

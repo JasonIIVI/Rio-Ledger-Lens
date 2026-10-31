@@ -592,16 +592,19 @@ and the MCP SDK, so the two together cover every code path CI will see.
   snapshot an alias resolves to was filed under the alias. `narrate.response_model` reads the
   response's own `model`; `Narrator.write_note` returns the note and it; `narrate` (through
   `NarrationResult.models`, `model` staying the request) and the dashboard's write button store
-  it. A response that names no model, or one that is not text, is not one line of visible text
-  by `summary.one_line`'s test (`controls._visible`, the test an approver's name is held to:
-  surrounding or doubled whitespace, a control, a filler drawn blank) or is over
-  `MAX_MODEL_LENGTH` (100) characters, is refused (`NarrativeError`, the value quoted through
-  `ascii`): that entry fails and the batch goes on, the dashboard shows an error (through `md`,
-  since `st.error` draws markdown and the message can quote the response), nothing is stored,
-  and the batch's usage line still counts the request. It is never filed under the request,
+  it. A response that names no model, or one that is not text, or is not one line of visible
+  text by `controls._visible` (the test an approver's name is held to: `str.isprintable()` and
+  `summary.one_line`'s test, so no surrounding or doubled whitespace, control, unassigned or
+  format character, or filler drawn blank), or is over `MAX_MODEL_LENGTH` (100) characters, is
+  refused (`NarrativeError`, the value quoted through `ascii`): that entry fails and the batch
+  goes on, the dashboard shows an error (through `md`, since `st.error` draws markdown and the
+  message can quote the response, so no markdown construct forms; a bare URL is still linked,
+  as in the note's prose), nothing is stored, and the batch's usage line still counts the
+  request. It is never filed under the request,
   which would be the claim removed. The API's schema requires `model` and the SDK types it a str
-  (anthropic 0.125.0 and 1.8.0), but the SDK does not check a response against its types, so a
-  missing, null or non-text value reaches the check as sent. `NarrationResult.describe()` prints
+  (anthropic 0.125.0 and 1.8.0), but the client `Narrator` builds does not check a response
+  against its types (the SDK's strict validation is off by default), so a missing, null or
+  non-text value reaches the check as sent. `NarrationResult.describe()` prints
   the old line byte for byte when every response named the model requested, and otherwise the
   request and each reported model with its count, by name. `narrate_one` does not read the
   model, so the eval is unchanged: its rows record the model requested (what the runs directory
@@ -617,10 +620,16 @@ and the MCP SDK, so the two together cover every code path CI will see.
   MCP tools show no model, `isprintable()` admitting a filler drawn blank or a doubled space
   (now `controls._visible`), a refusal quoting the response drawn as markdown in the dashboard
   (an image named as the model would have been fetched; `validate`'s quoted confidence took the
-  same path), the reason given for refusing (the SDK does not check its types), the
+  same path), the reason given for refusing (the SDK does not check its types by default), the
   `generated_at` sentence, and two mutants that survived (a trailing space, `repr` for
-  `ascii`). The new tests fail on the reviewed commit, and nine mutants of the fixes are killed
-  by named tests. Version unchanged (1.2.0).
+  `ascii`). Four of the new tests (a doubled space, the filler, the blank braille cell, the
+  escaped refusal) fail on the reviewed commit on assertions, the others pin mutants, and nine
+  mutants of the fixes are killed by named tests. A verification of those fixes (one agent)
+  found no value stored wrong, crash or regression, and five lows, fixed: the characters only
+  the `isprintable()` half of `_visible` refuses (unassigned and some format characters, which
+  `one_line` keeps) were untested for a model or an approver (two mutants survived), and four
+  wordings (the refusal as "inert", the failing tests, the test's description, the SDK's
+  default). Version unchanged (1.2.0).
 - **Next** — the maintainer's call. Open, unchanged: re-recording `docs/demo.gif` (its model
   scores predate v1.0.0's tie fix), week 5's model train/test split (a re-measurement under
   rule 10), week 7 (multi-line entries change the default ledger, so every figure, the eval
@@ -629,7 +638,7 @@ and the MCP SDK, so the two together cover every code path CI will see.
   model and time in the workpaper and the MCP entry rows (the explain tool returns both); the
   prompt a note answered (a review-schema change); and the reported model on new eval rows (a
   row-shape change).
-- 1258 tests on 3.9 (1 skipped) / 1273 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
+- 1263 tests on 3.9 (1 skipped) / 1278 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth

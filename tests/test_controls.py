@@ -205,6 +205,15 @@ def test_an_approver_holding_a_character_no_reader_sees_is_refused(code):
         Controls(("controller", "m" + chr(code) + "chen"), 10_000)
 
 
+@pytest.mark.parametrize("code", [0x0378, 0x0600, 0x13430],
+                         ids=["unassigned", "number-sign", "hieroglyph-joiner"])
+def test_an_approver_holding_a_character_one_line_keeps_but_no_reader_sees_is_refused(code):
+    # summary.one_line keeps these; only the isprintable() half of _visible refuses them.
+    assert summary.one_line("m" + chr(code)) == "m" + chr(code)
+    with pytest.raises(ControlsError, match="not one line of visible text"):
+        Controls(("controller", "m" + chr(code) + "chen"), 10_000)
+
+
 def test_visibility_is_one_lines_test_for_every_ascii_character():
     # The ASCII shortcut in _visible has to agree with summary.one_line, which it skips.
     for code in range(128):

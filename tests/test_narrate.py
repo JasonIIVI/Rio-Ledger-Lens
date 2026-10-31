@@ -207,9 +207,12 @@ CYRILLIC = "".join(chr(c) for c in (0x43A, 0x43B, 0x43E, 0x434))  # printable, n
     chr(0x202E) + REPORTED,          # right-to-left override
     chr(0x1B) + "[31m" + REPORTED,   # a terminal escape
     " " + CYRILLIC,                  # repr() would print it as it is; ascii() escapes it
+    REPORTED + chr(0x378),           # unassigned: one_line keeps it, isprintable() does not
+    REPORTED + chr(0x13430),         # a format character one_line keeps, likewise
     "c" * 101,
 ], ids=["leading-space", "trailing-space", "trailing-newline", "line-break", "double-space",
-        "zero-width", "filler", "braille-blank", "bidi", "escape", "non-ascii", "101-chars"])
+        "zero-width", "filler", "braille-blank", "bidi", "escape", "non-ascii", "unassigned",
+        "format", "101-chars"])
 def test_a_model_that_is_not_one_line_of_visible_text_is_refused(model, llm):
     narrator = Narrator(client=llm.client([llm.response(model=model)]))
     with pytest.raises(NarrativeError, match="not one line of visible text") as caught:
