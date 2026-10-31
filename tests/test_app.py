@@ -203,6 +203,23 @@ def test_a_response_that_names_no_model_is_an_error_here_and_nothing_is_stored(
     assert ReviewStore(db, identity).get_narrative(picked) is None
 
 
+def test_a_refusal_that_quotes_the_response_is_drawn_inert(
+        data_dir, tmp_path, identity, monkeypatch, llm):
+    """st.error draws markdown, and ascii() leaves ASCII markup as it is: an image
+    named as the model would be fetched when the error is drawn."""
+    _narrating_with(monkeypatch, [llm.response(model=" ![x](http://127.0.0.1:9/x.png)")], llm)
+    db = tmp_path / "review.sqlite"
+    at = _run(data_dir, db, reviewer="ana")
+    picked = at.selectbox(key="picked").value
+
+    _click_write(at)
+
+    errors = [e.value for e in at.error]
+    assert any("\\!\\[x\\]\\(http\\:\\/\\/127\\.0\\.0\\.1\\:9\\/x\\.png\\)" in e for e in errors)
+    assert not any("![x](" in e for e in errors)
+    assert ReviewStore(db, identity).get_narrative(picked) is None
+
+
 def test_dashboard_shows_recorded_decisions_and_the_note_they_saw(data_dir, tmp_path, identity):
     db = tmp_path / "review.sqlite"
     first = _run(data_dir, db, reviewer="ana")

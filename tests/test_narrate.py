@@ -192,15 +192,24 @@ def test_a_model_that_is_not_text_is_refused(llm):
         narrator.write_note("p")
 
 
+CYRILLIC = "".join(chr(c) for c in (0x43A, 0x43B, 0x43E, 0x434))  # printable, not ASCII
+
+
 @pytest.mark.parametrize("model", [
     " " + REPORTED,
+    REPORTED + " ",
     REPORTED + chr(10),
     "claude" + chr(10) + "opus",
+    "claude  opus",                  # a doubled space
     REPORTED + chr(0x200B),          # zero-width space
+    REPORTED + chr(0x3164),          # a filler drawn blank, which isprintable() accepts
+    REPORTED + chr(0x2800),          # a blank braille cell, likewise
     chr(0x202E) + REPORTED,          # right-to-left override
     chr(0x1B) + "[31m" + REPORTED,   # a terminal escape
+    " " + CYRILLIC,                  # repr() would print it as it is; ascii() escapes it
     "c" * 101,
-], ids=["leading-space", "trailing-newline", "line-break", "zero-width", "bidi", "escape", "101-chars"])
+], ids=["leading-space", "trailing-space", "trailing-newline", "line-break", "double-space",
+        "zero-width", "filler", "braille-blank", "bidi", "escape", "non-ascii", "101-chars"])
 def test_a_model_that_is_not_one_line_of_visible_text_is_refused(model, llm):
     narrator = Narrator(client=llm.client([llm.response(model=model)]))
     with pytest.raises(NarrativeError, match="not one line of visible text") as caught:
@@ -208,10 +217,11 @@ def test_a_model_that_is_not_one_line_of_visible_text_is_refused(model, llm):
     assert str(caught.value).isascii()  # quoted through ascii(), so the refusal is inert too
 
 
-def test_a_model_of_exactly_the_longest_length_is_kept(llm):
-    longest = "c" * narrate.MAX_MODEL_LENGTH
-    _, model = Narrator(client=llm.client([llm.response(model=longest)])).write_note("p")
-    assert model == longest
+@pytest.mark.parametrize("model", ["c" * narrate.MAX_MODEL_LENGTH, "claude " + CYRILLIC],
+                         ids=["longest", "visible-non-ascii"])
+def test_a_model_of_one_line_of_visible_text_is_kept_as_named(model, llm):
+    _, kept = Narrator(client=llm.client([llm.response(model=model)])).write_note("p")
+    assert kept == model
 
 
 def test_narrate_one_does_not_read_the_model(llm):

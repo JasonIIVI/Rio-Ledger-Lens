@@ -328,8 +328,9 @@ beside the entry, takes the decision, and shows the history; the workpaper and t
 show the note the reviewer actually saw, the latest decision per exception, a flag when a newer
 note exists than the one they read, and whether the note shown is one the reviewer saw at all.
 Each note records the model the API response named, which for an alias can be a dated snapshot
-rather than the id requested, and the dashboard shows it under the note (notes written before
-that change record the id requested: [docs/limitations.md](docs/limitations.md)).
+rather than the id requested; the dashboard shows it under the note, and the MCP server's
+explain tool returns it with each version (notes written before that change record the id
+requested: [docs/limitations.md](docs/limitations.md)).
 
 **One database, many ledgers.** Every note and decision is filed under the ledger it belongs
 to: a CSV is identified by a canonical sha256 of its rows, a QuickBooks pull by its realm id

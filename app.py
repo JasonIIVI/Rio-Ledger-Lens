@@ -379,7 +379,8 @@ with tab_queue:
                 )
                 st.rerun()
             except NarrativeError as exc:
-                st.error(str(exc))
+                # st.error draws markdown, and the message can quote the response.
+                st.error(md(str(exc)))
         if not has_key:
             st.caption("Set ANTHROPIC_API_KEY in .env to write narratives from here, or run "
                        "`ledgerlens narrate` from the command line.")
