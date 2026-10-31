@@ -18,6 +18,7 @@ from ledgerlens.narrate import (
     REQUIRED_KEYS,
     SYSTEM_PROMPT,
     TEST_REFERENCE,
+    NarrationResult,
     NarrativeError,
     Narrator,
     Usage,
@@ -147,6 +148,78 @@ def test_usage_is_accumulated_from_the_api_not_estimated(llm):
     assert "read from cache" in narrator.usage.describe()
 
 
+# --- the model that wrote the note -------------------------------------------
+
+#: What an alias can resolve to: a dated snapshot, not the id the request named.
+REPORTED = "claude-opus-5-20261001"
+
+
+def _without_model(llm):
+    response = llm.response()
+    del response.model
+    return response
+
+
+def test_a_note_carries_the_model_the_response_names_not_the_one_requested(llm):
+    client = llm.client([llm.response(model=REPORTED)])
+    narrator = Narrator(client=client)
+
+    narrative, model = narrator.write_note("p")
+
+    assert client.calls[0]["model"] == DEFAULT_MODEL
+    assert model == REPORTED
+    assert narrative["summary"] == llm.good["summary"]
+    assert narrator.model == DEFAULT_MODEL  # what is requested next time is unchanged
+
+
+@pytest.mark.parametrize("model", [None, "", "   "], ids=["none", "empty", "spaces"])
+def test_a_response_that_names_no_model_is_refused_not_filed_under_the_request(model, llm):
+    narrator = Narrator(client=llm.client([llm.response(model=model)]))
+    with pytest.raises(NarrativeError, match="named no model"):
+        narrator.write_note("p")
+    assert narrator.usage.requests == 1  # the request was made, and is counted
+
+
+def test_a_response_without_a_model_attribute_is_refused(llm):
+    narrator = Narrator(client=llm.client([_without_model(llm)]))
+    with pytest.raises(NarrativeError, match="named no model"):
+        narrator.write_note("p")
+
+
+def test_a_model_that_is_not_text_is_refused(llm):
+    narrator = Narrator(client=llm.client([llm.response(model=123)]))
+    with pytest.raises(NarrativeError, match="model is int, not text"):
+        narrator.write_note("p")
+
+
+@pytest.mark.parametrize("model", [
+    " " + REPORTED,
+    REPORTED + chr(10),
+    "claude" + chr(10) + "opus",
+    REPORTED + chr(0x200B),          # zero-width space
+    chr(0x202E) + REPORTED,          # right-to-left override
+    chr(0x1B) + "[31m" + REPORTED,   # a terminal escape
+    "c" * 101,
+], ids=["leading-space", "trailing-newline", "line-break", "zero-width", "bidi", "escape", "101-chars"])
+def test_a_model_that_is_not_one_line_of_visible_text_is_refused(model, llm):
+    narrator = Narrator(client=llm.client([llm.response(model=model)]))
+    with pytest.raises(NarrativeError, match="not one line of visible text") as caught:
+        narrator.write_note("p")
+    assert str(caught.value).isascii()  # quoted through ascii(), so the refusal is inert too
+
+
+def test_a_model_of_exactly_the_longest_length_is_kept(llm):
+    longest = "c" * narrate.MAX_MODEL_LENGTH
+    _, model = Narrator(client=llm.client([llm.response(model=longest)])).write_note("p")
+    assert model == longest
+
+
+def test_narrate_one_does_not_read_the_model(llm):
+    """The eval narrates through narrate_one and records the model it requested:
+    a response that names no model grades as it always has."""
+    assert Narrator(client=llm.client([_without_model(llm)])).narrate_one("p")["confidence"] == "high"
+
+
 def test_usage_tolerates_missing_counters():
     usage = Usage()
     usage.add(SimpleNamespace(input_tokens=10, output_tokens=None))
@@ -239,6 +312,47 @@ def test_narrate_records_a_failure_without_stopping_the_batch(ledger, scored, ll
     assert "max_tokens" in next(iter(result.failures.values()))
     assert result.usage.requests == 3  # the truncated call still cost tokens
     assert "2/3" in result.describe()
+
+
+def test_narrate_files_each_note_under_the_model_its_response_names(ledger, scored, llm):
+    entries, flags = scored
+    client = llm.client([llm.response(model=REPORTED), _without_model(llm), llm.response()])
+
+    result = Narrator(client=client).narrate(entries, flags, ledger, top_n=3)
+
+    asked = [call["messages"][0]["content"].split()[2] for call in client.calls]
+    assert result.models == {asked[0]: REPORTED, asked[2]: "claude-opus-5"}
+    assert list(result.narratives) == [asked[0], asked[2]]
+    assert "named no model" in result.failures[asked[1]]  # that entry only; the batch went on
+    assert result.model == DEFAULT_MODEL  # the id requested, kept apart
+
+
+def _result(models, failed=1, model=DEFAULT_MODEL):
+    narratives = {entry_id: {} for entry_id in models}
+    failures = {f"JE-F{i}": "x" for i in range(failed)}
+    return NarrationResult(narratives=narratives, failures=failures, model=model,
+                           entries_requested=len(narratives) + failed, models=dict(models))
+
+
+def test_the_summary_line_is_unchanged_when_every_response_names_the_model_requested():
+    same = _result({"JE-1": DEFAULT_MODEL, "JE-2": DEFAULT_MODEL})
+    assert same.describe().splitlines()[0] == "Narrated 2/3 entries with claude-opus-5 (1 failed)"
+    nothing = _result({}, failed=3)
+    assert nothing.describe().splitlines()[0] == "Narrated 0/3 entries with claude-opus-5 (3 failed)"
+
+
+def test_the_summary_line_names_the_request_and_every_model_the_responses_named():
+    later = "claude-opus-5-20261101"
+    result = _result({"JE-1": later, "JE-2": REPORTED, "JE-3": REPORTED, "JE-4": DEFAULT_MODEL})
+    assert result.describe().splitlines()[0] == (
+        "Narrated 4/5 entries (1 failed): requested claude-opus-5; the responses name "
+        "claude-opus-5 (1), claude-opus-5-20261001 (2), claude-opus-5-20261101 (1)"
+    )
+    one = _result({"JE-1": REPORTED}, failed=0)
+    assert one.describe().splitlines()[0] == (
+        "Narrated 1/1 entries (0 failed): requested claude-opus-5; the responses name "
+        "claude-opus-5-20261001 (1)"
+    )
 
 
 def test_auth_failure_aborts_the_batch_instead_of_failing_every_entry(ledger, scored, llm):

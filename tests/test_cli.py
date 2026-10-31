@@ -282,6 +282,33 @@ def test_narrate_caches_narratives_and_moves_on_next_time(tmp_path, capsys, monk
     assert len(client.calls) == 12
 
 
+def test_narrate_stores_the_model_each_response_names_not_the_one_requested(
+        tmp_path, capsys, monkeypatch, llm):
+    from ledgerlens import cli
+    from ledgerlens.ingest import ledger_identity, load_csv
+    from ledgerlens.narrate import Narrator
+    from ledgerlens.review import ReviewStore
+
+    monkeypatch.chdir(tmp_path)
+    main(["generate", "--start", "2024-01-01", "--end", "2024-06-30",
+          "--out-dir", str(tmp_path)])
+    capsys.readouterr()
+    dated = "claude-opus-5-20261001"
+    client = llm.client([llm.response(model=dated), llm.response()])
+    monkeypatch.setattr(cli, "Narrator", lambda **kw: Narrator(client=client, **kw))
+    db, ledger = tmp_path / "review.sqlite", str(tmp_path / "ledger.csv")
+
+    assert main(["narrate", ledger, "--db", str(db), "--top", "2", "--no-model"]) == 0
+
+    assert [call["model"] for call in client.calls] == ["claude-opus-5", "claude-opus-5"]
+    first, second = (call["messages"][0]["content"].split()[2] for call in client.calls)
+    store = ReviewStore(db, ledger_identity(load_csv(ledger), ledger))
+    assert store.get_narrative(first)["model"] == dated
+    assert store.get_narrative(second)["model"] == "claude-opus-5"
+    assert ("Narrated 2/2 entries (0 failed): requested claude-opus-5; the responses name "
+            f"claude-opus-5 (1), {dated} (1)") in capsys.readouterr().out
+
+
 def test_report_attaches_an_existing_review_db_only(tmp_path, capsys):
     from ledgerlens.ingest import ledger_identity, load_csv
     from ledgerlens.review import Decision, ReviewStore

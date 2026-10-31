@@ -637,7 +637,9 @@ def test_run_eval_records_resumes_and_keeps_plumbing_out_of_the_score(sample, sc
     third = Case(others.iloc[1]["entry_id"], "z", others.iloc[1]["tests_fired"], "w")
 
     client = llm.client([
-        llm.response(oracle(case, entry, lines)),
+        # A response that names a dated snapshot: the row still records the model
+        # requested, which the runs directory and --regrade are keyed on.
+        llm.response(oracle(case, entry, lines), model="claude-opus-5-20261001"),
         llm.response(stop_reason="max_tokens"),
         RuntimeError("socket closed"),
     ])
@@ -647,7 +649,7 @@ def test_run_eval_records_resumes_and_keeps_plumbing_out_of_the_score(sample, sc
     assert [r["status"] for r in rows] == ["ok", "invalid", "error"]
     assert rows[0]["metrics"]["passed"] is True
     assert rows[0]["usage"]["input_tokens"] == 300
-    assert rows[0]["model"] == narrator.model
+    assert rows[0]["model"] == narrator.model == "claude-opus-5"
     assert rows[1]["metrics"]["schema_valid"] is False
     assert rows[2]["metrics"] is None
     assert len((tmp_path / "results.jsonl").read_text().splitlines()) == 2

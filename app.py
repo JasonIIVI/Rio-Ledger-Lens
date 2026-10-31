@@ -372,8 +372,8 @@ with tab_queue:
                 with st.spinner("Asking Claude..."):
                     narrator = Narrator()
                     entry, entry_flags, entry_lines = entry_context(combined, flags, df, picked)
-                    fresh = narrator.narrate_one(build_prompt(entry, entry_flags, entry_lines))
-                note_id = store.save_narrative(picked, fresh, model=narrator.model)
+                    fresh, model = narrator.write_note(build_prompt(entry, entry_flags, entry_lines))
+                note_id = store.save_narrative(picked, fresh, model=model)
                 st.session_state["flash"] = (
                     f"Narrative written as note #{note_id} ({narrator.usage.describe()})."
                 )

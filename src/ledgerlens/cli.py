@@ -726,7 +726,7 @@ def cmd_narrate(args: argparse.Namespace) -> int:
         return 1
 
     for entry_id, narrative in result.narratives.items():
-        store.save_narrative(entry_id, narrative, model=result.model)
+        store.save_narrative(entry_id, narrative, model=result.models[entry_id])
 
     print(result.describe())
     if skip:
