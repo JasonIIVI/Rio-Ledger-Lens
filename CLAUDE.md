@@ -586,13 +586,35 @@ and the MCP SDK, so the two together cover every code path CI will see.
   and the note's first place is pinned at the MCP layer. The note still says the test is not
   meaningful below 300, which is true; it does not say 300 is enough, and `docs/tuning.md`
   says it is not. Version unchanged (1.2.0).
+- **The model a note records (`fix/reported-model`, after v1.2.0)** — a saved note's `model`
+  was the id the request named (`DEFAULT_MODEL` or `--model`): `narrate` stored
+  `NarrationResult.model` and the dashboard `narrator.model`, so a note written by the dated
+  snapshot an alias resolves to was filed under the alias. `narrate.response_model` reads the
+  response's own `model`; `Narrator.write_note` returns the note and it; `narrate` (through
+  `NarrationResult.models`, `model` staying the request) and the dashboard's write button store
+  it. A response that names no model, or one that is not text, has surrounding whitespace, holds
+  a character `str.isprintable()` rejects or is over `MAX_MODEL_LENGTH` (100) characters, is
+  refused (`NarrativeError`, the value quoted through `ascii`): that entry fails and the batch
+  goes on, the dashboard shows an error, nothing is stored and the usage is still counted. It is
+  never filed under the request, which would be the claim removed; the SDK's `Message.model` is
+  a required str (anthropic 0.125.0 and 1.8.0). `NarrationResult.describe()` prints the old line
+  byte for byte when every response named the model requested, and otherwise the request and
+  each reported model with its count, by name. `narrate_one` does not read the model, so the
+  eval is unchanged: its rows record the model requested (what the runs directory and
+  `--regrade` key on), and the grader hash, the committed rows and `cases.json` do not move. No
+  schema change, so notes stored earlier keep the model requested and only their
+  `generated_at` tells them apart (`docs/limitations.md`). Only the dashboard shows a note's
+  model (its caption); the workpaper and the MCP tools show neither its model nor its time.
+  The CLI and dashboard tests fail on `2b113b7` on assertions; twenty mutants are killed by
+  named tests. Version unchanged (1.2.0).
 - **Next** — the maintainer's call. Open, unchanged: re-recording `docs/demo.gif` (its model
   scores predate v1.0.0's tie fix), week 5's model train/test split (a re-measurement under
   rule 10), week 7 (multi-line entries change the default ledger, so every figure, the eval
   cases and the held-out measurement are re-measured), and week 8 (PyPI). Also open: a
-  Benford baseline for a ledger's own size (the bands still depend on n above 300), and a
-  note's model as the API response reports it (`save_narrative` stores the one requested).
-- 1230 tests on 3.9 (1 skipped) / 1245 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
+  Benford baseline for a ledger's own size (the bands still depend on n above 300); a note's
+  model and time in the workpaper and the MCP tools; the prompt a note answered (a review-schema
+  change); and the reported model on new eval rows (a row-shape change).
+- 1251 tests on 3.9 (1 skipped) / 1266 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
@@ -631,7 +653,7 @@ ledger CSV ──▶ ingest ──┼──▶ Isolation Forest ─────�
 | `evaluate.py` | precision/recall, by archetype, by test, tier comparison, model lift; `attribution` (which test caught each archetype), `budget_recall_by_archetype` / `held_out_budget` (the model's budget against chance), `sweep`; `check_labels` (labels must cover exactly the ledger's entries) and the two caveat constants |
 | `report.py` | 5-tab Excel workpaper |
 | `review.py` | append-only SQLite store keyed by ledger (`ledger_id`; schema version 4 via `PRAGMA user_version`, numbered migrations from frozen DDL): decisions and versioned narratives, enforced by triggers; `read_only()` opener; `ledgers()` / `adopt_legacy()` |
-| `narrate.py` | Claude narratives: structured-output JSON contract, cacheable system prompt, usage accounting |
+| `narrate.py` | Claude narratives: structured-output JSON contract, cacheable system prompt, usage accounting, the model each response names (`response_model`) |
 | `narrative_eval.py` | case selection (the one label reader), rubric grader (the citation stripped before numbers are counted), `case_prompt` with per-case `overrides`, runner with case-file and ledger provenance, report with grader notes, case-set notes and baseline |
 | `ledger_context.py` | read-only query layer (summary, top exceptions, explain, search, Benford, review status); opens the review DB `mode=ro`, bound to the ledger's identity; 3.9-safe |
 | `mcp_server.py` | MCP registration over `ledger_context` (v2 SDK, stdio); needs 3.10+ |
