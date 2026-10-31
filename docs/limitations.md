@@ -400,3 +400,11 @@ duplicate archetype on the default ledger.
   flagged for, and `narrate` skips an entry with a note. Recording the controls on each row
   would be a schema change; the maintainer decided on 2026-10-18 to keep it documented (the
   README says to set the controls before review starts).
+- **The model on older notes.** Before `narrate.response_model`, a note recorded the model the
+  request named, not the one the API response reported, and an alias can resolve to a dated
+  snapshot. Notes written since record the response's. No column says which a row holds (adding
+  one is a review-schema change), and a row's `generated_at` tells it only against when the
+  program writing to the store gained this change, which nothing records (a store written from
+  two checkouts can hold both kinds in any order); the rows are append-only and are not
+  rewritten. The narrative eval's rows still record the model
+  requested, the one its runs directory is named for.

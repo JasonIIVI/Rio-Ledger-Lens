@@ -152,6 +152,75 @@ def test_a_decision_with_no_note_on_screen_records_none(data_dir, tmp_path, iden
     assert history["narrative_id"].isna().all()
 
 
+def _narrating_with(monkeypatch, responses, llm):
+    """The dashboard's Narrator, given a fake client. The key only enables the button, and
+    the base URL is a closed local port: had the fake been bypassed, no request leaves here."""
+    from ledgerlens import narrate
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "not-a-real-key")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://127.0.0.1:9")
+    client = llm.client(responses)
+    real = narrate.Narrator
+    monkeypatch.setattr(narrate, "Narrator", lambda **kw: real(client=client, **kw))
+    return client
+
+
+def _click_write(at):
+    next(b for b in at.button if b.label in ("Write narrative", "Rewrite narrative")).click()
+    at.run()
+    assert not at.exception, at.exception
+
+
+def test_a_note_written_here_records_the_model_the_response_names(
+        data_dir, tmp_path, identity, monkeypatch, llm):
+    dated = "claude-opus-5-20261001"
+    client = _narrating_with(monkeypatch, [llm.response(model=dated)], llm)
+    db = tmp_path / "review.sqlite"
+    at = _run(data_dir, db, reviewer="ana")
+    picked = at.selectbox(key="picked").value
+
+    _click_write(at)
+
+    assert [call["model"] for call in client.calls] == ["claude-opus-5"]
+    assert ReviewStore(db, identity).get_narrative(picked)["model"] == dated
+    # md() escapes every ASCII punctuation character, the hyphens included.
+    assert any("Written by claude\\-opus\\-5\\-20261001 at" in c.value for c in at.caption)
+
+
+def test_a_response_that_names_no_model_is_an_error_here_and_nothing_is_stored(
+        data_dir, tmp_path, identity, monkeypatch, llm):
+    response = llm.response()
+    del response.model
+    client = _narrating_with(monkeypatch, [response], llm)
+    db = tmp_path / "review.sqlite"
+    at = _run(data_dir, db, reviewer="ana")
+    picked = at.selectbox(key="picked").value
+
+    _click_write(at)
+
+    assert len(client.calls) == 1
+    assert any("named no model" in e.value for e in at.error)
+    assert ReviewStore(db, identity).get_narrative(picked) is None
+
+
+def test_a_refusal_that_quotes_the_response_forms_no_markdown(
+        data_dir, tmp_path, identity, monkeypatch, llm):
+    """st.error draws markdown, and ascii() leaves ASCII markup as it is: an image
+    named as the model would be fetched when the error is drawn. md() escapes it, as
+    it does the note's prose (a bare URL is still linked there too)."""
+    _narrating_with(monkeypatch, [llm.response(model=" ![x](http://127.0.0.1:9/x.png)")], llm)
+    db = tmp_path / "review.sqlite"
+    at = _run(data_dir, db, reviewer="ana")
+    picked = at.selectbox(key="picked").value
+
+    _click_write(at)
+
+    errors = [e.value for e in at.error]
+    assert any("\\!\\[x\\]\\(http\\:\\/\\/127\\.0\\.0\\.1\\:9\\/x\\.png\\)" in e for e in errors)
+    assert not any("![x](" in e for e in errors)
+    assert ReviewStore(db, identity).get_narrative(picked) is None
+
+
 def test_dashboard_shows_recorded_decisions_and_the_note_they_saw(data_dir, tmp_path, identity):
     db = tmp_path / "review.sqlite"
     first = _run(data_dir, db, reviewer="ana")

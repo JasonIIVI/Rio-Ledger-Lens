@@ -586,13 +586,59 @@ and the MCP SDK, so the two together cover every code path CI will see.
   and the note's first place is pinned at the MCP layer. The note still says the test is not
   meaningful below 300, which is true; it does not say 300 is enough, and `docs/tuning.md`
   says it is not. Version unchanged (1.2.0).
+- **The model a note records (`fix/reported-model`, after v1.2.0)** — a saved note's `model`
+  was the id the request named (`DEFAULT_MODEL` or `--model`): `narrate` stored
+  `NarrationResult.model` and the dashboard `narrator.model`, so a note written by the dated
+  snapshot an alias resolves to was filed under the alias. `narrate.response_model` reads the
+  response's own `model`; `Narrator.write_note` returns the note and it; `narrate` (through
+  `NarrationResult.models`, `model` staying the request) and the dashboard's write button store
+  it. A response that names no model, or one that is not text, or is not one line of visible
+  text by `controls._visible` (the test an approver's name is held to: `str.isprintable()` and
+  `summary.one_line`'s test, so no surrounding or doubled whitespace, control, unassigned or
+  format character, or filler drawn blank), or is over `MAX_MODEL_LENGTH` (100) characters, is
+  refused (`NarrativeError`, the value quoted through `ascii`): that entry fails and the batch
+  goes on, the dashboard shows an error (through `md`, since `st.error` draws markdown and the
+  message can quote the response, so no markdown construct forms; a bare URL is still linked,
+  as in the note's prose), nothing is stored, and the batch's usage line still counts the
+  request. It is never filed under the request,
+  which would be the claim removed. The API's schema requires `model` and the SDK types it a str
+  (anthropic 0.125.0 and 1.8.0), but the client `Narrator` builds does not check a response
+  against its types (the SDK's strict validation is off by default), so a missing, null or
+  non-text value reaches the check as sent. `NarrationResult.describe()` prints
+  the old line byte for byte when every response named the model requested, and otherwise the
+  request and each reported model with its count, by name. `narrate_one` does not read the
+  model, so the eval is unchanged: its rows record the model requested (what the runs directory
+  and `--regrade` key on), and the grader hash, the committed rows and `cases.json` do not move.
+  No schema change, so notes stored earlier keep the model requested and nothing in a row says
+  which it holds: its `generated_at` does only against when the program writing to the store
+  gained this change, which nothing records (`docs/limitations.md`). The dashboard shows a
+  note's model in its caption, and the MCP server's `ledgerlens_explain_entry` returns it with
+  `generated_at` for the latest note and every earlier version (the whole row); the workpaper
+  and the MCP entry rows show neither. The CLI and dashboard tests fail on `2b113b7` on
+  assertions; twenty mutants are killed by named tests. A review (one reviewer, scratch clone)
+  found no value stored wrong, crash or regression; fixed before the push: the claim that the
+  MCP tools show no model, `isprintable()` admitting a filler drawn blank or a doubled space
+  (now `controls._visible`), a refusal quoting the response drawn as markdown in the dashboard
+  (an image named as the model would have been fetched; `validate`'s quoted confidence took the
+  same path), the reason given for refusing (the SDK does not check its types by default), the
+  `generated_at` sentence, and two mutants that survived (a trailing space, `repr` for
+  `ascii`). Four of the new tests (a doubled space, the filler, the blank braille cell, the
+  escaped refusal) fail on the reviewed commit on assertions, the others pin mutants, and nine
+  mutants of the fixes are killed by named tests. A verification of those fixes (one agent)
+  found no value stored wrong, crash or regression, and five lows, fixed: the characters only
+  the `isprintable()` half of `_visible` refuses (unassigned and some format characters, which
+  `one_line` keeps) were untested for a model or an approver (two mutants survived), and four
+  wordings (the refusal as "inert", the failing tests, the test's description, the SDK's
+  default). Version unchanged (1.2.0).
 - **Next** — the maintainer's call. Open, unchanged: re-recording `docs/demo.gif` (its model
   scores predate v1.0.0's tie fix), week 5's model train/test split (a re-measurement under
   rule 10), week 7 (multi-line entries change the default ledger, so every figure, the eval
   cases and the held-out measurement are re-measured), and week 8 (PyPI). Also open: a
-  Benford baseline for a ledger's own size (the bands still depend on n above 300), and a
-  note's model as the API response reports it (`save_narrative` stores the one requested).
-- 1230 tests on 3.9 (1 skipped) / 1245 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
+  Benford baseline for a ledger's own size (the bands still depend on n above 300); a note's
+  model and time in the workpaper and the MCP entry rows (the explain tool returns both); the
+  prompt a note answered (a review-schema change); and the reported model on new eval rows (a
+  row-shape change).
+- 1263 tests on 3.9 (1 skipped) / 1278 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
@@ -631,7 +677,7 @@ ledger CSV ──▶ ingest ──┼──▶ Isolation Forest ─────�
 | `evaluate.py` | precision/recall, by archetype, by test, tier comparison, model lift; `attribution` (which test caught each archetype), `budget_recall_by_archetype` / `held_out_budget` (the model's budget against chance), `sweep`; `check_labels` (labels must cover exactly the ledger's entries) and the two caveat constants |
 | `report.py` | 5-tab Excel workpaper |
 | `review.py` | append-only SQLite store keyed by ledger (`ledger_id`; schema version 4 via `PRAGMA user_version`, numbered migrations from frozen DDL): decisions and versioned narratives, enforced by triggers; `read_only()` opener; `ledgers()` / `adopt_legacy()` |
-| `narrate.py` | Claude narratives: structured-output JSON contract, cacheable system prompt, usage accounting |
+| `narrate.py` | Claude narratives: structured-output JSON contract, cacheable system prompt, usage accounting, the model each response names (`response_model`) |
 | `narrative_eval.py` | case selection (the one label reader), rubric grader (the citation stripped before numbers are counted), `case_prompt` with per-case `overrides`, runner with case-file and ledger provenance, report with grader notes, case-set notes and baseline |
 | `ledger_context.py` | read-only query layer (summary, top exceptions, explain, search, Benford, review status); opens the review DB `mode=ro`, bound to the ledger's identity; 3.9-safe |
 | `mcp_server.py` | MCP registration over `ledger_context` (v2 SDK, stdio); needs 3.10+ |

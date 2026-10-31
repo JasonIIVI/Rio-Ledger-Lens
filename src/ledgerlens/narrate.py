@@ -27,9 +27,12 @@ from __future__ import annotations
 
 import json
 import os
+from collections import Counter
 from dataclasses import dataclass, field
 
 import pandas as pd
+
+from .controls import _visible
 
 DEFAULT_MODEL = "claude-opus-5"
 
@@ -40,6 +43,10 @@ DEFAULT_MAX_TOKENS = 4096
 
 #: Writing a short reviewer note is not a hard reasoning task.
 DEFAULT_EFFORT = "medium"
+
+#: A model id is a few dozen characters. The one a response names is kept for good
+#: in an append-only table and shown beside the note, so anything longer is refused.
+MAX_MODEL_LENGTH = 100
 
 #: Keys every narrative must contain. A response missing any of them is rejected
 #: rather than partially used.
@@ -279,19 +286,28 @@ class Usage:
 class NarrationResult:
     narratives: dict[str, dict]
     failures: dict[str, str]
+    #: The model requested. What wrote each note is in ``models``.
     model: str
     entries_requested: int
     usage: Usage = field(default_factory=Usage)
+    #: entry_id -> the model its response named.
+    models: dict[str, str] = field(default_factory=dict)
 
     @property
     def success_rate(self) -> float:
         return len(self.narratives) / self.entries_requested if self.entries_requested else 0.0
 
     def describe(self) -> str:
-        return (
-            f"Narrated {len(self.narratives)}/{self.entries_requested} entries with {self.model} "
-            f"({len(self.failures)} failed)\n{self.usage.describe()}"
-        )
+        done = f"{len(self.narratives)}/{self.entries_requested}"
+        named = Counter(self.models.values())
+        if set(named) <= {self.model}:
+            head = f"Narrated {done} entries with {self.model} ({len(self.failures)} failed)"
+        else:
+            # Model ids are distinct, so sorting by name alone is a total order.
+            each = ", ".join(f"{name} ({count})" for name, count in sorted(named.items()))
+            head = (f"Narrated {done} entries ({len(self.failures)} failed): requested "
+                    f"{self.model}; the responses name {each}")
+        return f"{head}\n{self.usage.describe()}"
 
 
 def entry_context(
@@ -423,6 +439,39 @@ def check_stop_reason(response, max_tokens: int) -> None:
         raise NarrativeError("the request exceeded the model's context window")
 
 
+def response_model(response) -> str:
+    """The model a response says wrote it, which is what a stored note records.
+
+    Not the model requested: an alias can resolve to a dated snapshot, and a
+    decision points at a note that must say truthfully which model wrote it. A
+    response that names none is refused rather than filed under the requested
+    id, which would be the very claim this avoids. The API's schema requires the
+    field, but the client built here does not check a response against its types
+    (the SDK's strict validation is off by default), so a missing, null or
+    non-text value arrives here as it was sent.
+    """
+    model = getattr(response, "model", None)
+    if model is None or (isinstance(model, str) and not model.strip()):
+        raise NarrativeError(
+            "the response named no model, so the note could not say which model wrote it; "
+            "it was not kept"
+        )
+    if not isinstance(model, str):
+        raise NarrativeError(
+            f"the response's model is {type(model).__name__}, not text; the note was not kept"
+        )
+    # Visible by the test an approver's name is held to (``isprintable()`` and
+    # ``summary.one_line``'s), so a change to that rule changes this one: a filler
+    # drawn blank or a doubled space would show as another model's name.
+    if not _visible(model) or len(model) > MAX_MODEL_LENGTH:
+        raise NarrativeError(
+            f"the response named its model as {ascii(model[:MAX_MODEL_LENGTH])}"
+            f"{'...' if len(model) > MAX_MODEL_LENGTH else ''}, which is not one line of "
+            f"visible text of at most {MAX_MODEL_LENGTH} characters; the note was not kept"
+        )
+    return model
+
+
 def _is_auth_error(exc: BaseException) -> bool:
     # By name rather than by import: the SDK is optional at import time and the
     # client is often a test double.
@@ -495,13 +544,23 @@ class Narrator:
             "messages": [{"role": "user", "content": prompt}],
         }
 
-    def narrate_one(self, prompt: str) -> dict:
+    def _respond(self, prompt: str) -> tuple[dict, object]:
         response = self.client.messages.create(**self.request_params(prompt))
         usage = getattr(response, "usage", None)
         if usage is not None:
             self.usage.add(usage)
         check_stop_reason(response, self.max_tokens)
-        return parse_response(response_text(response))
+        return parse_response(response_text(response)), response
+
+    def narrate_one(self, prompt: str) -> dict:
+        """One note, without reading which model wrote it: the eval records the model
+        it requested, which its runs are keyed on."""
+        return self._respond(prompt)[0]
+
+    def write_note(self, prompt: str) -> tuple[dict, str]:
+        """One note to store, and the model its response names (:func:`response_model`)."""
+        narrative, response = self._respond(prompt)
+        return narrative, response_model(response)
 
     def narrate(
         self,
@@ -530,12 +589,13 @@ class Narrator:
 
         narratives: dict[str, dict] = {}
         failures: dict[str, str] = {}
+        models: dict[str, str] = {}
 
         for entry in queue.itertuples():
             entry_id = entry.entry_id
             row, entry_flags, entry_lines = entry_context(scored, flags, lines, entry_id)
             try:
-                narratives[entry_id] = self.narrate_one(
+                narratives[entry_id], models[entry_id] = self.write_note(
                     build_prompt(row, entry_flags, entry_lines)
                 )
             except Exception as exc:  # noqa: BLE001 - one bad entry must not stop the batch
@@ -550,6 +610,7 @@ class Narrator:
             model=self.model,
             entries_requested=len(queue),
             usage=self.usage,
+            models=models,
         )
 
 
