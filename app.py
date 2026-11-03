@@ -36,6 +36,13 @@ from ledgerlens.narrate import NarrativeError, Narrator, build_prompt, entry_con
 from ledgerlens.review import DECISIONS, LEGACY_LEDGER_ID, Decision, ReviewStore
 from ledgerlens.summary import code_span
 
+try:  # the llm extra: without it Narrator refuses before any request is made
+    from anthropic import APIError
+
+    _SDK_ERRORS: tuple = (APIError,)
+except ImportError:
+    _SDK_ERRORS = ()
+
 load_dotenv()
 st.set_page_config(page_title="LedgerLens", layout="wide")
 
@@ -378,10 +385,12 @@ with tab_queue:
             except NarrativeError as exc:
                 # st.error draws markdown, and the message can quote the response.
                 st.error(md(str(exc)))
-            except Exception as exc:  # noqa: BLE001 - as narrate's batch takes one entry's failure
+            except _SDK_ERRORS as exc:
                 # The SDK's own errors (a refused key, no connection, a rate limit, an
                 # overloaded API) are not NarrativeErrors. Uncaught, one stops the script here
-                # and the decision form below is not drawn. A status error quotes the body.
+                # and the decision form below is not drawn. Only these: a fault in our own
+                # reading of the reply is a traceback, not the request failing. A status
+                # error quotes the server's body.
                 st.error(md(f"The request to Claude failed, so no note was stored "
                             f"({type(exc).__name__}: {exc})"))
             if written is not None:

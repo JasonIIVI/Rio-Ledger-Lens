@@ -200,6 +200,8 @@ def test_a_response_that_names_no_model_is_an_error_here_and_nothing_is_stored(
 
     assert len(client.calls) == 1
     assert any("named no model" in e.value for e in at.error)
+    # the request was made and answered: a refusal of its reply is not the request failing
+    assert not any("request to Claude failed" in e.value for e in at.error)
     assert ReviewStore(db, identity).get_narrative(picked) is None
 
 
@@ -252,7 +254,9 @@ def test_an_sdk_error_is_a_message_here_and_the_page_goes_on(
 
     assert len(client.calls) == 1
     errors = [e.value for e in at.error]
-    assert any(type(error).__name__ in e and "no note was stored" in e for e in errors), errors
+    # md() escapes the comma, as it does every ASCII punctuation character
+    sentence = "The request to Claude failed\\, so no note was stored"
+    assert any(e.startswith(sentence) and type(error).__name__ in e for e in errors), errors
     assert ReviewStore(db, identity).get_narrative(picked) is None
     assert not _record_button(at).disabled  # the rest of the page was drawn
     if kind == "refused-key":
@@ -263,9 +267,10 @@ def test_an_sdk_error_is_a_message_here_and_the_page_goes_on(
 
 def test_a_store_error_after_the_request_is_not_called_the_request_failing(
         data_dir, tmp_path, identity, monkeypatch, llm):
-    """Only the request is inside the try: a note that came back and then could not be
+    """Only the SDK's errors are caught: a note that came back and then could not be
     saved was requested (and paid for). A store error is not handled here at all, on
-    saving a note or recording a decision; it only must not read as the request's."""
+    saving a note or recording a decision (CLAUDE.md's Next): it is Streamlit's
+    traceback, never a request that failed, and never a note said to be written."""
     client = _narrating_with(monkeypatch, [llm.response()], llm)
     db = tmp_path / "review.sqlite"
     at = _run(data_dir, db, reviewer="ana")
@@ -280,7 +285,33 @@ def test_a_store_error_after_the_request_is_not_called_the_request_failing(
 
     assert len(client.calls) == 1
     assert ReviewStore(db, identity).get_narrative(picked) is None  # the save was refused
+    assert at.exception and "database is locked" in at.exception[0].message
+    assert not any("no note was stored" in e.value for e in at.error)
+    assert not at.success
+
+
+def test_a_fault_in_reading_the_reply_is_not_called_the_request_failing(
+        data_dir, tmp_path, identity, monkeypatch, llm):
+    """A fault in our own code after the request was answered (here, reading the reply's
+    model) is a traceback, as a bug should be: the request did not fail."""
+    from ledgerlens import narrate
+
+    client = _narrating_with(monkeypatch, [llm.response()], llm)
+    db = tmp_path / "review.sqlite"
+    at = _run(data_dir, db, reviewer="ana")
+    picked = at.selectbox(key="picked").value
+
+    def faulty(response):
+        raise TypeError("a fault in our own code")
+
+    monkeypatch.setattr(narrate, "response_model", faulty)
+    next(b for b in at.button if b.label == "Write narrative").click()
+    at.run()
+
+    assert len(client.calls) == 1
+    assert at.exception and "a fault in our own code" in at.exception[0].message
     assert not any("request to Claude failed" in e.value for e in at.error)
+    assert ReviewStore(db, identity).get_narrative(picked) is None
 
 
 def test_dashboard_shows_recorded_decisions_and_the_note_they_saw(data_dir, tmp_path, identity):

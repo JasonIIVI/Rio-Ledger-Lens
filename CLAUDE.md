@@ -635,18 +635,20 @@ and the MCP SDK, so the two together cover every code path CI will see.
   (`anthropic.APIError`: a refused key, no connection, a timeout, a rate limit, an overloaded
   API) escaped the script: Streamlit drew its traceback and stopped the run, and the decision
   form and history below the note were not drawn. (The CLI never had this: `Narrator.narrate`
-  takes any exception from one entry as that entry's failure line.) Only the request is inside
-  the `try` now: a `NarrativeError` is shown as before, any other exception from it as
-  "The request to Claude failed, so no note was stored (Type: text)" through `md()` (a status
-  error quotes the server's body; the SDK builds that text from the status code and the body,
-  never the request's headers, so the key is not shown: read in anthropic 0.125.0, 1.8.0 and
-  2.3.0). The prompt is built before the `try` (a fault in our code is still a traceback), and
-  the save, the flash and `st.rerun()` run after it, only when a note came back, so a refused
-  save is never worded as a failed request. Tests raise real SDK errors
-  (`APIConnectionError`, a 401 whose body quotes markdown) and fail on `246fbe9` at the
-  script's exception; a refused save is pinned too. CI installs no Streamlit (`.[dev,llm,mcp]`),
-  so `test_app.py` is skipped on every CI job: the dashboard's tests run in the two venvs
-  only. Version unchanged (1.2.0).
+  takes an exception from one entry as that entry's failure line, and a refused key on the
+  first request as one `error:` line.) Now a `NarrativeError` is shown as before, and the SDK's
+  own errors (`anthropic.APIError`, imported if the `llm` extra is installed) as "The request
+  to Claude failed, so no note was stored (Type: text)" through `md()`: a status error quotes
+  the server's body. The SDK builds that text from the status code and the body, never the
+  request's headers (read in anthropic 0.125.0, 1.8.0 and 2.3.0), so the key appears only if a
+  server's own body quotes it. Nothing else is caught: a fault in our own code, building the
+  prompt or reading the reply, and a refused save are still Streamlit's traceback, never
+  worded as a failed request (the save, the flash and `st.rerun()` run after the `try`, only
+  when a note came back). Tests raise real SDK errors (`APIConnectionError`, a 401 whose body
+  quotes markdown) and fail on `246fbe9` at the script's exception; a fault reading the reply,
+  a refused save and a refused reply are each pinned as not the request failing. CI installs
+  no Streamlit (`.[dev,llm,mcp]`), so `test_app.py` is skipped on every CI job: the
+  dashboard's tests run in the two venvs only. Version unchanged (1.2.0).
 - **Next** — the maintainer's call. Open, unchanged: re-recording `docs/demo.gif` (its model
   scores predate v1.0.0's tie fix), week 5's model train/test split (a re-measurement under
   rule 10), week 7 (multi-line entries change the default ledger, so every figure, the eval
@@ -656,7 +658,7 @@ and the MCP SDK, so the two together cover every code path CI will see.
   prompt a note answered (a review-schema change); the reported model on new eval rows (a
   row-shape change); and a store error in the dashboard (saving a note, recording a decision),
   still Streamlit's traceback.
-- 1266 tests on 3.9 (1 skipped) / 1281 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
+- 1267 tests on 3.9 (1 skipped) / 1282 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
