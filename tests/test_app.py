@@ -221,6 +221,46 @@ def test_a_refusal_that_quotes_the_response_forms_no_markdown(
     assert ReviewStore(db, identity).get_narrative(picked) is None
 
 
+def _sdk_error(kind):
+    """A real SDK error, built on the HTTP library the SDK's own types use (httpx under
+    anthropic 0.x, httpx2 under 1.x). The 401's body quotes markdown, as a server's may."""
+    anthropic = pytest.importorskip("anthropic")
+    from anthropic import _exceptions
+
+    http = getattr(_exceptions, "httpx2", None) or _exceptions.httpx
+    request = http.Request("POST", "http://127.0.0.1:9/v1/messages")
+    if kind == "no-connection":
+        return anthropic.APIConnectionError(request=request)
+    body = {"type": "error",
+            "error": {"type": "authentication_error", "message": "![x](http://127.0.0.1:9/x.png)"}}
+    return anthropic.AuthenticationError(f"Error code: 401 - {body}",
+                                         response=http.Response(401, request=request), body=body)
+
+
+@pytest.mark.parametrize("kind", ["no-connection", "refused-key"])
+def test_an_sdk_error_is_a_message_here_and_the_page_goes_on(
+        data_dir, tmp_path, identity, monkeypatch, llm, kind):
+    """The SDK's errors are not NarrativeErrors. Uncaught, one drew Streamlit's traceback and
+    stopped the run there, so the decision form below the note was not drawn."""
+    error = _sdk_error(kind)
+    client = _narrating_with(monkeypatch, [error], llm)
+    db = tmp_path / "review.sqlite"
+    at = _run(data_dir, db, reviewer="ana")
+    picked = at.selectbox(key="picked").value
+
+    _click_write(at)  # asserts the script raised nothing
+
+    assert len(client.calls) == 1
+    errors = [e.value for e in at.error]
+    assert any(type(error).__name__ in e and "no note was stored" in e for e in errors), errors
+    assert ReviewStore(db, identity).get_narrative(picked) is None
+    assert not _record_button(at).disabled  # the rest of the page was drawn
+    if kind == "refused-key":
+        # st.error draws markdown, and a status error quotes the server's body.
+        assert any("\\!\\[x\\]\\(http\\:\\/\\/127\\.0\\.0\\.1\\:9\\/x\\.png\\)" in e for e in errors)
+        assert not any("![x](" in e for e in errors)
+
+
 def test_dashboard_shows_recorded_decisions_and_the_note_they_saw(data_dir, tmp_path, identity):
     db = tmp_path / "review.sqlite"
     first = _run(data_dir, db, reviewer="ana")
