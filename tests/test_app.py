@@ -10,6 +10,7 @@ import re
 import shutil
 import sqlite3
 import string
+import sys
 from pathlib import Path
 
 import pytest
@@ -185,6 +186,7 @@ def test_a_note_written_here_records_the_model_the_response_names(
     assert ReviewStore(db, identity).get_narrative(picked)["model"] == dated
     # md() escapes every ASCII punctuation character, the hyphens included.
     assert any("Written by claude\\-opus\\-5\\-20261001 at" in c.value for c in at.caption)
+    assert any(s.value.startswith("Narrative written as note #") for s in at.success)
 
 
 def test_a_response_that_names_no_model_is_an_error_here_and_nothing_is_stored(
@@ -312,6 +314,43 @@ def test_a_fault_in_reading_the_reply_is_not_called_the_request_failing(
     assert at.exception and "a fault in our own code" in at.exception[0].message
     assert not any("request to Claude failed" in e.value for e in at.error)
     assert ReviewStore(db, identity).get_narrative(picked) is None
+
+
+def test_the_page_does_not_import_the_sdk_until_a_note_is_asked_for(data_dir, tmp_path, monkeypatch):
+    """The SDK reads its own settings (ANTHROPIC_LOG) when it is first imported, and the
+    page loads .env after its imports: imported on load, it would miss a setting there."""
+    monkeypatch.delitem(sys.modules, "anthropic", raising=False)
+    _run(data_dir, tmp_path / "review.sqlite", reviewer="ana")
+    assert "anthropic" not in sys.modules
+
+
+def test_without_the_sdk_the_button_says_so_and_the_page_goes_on(
+        data_dir, tmp_path, identity, monkeypatch):
+    monkeypatch.setitem(sys.modules, "anthropic", None)  # import fails, as if not installed
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "not-a-real-key")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://127.0.0.1:9")
+    db = tmp_path / "review.sqlite"
+    at = _run(data_dir, db, reviewer="ana")
+    picked = at.selectbox(key="picked").value
+
+    _click_write(at)  # asserts the script raised nothing
+
+    assert any("package is required" in e.value for e in at.error)
+    assert ReviewStore(db, identity).get_narrative(picked) is None
+    assert not _record_button(at).disabled
+
+
+def test_without_the_sdk_nothing_else_is_caught(data_dir, tmp_path, monkeypatch, llm):
+    """Without the SDK there are no SDK errors to catch: any other exception from a
+    request (here a client's own) is a traceback, never "the request failed"."""
+    _narrating_with(monkeypatch, [ConnectionError("no route to the API")], llm)
+    monkeypatch.setitem(sys.modules, "anthropic", None)
+    at = _run(data_dir, tmp_path / "review.sqlite", reviewer="ana")
+    next(b for b in at.button if b.label == "Write narrative").click()
+    at.run()
+
+    assert at.exception and "no route to the API" in at.exception[0].message
+    assert not any("request to Claude failed" in e.value for e in at.error)
 
 
 def test_dashboard_shows_recorded_decisions_and_the_note_they_saw(data_dir, tmp_path, identity):

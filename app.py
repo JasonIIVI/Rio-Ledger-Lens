@@ -36,13 +36,6 @@ from ledgerlens.narrate import NarrativeError, Narrator, build_prompt, entry_con
 from ledgerlens.review import DECISIONS, LEGACY_LEDGER_ID, Decision, ReviewStore
 from ledgerlens.summary import code_span
 
-try:  # the llm extra: without it Narrator refuses before any request is made
-    from anthropic import APIError
-
-    _SDK_ERRORS: tuple = (APIError,)
-except ImportError:
-    _SDK_ERRORS = ()
-
 load_dotenv()
 st.set_page_config(page_title="LedgerLens", layout="wide")
 
@@ -120,6 +113,17 @@ def md(text: str) -> str:
     nothing is redrawn; checked in a browser on both Streamlit versions.
     """
     return _MARKUP.sub(r"\\\1", str(text))
+
+
+def _sdk_errors() -> tuple:
+    """The SDK's request errors, or none without the llm extra (Narrator then refuses
+    before any request). Looked up when one is raised, not on load: the SDK reads its
+    own settings (ANTHROPIC_LOG) when first imported, and .env is loaded after the imports."""
+    try:
+        from anthropic import APIError
+    except ImportError:
+        return ()
+    return (APIError,)
 
 
 def _ratio(value: float, defined: bool) -> str:
@@ -385,7 +389,7 @@ with tab_queue:
             except NarrativeError as exc:
                 # st.error draws markdown, and the message can quote the response.
                 st.error(md(str(exc)))
-            except _SDK_ERRORS as exc:
+            except _sdk_errors() as exc:  # evaluated only once an exception reaches it
                 # The SDK's own errors (a refused key, no connection, a rate limit, an
                 # overloaded API) are not NarrativeErrors. Uncaught, one stops the script here
                 # and the decision form below is not drawn. Only these: a fault in our own
