@@ -261,6 +261,28 @@ def test_an_sdk_error_is_a_message_here_and_the_page_goes_on(
         assert not any("![x](" in e for e in errors)
 
 
+def test_a_store_error_after_the_request_is_not_called_the_request_failing(
+        data_dir, tmp_path, identity, monkeypatch, llm):
+    """Only the request is inside the try: a note that came back and then could not be
+    saved was requested (and paid for). A store error is not handled here at all, on
+    saving a note or recording a decision; it only must not read as the request's."""
+    client = _narrating_with(monkeypatch, [llm.response()], llm)
+    db = tmp_path / "review.sqlite"
+    at = _run(data_dir, db, reviewer="ana")
+    picked = at.selectbox(key="picked").value
+
+    def locked(self, *args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(ReviewStore, "save_narrative", locked)
+    next(b for b in at.button if b.label == "Write narrative").click()
+    at.run()
+
+    assert len(client.calls) == 1
+    assert ReviewStore(db, identity).get_narrative(picked) is None  # the save was refused
+    assert not any("request to Claude failed" in e.value for e in at.error)
+
+
 def test_dashboard_shows_recorded_decisions_and_the_note_they_saw(data_dir, tmp_path, identity):
     db = tmp_path / "review.sqlite"
     first = _run(data_dir, db, reviewer="ana")
