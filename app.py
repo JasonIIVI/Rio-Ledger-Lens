@@ -115,6 +115,17 @@ def md(text: str) -> str:
     return _MARKUP.sub(r"\\\1", str(text))
 
 
+def _sdk_errors() -> tuple:
+    """The SDK's request errors, or none without the llm extra (Narrator then refuses
+    before any request). Looked up when one is raised, not on load: the SDK reads its
+    own settings (ANTHROPIC_LOG) when first imported, and .env is loaded after the imports."""
+    try:
+        from anthropic import APIError
+    except ImportError:
+        return ()
+    return (APIError,)
+
+
 def _ratio(value: float, defined: bool) -> str:
     """A ratio over nothing is not a figure, as ``summary`` says too."""
     return f"{value:.3f}" if defined else "undefined"
@@ -368,19 +379,31 @@ with tab_queue:
         if st.button("Rewrite narrative" if narrative else "Write narrative",
                      disabled=not has_key or writes_blocked,
                      key=f"narrate-{entry_key}") and not writes_blocked:
+            narrator = Narrator()
+            entry, entry_flags, entry_lines = entry_context(combined, flags, df, picked)
+            prompt = build_prompt(entry, entry_flags, entry_lines)
+            written = None
             try:
                 with st.spinner("Asking Claude..."):
-                    narrator = Narrator()
-                    entry, entry_flags, entry_lines = entry_context(combined, flags, df, picked)
-                    fresh, model = narrator.write_note(build_prompt(entry, entry_flags, entry_lines))
+                    written = narrator.write_note(prompt)
+            except NarrativeError as exc:
+                # st.error draws markdown, and the message can quote the response.
+                st.error(md(str(exc)))
+            except _sdk_errors() as exc:  # evaluated only once an exception reaches it
+                # The SDK's own errors (a refused key, no connection, a rate limit, an
+                # overloaded API) are not NarrativeErrors. Uncaught, one stops the script here
+                # and the decision form below is not drawn. Only these: a fault in our own
+                # reading of the reply is a traceback, not the request failing. A status
+                # error quotes the server's body.
+                st.error(md(f"The request to Claude failed, so no note was stored "
+                            f"({type(exc).__name__}: {exc})"))
+            if written is not None:
+                fresh, model = written
                 note_id = store.save_narrative(picked, fresh, model=model)
                 st.session_state["flash"] = (
                     f"Narrative written as note #{note_id} ({narrator.usage.describe()})."
                 )
                 st.rerun()
-            except NarrativeError as exc:
-                # st.error draws markdown, and the message can quote the response.
-                st.error(md(str(exc)))
         if not has_key:
             st.caption("Set ANTHROPIC_API_KEY in .env to write narratives from here, or run "
                        "`ledgerlens narrate` from the command line.")

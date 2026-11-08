@@ -10,6 +10,7 @@ import re
 import shutil
 import sqlite3
 import string
+import sys
 from pathlib import Path
 
 import pytest
@@ -185,6 +186,7 @@ def test_a_note_written_here_records_the_model_the_response_names(
     assert ReviewStore(db, identity).get_narrative(picked)["model"] == dated
     # md() escapes every ASCII punctuation character, the hyphens included.
     assert any("Written by claude\\-opus\\-5\\-20261001 at" in c.value for c in at.caption)
+    assert any(s.value.startswith("Narrative written as note #") for s in at.success)
 
 
 def test_a_response_that_names_no_model_is_an_error_here_and_nothing_is_stored(
@@ -200,6 +202,8 @@ def test_a_response_that_names_no_model_is_an_error_here_and_nothing_is_stored(
 
     assert len(client.calls) == 1
     assert any("named no model" in e.value for e in at.error)
+    # the request was made and answered: a refusal of its reply is not the request failing
+    assert not any("request to Claude failed" in e.value for e in at.error)
     assert ReviewStore(db, identity).get_narrative(picked) is None
 
 
@@ -219,6 +223,134 @@ def test_a_refusal_that_quotes_the_response_forms_no_markdown(
     assert any("\\!\\[x\\]\\(http\\:\\/\\/127\\.0\\.0\\.1\\:9\\/x\\.png\\)" in e for e in errors)
     assert not any("![x](" in e for e in errors)
     assert ReviewStore(db, identity).get_narrative(picked) is None
+
+
+def _sdk_error(kind):
+    """A real SDK error, built on the HTTP library the SDK's own types use (httpx under
+    anthropic 0.x, httpx2 under 1.x). The 401's body quotes markdown, as a server's may."""
+    anthropic = pytest.importorskip("anthropic")
+    from anthropic import _exceptions
+
+    http = getattr(_exceptions, "httpx2", None) or _exceptions.httpx
+    request = http.Request("POST", "http://127.0.0.1:9/v1/messages")
+    if kind == "no-connection":
+        return anthropic.APIConnectionError(request=request)
+    body = {"type": "error",
+            "error": {"type": "authentication_error", "message": "![x](http://127.0.0.1:9/x.png)"}}
+    return anthropic.AuthenticationError(f"Error code: 401 - {body}",
+                                         response=http.Response(401, request=request), body=body)
+
+
+@pytest.mark.parametrize("kind", ["no-connection", "refused-key"])
+def test_an_sdk_error_is_a_message_here_and_the_page_goes_on(
+        data_dir, tmp_path, identity, monkeypatch, llm, kind):
+    """The SDK's errors are not NarrativeErrors. Uncaught, one drew Streamlit's traceback and
+    stopped the run there, so the decision form below the note was not drawn."""
+    error = _sdk_error(kind)
+    client = _narrating_with(monkeypatch, [error], llm)
+    db = tmp_path / "review.sqlite"
+    at = _run(data_dir, db, reviewer="ana")
+    picked = at.selectbox(key="picked").value
+
+    _click_write(at)  # asserts the script raised nothing
+
+    assert len(client.calls) == 1
+    errors = [e.value for e in at.error]
+    # md() escapes the comma, as it does every ASCII punctuation character
+    sentence = "The request to Claude failed\\, so no note was stored"
+    assert any(e.startswith(sentence) and type(error).__name__ in e for e in errors), errors
+    assert ReviewStore(db, identity).get_narrative(picked) is None
+    assert not _record_button(at).disabled  # the rest of the page was drawn
+    if kind == "refused-key":
+        # st.error draws markdown, and a status error quotes the server's body.
+        assert any("\\!\\[x\\]\\(http\\:\\/\\/127\\.0\\.0\\.1\\:9\\/x\\.png\\)" in e for e in errors)
+        assert not any("![x](" in e for e in errors)
+
+
+def test_a_store_error_after_the_request_is_not_called_the_request_failing(
+        data_dir, tmp_path, identity, monkeypatch, llm):
+    """Only the SDK's errors are caught: a note that came back and then could not be
+    saved was requested (and paid for). A store error is not handled here at all, on
+    saving a note or recording a decision (CLAUDE.md's Next): it is Streamlit's
+    traceback, never a request that failed, and never a note said to be written."""
+    client = _narrating_with(monkeypatch, [llm.response()], llm)
+    db = tmp_path / "review.sqlite"
+    at = _run(data_dir, db, reviewer="ana")
+    picked = at.selectbox(key="picked").value
+
+    def locked(self, *args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(ReviewStore, "save_narrative", locked)
+    next(b for b in at.button if b.label == "Write narrative").click()
+    at.run()
+
+    assert len(client.calls) == 1
+    assert ReviewStore(db, identity).get_narrative(picked) is None  # the save was refused
+    assert at.exception and "database is locked" in at.exception[0].message
+    assert not any("no note was stored" in e.value for e in at.error)
+    assert not at.success
+
+
+def test_a_fault_in_reading_the_reply_is_not_called_the_request_failing(
+        data_dir, tmp_path, identity, monkeypatch, llm):
+    """A fault in our own code after the request was answered (here, reading the reply's
+    model) is a traceback, as a bug should be: the request did not fail."""
+    from ledgerlens import narrate
+
+    client = _narrating_with(monkeypatch, [llm.response()], llm)
+    db = tmp_path / "review.sqlite"
+    at = _run(data_dir, db, reviewer="ana")
+    picked = at.selectbox(key="picked").value
+
+    def faulty(response):
+        raise TypeError("a fault in our own code")
+
+    monkeypatch.setattr(narrate, "response_model", faulty)
+    next(b for b in at.button if b.label == "Write narrative").click()
+    at.run()
+
+    assert len(client.calls) == 1
+    assert at.exception and "a fault in our own code" in at.exception[0].message
+    assert not any("request to Claude failed" in e.value for e in at.error)
+    assert ReviewStore(db, identity).get_narrative(picked) is None
+
+
+def test_the_page_does_not_import_the_sdk_until_a_note_is_asked_for(data_dir, tmp_path, monkeypatch):
+    """The SDK reads its own settings (ANTHROPIC_LOG) when it is first imported, and the
+    page loads .env after its imports: imported on load, it would miss a setting there."""
+    monkeypatch.delitem(sys.modules, "anthropic", raising=False)
+    _run(data_dir, tmp_path / "review.sqlite", reviewer="ana")
+    assert "anthropic" not in sys.modules
+
+
+def test_without_the_sdk_the_button_says_so_and_the_page_goes_on(
+        data_dir, tmp_path, identity, monkeypatch):
+    monkeypatch.setitem(sys.modules, "anthropic", None)  # import fails, as if not installed
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "not-a-real-key")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://127.0.0.1:9")
+    db = tmp_path / "review.sqlite"
+    at = _run(data_dir, db, reviewer="ana")
+    picked = at.selectbox(key="picked").value
+
+    _click_write(at)  # asserts the script raised nothing
+
+    assert any("package is required" in e.value for e in at.error)
+    assert ReviewStore(db, identity).get_narrative(picked) is None
+    assert not _record_button(at).disabled
+
+
+def test_without_the_sdk_nothing_else_is_caught(data_dir, tmp_path, monkeypatch, llm):
+    """Without the SDK there are no SDK errors to catch: any other exception from a
+    request (here a client's own) is a traceback, never "the request failed"."""
+    _narrating_with(monkeypatch, [ConnectionError("no route to the API")], llm)
+    monkeypatch.setitem(sys.modules, "anthropic", None)
+    at = _run(data_dir, tmp_path / "review.sqlite", reviewer="ana")
+    next(b for b in at.button if b.label == "Write narrative").click()
+    at.run()
+
+    assert at.exception and "no route to the API" in at.exception[0].message
+    assert not any("request to Claude failed" in e.value for e in at.error)
 
 
 def test_dashboard_shows_recorded_decisions_and_the_note_they_saw(data_dir, tmp_path, identity):
