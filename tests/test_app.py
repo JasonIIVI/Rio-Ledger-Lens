@@ -267,29 +267,180 @@ def test_an_sdk_error_is_a_message_here_and_the_page_goes_on(
         assert not any("![x](" in e for e in errors)
 
 
-def test_a_store_error_after_the_request_is_not_called_the_request_failing(
+NOT_STORED = ("The note came back but could not be stored\\, so it is not shown and no "
+              "decision can point to it \\(")  # md() escapes every ASCII punctuation character
+
+
+def _refusing(monkeypatch, method, error):
+    def refuse(self, *args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(ReviewStore, method, refuse)
+
+
+def _assert_the_note_was_not_stored(at, db, identity, picked, client):
+    assert len(client.calls) == 1  # requested and answered: it counts
+    assert ReviewStore(db, identity).get_narrative(picked) is None
+    errors = [e.value for e in at.error]
+    assert any(e.startswith(NOT_STORED) for e in errors), errors
+    assert any("This request still counts\\: 1 request\\(s\\)" in e for e in errors), errors
+    assert not any("request to Claude failed" in e for e in errors)  # the request did not fail
+    # Not drawn: a decision must point at advice on record, and this note is not. (The
+    # note's summary opens like the page's own JET-05 reason, so its close is looked for.)
+    assert not any("two days before period close" in m.value for m in at.markdown)
+    assert not any("Evidence to request" in m.value for m in at.markdown)
+    assert not any("note #" in c.value for c in at.caption)
+    assert any("No narrative yet for this entry." in c.value for c in at.caption)
+    assert not at.success
+    assert not _record_button(at).disabled  # the rest of the page was drawn
+    at.run()  # and nothing said it was written, on the next run either
+    assert not at.exception, at.exception
+    assert not at.success
+    assert ReviewStore(db, identity).get_narrative(picked) is None
+
+
+def test_a_note_the_store_refuses_is_a_message_and_is_not_drawn(
         data_dir, tmp_path, identity, monkeypatch, llm):
-    """Only the SDK's errors are caught: a note that came back and then could not be
-    saved was requested (and paid for). A store error is not handled here at all, on
-    saving a note or recording a decision (CLAUDE.md's Next): it is Streamlit's
-    traceback, never a request that failed, and never a note said to be written."""
+    """A note that came back and then could not be saved was requested (and paid for).
+    Uncaught, the store's error drew Streamlit's traceback, stopped the page there, and the
+    note was gone without a word. The message quotes the error, so it goes through md()."""
     client = _narrating_with(monkeypatch, [llm.response()], llm)
     db = tmp_path / "review.sqlite"
     at = _run(data_dir, db, reviewer="ana")
     picked = at.selectbox(key="picked").value
+    _refusing(monkeypatch, "save_narrative",
+              sqlite3.OperationalError("database is locked ![x](http://127.0.0.1:9/x.png)"))
 
-    def locked(self, *args, **kwargs):
-        raise sqlite3.OperationalError("database is locked")
+    _click_write(at)  # asserts the script raised nothing
 
-    monkeypatch.setattr(ReviewStore, "save_narrative", locked)
+    errors = [e.value for e in at.error]
+    assert any(e.startswith(NOT_STORED + "OperationalError\\: database is locked "
+                            "\\!\\[x\\]\\(http\\:\\/\\/127\\.0\\.0\\.1\\:9\\/x\\.png\\)\\)\\.")
+               for e in errors), errors
+    assert not any("![x](" in e for e in errors)
+    _assert_the_note_was_not_stored(at, db, identity, picked, client)
+
+
+def _read_only(db):
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("root writes to a read-only file")
+    db.chmod(0o444)
+
+
+def test_a_read_only_review_database_refuses_the_note_with_a_message(
+        data_dir, tmp_path, identity, monkeypatch, llm):
+    """The same, from SQLite itself: the file became read-only after the page loaded."""
+    client = _narrating_with(monkeypatch, [llm.response()], llm)
+    db = tmp_path / "review.sqlite"
+    at = _run(data_dir, db, reviewer="ana")
+    picked = at.selectbox(key="picked").value
+    _read_only(db)
+
+    _click_write(at)  # asserts the script raised nothing
+
+    errors = [e.value for e in at.error]
+    assert any(e.startswith(NOT_STORED + "OperationalError\\: attempt to write a readonly database")
+               for e in errors), errors
+    _assert_the_note_was_not_stored(at, db, identity, picked, client)
+
+
+def test_a_fault_in_saving_that_is_not_the_store_s_is_still_a_traceback(
+        data_dir, tmp_path, identity, monkeypatch, llm):
+    """Only the store's errors are caught: a fault in our own code is a traceback, as a bug
+    should be, and never worded as a refused save or a failed request."""
+    _narrating_with(monkeypatch, [llm.response()], llm)
+    db = tmp_path / "review.sqlite"
+    at = _run(data_dir, db, reviewer="ana")
+    picked = at.selectbox(key="picked").value
+    _refusing(monkeypatch, "save_narrative", TypeError("a fault in our own code"))
     next(b for b in at.button if b.label == "Write narrative").click()
     at.run()
 
-    assert len(client.calls) == 1
-    assert ReviewStore(db, identity).get_narrative(picked) is None  # the save was refused
-    assert at.exception and "database is locked" in at.exception[0].message
-    assert not any("no note was stored" in e.value for e in at.error)
+    assert at.exception and "a fault in our own code" in at.exception[0].message
+    assert not any("could not be stored" in e.value for e in at.error)
+    assert not any("request to Claude failed" in e.value for e in at.error)
     assert not at.success
+    assert ReviewStore(db, identity).get_narrative(picked) is None
+
+
+NOT_RECORDED = "The decision was not recorded \\(OperationalError\\: "
+
+
+def _assert_not_recorded_and_the_draft_kept(at, db, identity, picked, reason):
+    errors = [e.value for e in at.error]
+    assert any(e == NOT_RECORDED + reason + "\\)\\. What you typed is kept\\: record it again\\."
+               for e in errors), errors
+    assert ReviewStore(db, identity).history(picked).empty
+    assert not at.success
+    assert not any("just recorded" in w.value for w in at.warning)
+    for _ in range(2):  # kept in this run, and on the next one
+        assert at.text_area(key=f"note-{_entry_key(at)}").value == "checked the purchase order"
+        assert at.radio(key=f"choice-{_entry_key(at)}").value == "escalate"
+        at.run()
+        assert not at.exception, at.exception
+    assert not at.success
+
+
+def _assert_the_retry_records_it(at, db, identity, picked):
+    _click_record(at)  # the untouched draft: not refused as the decision "just recorded"
+    assert not any("just recorded" in w.value for w in at.warning)
+    history = ReviewStore(db, identity).history(picked)
+    assert history["decision"].tolist() == ["escalate"]
+    assert history["note"].tolist() == ["checked the purchase order"]
+    assert any(s.value == "Recorded: escalate by ana." for s in at.success)
+    assert at.text_area(key=f"note-{_entry_key(at)}").value == ""  # cleared only now
+
+
+def test_a_decision_the_store_refuses_is_a_message_and_a_retry_records_it(
+        data_dir, tmp_path, identity, monkeypatch):
+    """Uncaught, the store's error drew Streamlit's traceback and stopped the page. Nothing
+    that marks the decision done may be set when it was not recorded: the draft would be
+    cleared, and the retry refused as a duplicate of a decision that does not exist."""
+    db = tmp_path / "review.sqlite"
+    at = _run(data_dir, db, reviewer="ana")
+    picked = at.selectbox(key="picked").value
+    real = ReviewStore.record
+    _refusing(monkeypatch, "record", sqlite3.OperationalError("database is locked"))
+
+    _submit(at, "Escalate", "checked the purchase order")  # asserts the script raised nothing
+
+    _assert_not_recorded_and_the_draft_kept(at, db, identity, picked, "database is locked")
+    monkeypatch.setattr(ReviewStore, "record", real)
+    _assert_the_retry_records_it(at, db, identity, picked)
+
+
+def test_a_read_only_review_database_refuses_a_decision_and_keeps_the_draft(
+        data_dir, tmp_path, identity):
+    db = tmp_path / "review.sqlite"
+    at = _run(data_dir, db, reviewer="ana")
+    picked = at.selectbox(key="picked").value
+    _read_only(db)
+
+    _submit(at, "Escalate", "checked the purchase order")  # asserts the script raised nothing
+
+    _assert_not_recorded_and_the_draft_kept(
+        at, db, identity, picked, "attempt to write a readonly database")
+    db.chmod(0o644)
+    _assert_the_retry_records_it(at, db, identity, picked)
+
+
+def test_a_fault_in_recording_that_is_not_the_store_s_is_still_a_traceback(
+        data_dir, tmp_path, identity, monkeypatch):
+    """record()'s own checks raise ValueError (this form cannot reach them): a traceback,
+    never worded as the store refusing the decision."""
+    db = tmp_path / "review.sqlite"
+    at = _run(data_dir, db, reviewer="ana")
+    picked = at.selectbox(key="picked").value
+    _refusing(monkeypatch, "record", ValueError("a decision must name an entry"))
+    key = _entry_key(at)
+    at.text_area(key=f"note-{key}").set_value("fine")
+    _record_button(at).click()
+    at.run()
+
+    assert at.exception and "a decision must name an entry" in at.exception[0].message
+    assert not any("was not recorded" in e.value for e in at.error)
+    assert not at.success
+    assert ReviewStore(db, identity).history(picked).empty
 
 
 def test_a_fault_in_reading_the_reply_is_not_called_the_request_failing(

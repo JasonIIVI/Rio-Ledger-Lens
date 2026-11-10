@@ -648,7 +648,7 @@ and the MCP SDK, so the two together cover every code path CI will see.
   reply), a reply the SDK cannot parse (a 2xx whose body is not JSON raises a
   `JSONDecodeError`) and a refused save are still Streamlit's traceback, never worded as a
   failed request (the save, the flash and `st.rerun()` run after the `try`, only when a note
-  came back). Tests raise real SDK errors (`APIConnectionError`, a 401 whose body quotes
+  came back; a refused save is its own message since the store-writes bullet below). Tests raise real SDK errors (`APIConnectionError`, a 401 whose body quotes
   markdown) and fail on `246fbe9` at the script's exception; a fault reading the reply, a
   refused save and a refused reply are each pinned as not the request failing, and so are the
   page loading without importing the SDK and the button without it. CI installs
@@ -662,6 +662,28 @@ and the MCP SDK, so the two together cover every code path CI will see.
   than a matrix key, so the check names do not change; `tests/test_workflows.py` pins it. It
   lasts while GitHub keeps 24.04 runners; dropping 3.9 (end of life, but the Mac's system
   Python) is the maintainer's call. Version unchanged (1.2.0).
+- **The dashboard's store writes (`fix/dashboard-store-errors`, after v1.2.0)** — the
+  dashboard's two writes to the review database had no handling: saving a note that came back
+  (`store.save_narrative`) and "Record decision" (`store.record`). A store that refused the
+  write (locked by another writer such as the CLI's `narrate` or another tab, a read-only file,
+  one removed since the page loaded, a disk or iCloud I/O error) raised a `sqlite3.Error`,
+  Streamlit drew its traceback and stopped the page, and a refused save lost a note that had
+  been requested (and paid for) without a word. Each write now catches `sqlite3.Error` and
+  nothing else. A refused save says the note came back but could not be stored, with the
+  error's type and text and the request's usage, and the note is not drawn: a decision must
+  point at advice on record (rule 8), and this note is not. A refused decision says it was not
+  recorded and that what was typed is kept; nothing that marks it done is set (the
+  double-click guard, the flash, the draft's clearing), so the same submit records it on a
+  retry. Both messages quote the error, so they go through `md()`. `record`'s own
+  `ValueError`s (which the form cannot reach) and a fault in our own code stay Streamlit's
+  traceback. #27's test that pinned the traceback on a refused save now pins the message.
+  The tests refuse each write through a monkeypatched lock and through SQLite itself (the file
+  made read-only after the page loaded, then writable again for the retry), and check that a
+  fault that is not the store's is still a traceback. Not changed: the page's reads
+  (`get_narrative`, `history`, `summary`, `ledgers`) on a store that fails mid-session, and the
+  CLI's `narrate`, which saves only after the whole batch, so a refused save there loses the
+  notes still waiting. CI installs no Streamlit, so these tests run in the two venvs only.
+  Version unchanged (1.2.0).
 - **Next** — the maintainer's call. Open, unchanged: re-recording `docs/demo.gif` (its model
   scores predate v1.0.0's tie fix), week 5's model train/test split (a re-measurement under
   rule 10), week 7 (multi-line entries change the default ledger, so every figure, the eval
@@ -669,9 +691,10 @@ and the MCP SDK, so the two together cover every code path CI will see.
   Benford baseline for a ledger's own size (the bands still depend on n above 300); a note's
   model and time in the workpaper and the MCP entry rows (the explain tool returns both); the
   prompt a note answered (a review-schema change); the reported model on new eval rows (a
-  row-shape change); and a store error in the dashboard (saving a note, recording a decision),
-  still Streamlit's traceback.
-- 1271 tests on 3.9 (1 skipped) / 1286 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
+  row-shape change); the dashboard's reads on a store that fails mid-session (still
+  Streamlit's traceback); and the CLI's `narrate` saving only after the whole batch (a refused
+  save loses the notes still waiting).
+- 1276 tests on 3.9 (1 skipped) / 1291 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth

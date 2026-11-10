@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import re
+import sqlite3
 from pathlib import Path
 
 import pandas as pd
@@ -399,11 +400,24 @@ with tab_queue:
                             f"({type(exc).__name__}: {exc})"))
             if written is not None:
                 fresh, model = written
-                note_id = store.save_narrative(picked, fresh, model=model)
-                st.session_state["flash"] = (
-                    f"Narrative written as note #{note_id} ({narrator.usage.describe()})."
-                )
-                st.rerun()
+                try:
+                    note_id = store.save_narrative(picked, fresh, model=model)
+                except sqlite3.Error as exc:
+                    # The review database refused the write: locked by another writer (the
+                    # CLI's narrate, another tab), a read-only file, one removed since the
+                    # page loaded, a disk error. The note was requested and answered, so
+                    # this says so with the usage, but it is not drawn: a decision must
+                    # point at advice on record, and this note is not. Only the store's
+                    # errors: a fault in our own code stays a traceback.
+                    st.error(md(f"The note came back but could not be stored, so it is not "
+                                f"shown and no decision can point to it "
+                                f"({type(exc).__name__}: {exc}). This request still counts: "
+                                f"{narrator.usage.describe()}."))
+                else:
+                    st.session_state["flash"] = (
+                        f"Narrative written as note #{note_id} ({narrator.usage.describe()})."
+                    )
+                    st.rerun()
         if not has_key:
             st.caption("Set ANTHROPIC_API_KEY in .env to write narratives from here, or run "
                        "`ledgerlens narrate` from the command line.")
@@ -451,15 +465,26 @@ with tab_queue:
                 # The decision records the note that was on screen, so the
                 # workpaper can show what the reviewer read even if the note
                 # is rewritten later.
-                store.record(Decision(
+                decision = Decision(
                     entry_id=picked, decision=choice, reviewer=reviewer, note=note.strip(),
                     risk_score=float(row["risk_score"]), model_score=float(row["model_score"]),
                     narrative_id=seen_id,
-                ))
-                st.session_state["last_decision"] = signature
-                st.session_state["flash"] = f"Recorded: {choice} by {reviewer}."
-                st.session_state["clear-decision"] = entry_key
-                st.rerun()
+                )
+                try:
+                    store.record(decision)
+                except sqlite3.Error as exc:
+                    # Nothing was written (an uncommitted insert is rolled back), so
+                    # nothing that marks it done is set either: the draft stays, and the
+                    # same submit is not refused as a duplicate when it is retried.
+                    # record()'s own ValueErrors, which this form cannot reach, stay
+                    # tracebacks.
+                    st.error(md(f"The decision was not recorded ({type(exc).__name__}: {exc}). "
+                                "What you typed is kept: record it again."))
+                else:
+                    st.session_state["last_decision"] = signature
+                    st.session_state["flash"] = f"Recorded: {choice} by {reviewer}."
+                    st.session_state["clear-decision"] = entry_key
+                    st.rerun()
 
         history = store.history(picked)
         if not history.empty:
