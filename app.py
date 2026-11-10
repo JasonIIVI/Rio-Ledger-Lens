@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import re
+import sqlite3
 from pathlib import Path
 
 import pandas as pd
@@ -113,6 +114,12 @@ def md(text: str) -> str:
     nothing is redrawn; checked in a browser on both Streamlit versions.
     """
     return _MARKUP.sub(r"\\\1", str(text))
+
+
+# The driver's errors for a call it could not make (a value it cannot bind, such as a reply
+# field that is not text, which narrate.validate lets through): our fault, not the store
+# refusing a write, so a store write re-raises them as tracebacks before it catches the rest.
+_OUR_SQLITE_FAULTS = (sqlite3.ProgrammingError, sqlite3.InterfaceError)
 
 
 def _sdk_errors() -> tuple:
@@ -399,11 +406,27 @@ with tab_queue:
                             f"({type(exc).__name__}: {exc})"))
             if written is not None:
                 fresh, model = written
-                note_id = store.save_narrative(picked, fresh, model=model)
-                st.session_state["flash"] = (
-                    f"Narrative written as note #{note_id} ({narrator.usage.describe()})."
-                )
-                st.rerun()
+                try:
+                    note_id = store.save_narrative(picked, fresh, model=model)
+                except _OUR_SQLITE_FAULTS:
+                    raise
+                except sqlite3.Error as exc:
+                    # The review database refused the write: a read-only file, a lock held
+                    # past SQLite's five-second wait (a database browser in a transaction;
+                    # one insert by narrate or another tab is waited out), a file removed or
+                    # replaced while the note was being requested, a disk or iCloud error.
+                    # The note was requested and answered, so this says so with the usage,
+                    # but it is not drawn: a decision must point at advice on record, and
+                    # this note is not.
+                    st.error(md(f"The note came back but could not be stored, so it is not "
+                                f"shown and no decision can point to it "
+                                f"({type(exc).__name__}: {exc}). This request still counts: "
+                                f"{narrator.usage.describe()}."))
+                else:
+                    st.session_state["flash"] = (
+                        f"Narrative written as note #{note_id} ({narrator.usage.describe()})."
+                    )
+                    st.rerun()
         if not has_key:
             st.caption("Set ANTHROPIC_API_KEY in .env to write narratives from here, or run "
                        "`ledgerlens narrate` from the command line.")
@@ -435,7 +458,14 @@ with tab_queue:
             # A form submits once per click, and this guard absorbs a double click:
             # an append-only log should not carry an accidental duplicate.
             signature = (entry_key, choice, note.strip())
-            if st.session_state.get("last_decision") == signature:
+            if not reviewer:
+                # The button is drawn disabled without a name, but on Streamlit 1.50 a click
+                # lands when the name is cleared and the button clicked before the rerun that
+                # disables it, and record() refuses a decision with no reviewer (a traceback
+                # that stopped the page).
+                st.warning("Enter your name in the sidebar first: nothing was recorded, and "
+                           "what you typed is kept.")
+            elif st.session_state.get("last_decision") == signature:
                 st.warning("That decision was just recorded.")
             elif seen_id != latest_id:
                 # The note changed between the render the reviewer read and
@@ -451,15 +481,28 @@ with tab_queue:
                 # The decision records the note that was on screen, so the
                 # workpaper can show what the reviewer read even if the note
                 # is rewritten later.
-                store.record(Decision(
+                decision = Decision(
                     entry_id=picked, decision=choice, reviewer=reviewer, note=note.strip(),
                     risk_score=float(row["risk_score"]), model_score=float(row["model_score"]),
                     narrative_id=seen_id,
-                ))
-                st.session_state["last_decision"] = signature
-                st.session_state["flash"] = f"Recorded: {choice} by {reviewer}."
-                st.session_state["clear-decision"] = entry_key
-                st.rerun()
+                )
+                try:
+                    store.record(decision)
+                except _OUR_SQLITE_FAULTS:
+                    raise
+                except sqlite3.Error as exc:
+                    # Nothing was written (an uncommitted insert is rolled back), so
+                    # nothing that marks it done is set either: the draft stays, and the
+                    # same submit is not refused as a duplicate when it is retried.
+                    # record()'s own ValueErrors stay tracebacks: the radio gives a known
+                    # decision, the queue an entry, and a missing name is refused above.
+                    st.error(md(f"The decision was not recorded ({type(exc).__name__}: {exc}). "
+                                "What you typed is kept: record it again."))
+                else:
+                    st.session_state["last_decision"] = signature
+                    st.session_state["flash"] = f"Recorded: {choice} by {reviewer}."
+                    st.session_state["clear-decision"] = entry_key
+                    st.rerun()
 
         history = store.history(picked)
         if not history.empty:
