@@ -667,30 +667,37 @@ and the MCP SDK, so the two together cover every code path CI will see.
   dashboard's two writes to the review database had no handling: saving a note that came back
   (`store.save_narrative`) and "Record decision" (`store.record`). A store that refused the
   write raised a `sqlite3.Error`, Streamlit drew its traceback and stopped the page, and a
-  refused save lost a note that had been requested (and paid for) without a word. A refusal
-  is a read-only file, a lock held past SQLite's five-second wait (a database browser in a
+  refused save lost a note that had been requested (and paid for) without a word. A refusal is
+  a read-only file, a lock held past SQLite's five-second wait (a database browser in a
   transaction: one insert by `narrate` or another tab is waited out), a file removed or
-  replaced while the note was being requested (`no such table`, `file is not a database`),
-  or a disk or iCloud error. (A file removed between clicks is not one: every run opens the
-  store, which creates and migrates an empty file, as before.) Each write now catches the
-  store's `sqlite3.Error`s and nothing else: `ProgrammingError` and `InterfaceError`, the
-  driver's errors for a value it cannot bind, are re-raised first as our own fault (a reply
-  whose `summary` is an object gets past `narrate.validate`, which reads it through `str()`,
-  and reaches the insert). A refused save says the note came back but could not be stored,
-  with the error's type and text and the request's usage, and the note is not drawn: a
-  decision must point at advice on record (rule 8), and this note is not; on a refused
-  rewrite the stored note stays on screen and a decision records it. A refused decision says
-  it was not recorded and that what was typed is kept; nothing that marks it done is set (the
-  double-click guard, the flash, the draft's clearing), so the same submit records it on a
-  retry. Both messages quote the error, so they go through `md()`, and the page goes on past
-  them. `record`'s own `ValueError`s (which the form cannot reach) and a fault in our own code
-  stay Streamlit's traceback. #27's test that pinned the traceback on a refused save now pins
-  the message. The tests refuse each write with an `OperationalError` and a plain
-  `DatabaseError` (monkeypatched) and through SQLite itself (the file made read-only after the
-  page loaded, then writable again for the retry), bind an object from a reply, and check that
-  `TypeError`, `ValueError`, `ProgrammingError` and `InterfaceError` are still tracebacks from
-  either write; 23 mutants are killed by named tests (building the `Decision` inside the `try`
-  is equivalent). Checked in a browser on a read-only file: the message, the form and the
+  replaced while the note was being requested (`no such table`, `file is not a database`), or a
+  disk or iCloud error. (A file removed between clicks is not one: every run opens the store,
+  which creates and migrates an empty file, as before.) Each write now catches the store's
+  `sqlite3.Error`s and nothing else: `ProgrammingError` and `InterfaceError`, the driver's
+  errors for a value it cannot bind, are re-raised first as our own fault (a reply whose
+  `summary` is an object gets past `narrate.validate`, which reads it through `str()`, and
+  reaches the insert, though the request's structured-output schema asks for text). A refused
+  save says the note came back but could not be stored, with the error's type and text and the
+  request's usage, and the note is not drawn: a decision must point at advice on record (rule
+  8), and this note is not; on a refused rewrite the stored note stays on screen and a decision
+  records it. A refused decision says it was not recorded and that what was typed is kept;
+  nothing that marks it done is set (the double-click guard, the flash, the draft's clearing),
+  so the same submit records it on a retry. Both messages quote the error, so they go through
+  `md()`, and the page goes on past them, unless its next read fails too (a file removed or
+  replaced during the request: the reads are in Next). A fault in our own code stays
+  Streamlit's traceback, and so do `record`'s own `ValueError`s, with one exception found on
+  the way: on Streamlit 1.50 a click lands when the reviewer's name is cleared and the button
+  clicked before the rerun that disables it, and `record` refused the nameless decision as a
+  traceback that stopped the page (on `main` too). The submit now refuses a missing name in
+  words and keeps the draft; Streamlit 1.64 drops that click. #27's test that pinned the
+  traceback on a refused save now pins the message. The tests refuse each write with an
+  `OperationalError`, a plain `DatabaseError`, an `IntegrityError` and a `DataError`
+  (monkeypatched) and through SQLite itself (the file made read-only after the page loaded,
+  then writable again for the retry), bind an object from a reply, and check that `TypeError`,
+  `ValueError`, `ProgrammingError` and `InterfaceError` are still tracebacks from either write,
+  and click Record with the name just cleared; 26 mutants are killed by named tests (the name
+  guard's only under Streamlit 1.50, where the click lands; building the `Decision` inside the
+  `try` is equivalent). Checked in a browser on a read-only file: the message, the form and the
   draft, then the same click recording once the file was writable. Not changed: the page's
   reads (`get_narrative`, `history`, `summary`, `ledgers`) on a store that fails mid-session,
   and the CLI's `narrate`, which saves only after the whole batch, so a refused save there
@@ -707,8 +714,13 @@ and the MCP SDK, so the two together cover every code path CI will see.
   Streamlit's traceback); the CLI's `narrate` saving only after the whole batch (a refused
   save loses the notes still waiting); and the decision form's draft, which a browser on
   Streamlit 1.50.0 still shows after a decision was recorded (on `main` before the store-writes
-  change too; AppTest sees it cleared, and the double-click guard refuses the same submit).
-- 1286 tests on 3.9 (1 skipped) / 1301 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
+  change too; AppTest sees it cleared, and the double-click guard refuses the same submit);
+  and `narrate.validate`, which reads `summary`, `why_flagged` and `suggested_control` through
+  `str()` and keeps them as they came, so a reply outside the structured-output schema (an
+  object for a field) reaches the insert and is a traceback there: in the dashboard the paid
+  note is lost with no usage line, and in the CLI's `narrate` that note and every later one in
+  the batch.
+- 1291 tests on 3.9 (1 skipped) / 1306 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth

@@ -309,6 +309,12 @@ STORE_REFUSALS = [
                  "\\!\\[x\\]\\(http\\:\\/\\/127\\.0\\.0\\.1\\:9\\/x\\.png\\)", id="locked"),
     pytest.param(sqlite3.DatabaseError("file is not a database"),
                  "DatabaseError\\: file is not a database", id="not-a-database"),
+    # A store's own guard (a file holding a row at id -1 refuses every insert as a replace)
+    # and a value the file's limits refuse: the store's, not the driver's faults.
+    pytest.param(sqlite3.IntegrityError("narratives are append-only"),
+                 "IntegrityError\\: narratives are append\\-only", id="integrity"),
+    pytest.param(sqlite3.DataError("string or blob too big"),
+                 "DataError\\: string or blob too big", id="data"),
 ]
 
 
@@ -379,9 +385,9 @@ def test_a_refused_rewrite_leaves_the_note_on_record_on_screen_and_decidable(
     assert store.history(picked)["narrative_id"].tolist() == [first]
 
 
-# Not the store's: record()'s own checks (ValueError, which this form cannot reach), our own
-# code (TypeError), and the driver's faults for a value it cannot bind (ProgrammingError on
-# 3.12, InterfaceError on 3.9), which are sqlite3.Errors too.
+# Not the store's: record()'s own checks (ValueError; the form refuses a missing name before
+# it builds a decision), our own code (TypeError), and the driver's faults for a value it
+# cannot bind (ProgrammingError on 3.12, InterfaceError on 3.9), which are sqlite3.Errors too.
 NOT_THE_STORES = [
     pytest.param(TypeError("a fault in our own code"), id="TypeError"),
     pytest.param(ValueError("a decision must name an entry"), id="ValueError"),
@@ -493,6 +499,34 @@ def test_a_read_only_review_database_refuses_a_decision_and_keeps_the_draft(
         at, db, identity, picked, "OperationalError\\: attempt to write a readonly database")
     db.chmod(0o644)
     _assert_the_retry_records_it(at, db, identity, picked)
+
+
+def test_a_click_after_the_name_was_cleared_records_nothing_and_keeps_the_draft(
+        data_dir, tmp_path, identity):
+    """The button is drawn disabled without a name, but on Streamlit 1.50 a click lands when
+    the name is cleared and the button clicked in one go, and record() refused the nameless
+    decision as a traceback that stopped the page. Later versions drop that click."""
+    import streamlit
+
+    db = tmp_path / "review.sqlite"
+    at = _run(data_dir, db, reviewer="ana")
+    picked = at.selectbox(key="picked").value
+    key = _entry_key(at)
+    at.radio(key=f"choice-{key}").set_value("Escalate")
+    at.text_area(key=f"note-{key}").set_value("checked the purchase order")
+    at.text_input(key="reviewer").set_value("")
+    _record_button(at).click()
+    at.run()
+
+    assert not at.exception, at.exception
+    assert ReviewStore(db, identity).history(picked).empty
+    assert at.text_area(key=f"note-{key}").value == "checked the purchase order"
+    assert any(PAGE_WENT_ON in m.value for m in at.markdown)
+    refused = any(w.value.startswith("Enter your name in the sidebar first") for w in at.warning)
+    if streamlit.__version__.startswith("1.50."):
+        assert refused  # the click landed, and was refused in words
+    else:
+        assert refused or _record_button(at).disabled
 
 
 @pytest.mark.parametrize("error", NOT_THE_STORES)

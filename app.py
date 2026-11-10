@@ -458,7 +458,14 @@ with tab_queue:
             # A form submits once per click, and this guard absorbs a double click:
             # an append-only log should not carry an accidental duplicate.
             signature = (entry_key, choice, note.strip())
-            if st.session_state.get("last_decision") == signature:
+            if not reviewer:
+                # The button is drawn disabled without a name, but on Streamlit 1.50 a click
+                # lands when the name is cleared and the button clicked before the rerun that
+                # disables it, and record() refuses a decision with no reviewer (a traceback
+                # that stopped the page).
+                st.warning("Enter your name in the sidebar first: nothing was recorded, and "
+                           "what you typed is kept.")
+            elif st.session_state.get("last_decision") == signature:
                 st.warning("That decision was just recorded.")
             elif seen_id != latest_id:
                 # The note changed between the render the reviewer read and
@@ -487,8 +494,8 @@ with tab_queue:
                     # Nothing was written (an uncommitted insert is rolled back), so
                     # nothing that marks it done is set either: the draft stays, and the
                     # same submit is not refused as a duplicate when it is retried.
-                    # record()'s own ValueErrors, which this form cannot reach, stay
-                    # tracebacks.
+                    # record()'s own ValueErrors stay tracebacks: the radio gives a known
+                    # decision, the queue an entry, and a missing name is refused above.
                     st.error(md(f"The decision was not recorded ({type(exc).__name__}: {exc}). "
                                 "What you typed is kept: record it again."))
                 else:
