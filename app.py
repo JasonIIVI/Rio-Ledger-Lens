@@ -116,6 +116,12 @@ def md(text: str) -> str:
     return _MARKUP.sub(r"\\\1", str(text))
 
 
+# The driver's errors for a call it could not make (a value it cannot bind, such as a reply
+# field that is not text, which narrate.validate lets through): our fault, not the store
+# refusing a write, so a store write re-raises them as tracebacks before it catches the rest.
+_OUR_SQLITE_FAULTS = (sqlite3.ProgrammingError, sqlite3.InterfaceError)
+
+
 def _sdk_errors() -> tuple:
     """The SDK's request errors, or none without the llm extra (Narrator then refuses
     before any request). Looked up when one is raised, not on load: the SDK reads its
@@ -402,13 +408,16 @@ with tab_queue:
                 fresh, model = written
                 try:
                     note_id = store.save_narrative(picked, fresh, model=model)
+                except _OUR_SQLITE_FAULTS:
+                    raise
                 except sqlite3.Error as exc:
-                    # The review database refused the write: locked by another writer (the
-                    # CLI's narrate, another tab), a read-only file, one removed since the
-                    # page loaded, a disk error. The note was requested and answered, so
-                    # this says so with the usage, but it is not drawn: a decision must
-                    # point at advice on record, and this note is not. Only the store's
-                    # errors: a fault in our own code stays a traceback.
+                    # The review database refused the write: a read-only file, a lock held
+                    # past SQLite's five-second wait (a database browser in a transaction;
+                    # one insert by narrate or another tab is waited out), a file removed or
+                    # replaced while the note was being requested, a disk or iCloud error.
+                    # The note was requested and answered, so this says so with the usage,
+                    # but it is not drawn: a decision must point at advice on record, and
+                    # this note is not.
                     st.error(md(f"The note came back but could not be stored, so it is not "
                                 f"shown and no decision can point to it "
                                 f"({type(exc).__name__}: {exc}). This request still counts: "
@@ -472,6 +481,8 @@ with tab_queue:
                 )
                 try:
                     store.record(decision)
+                except _OUR_SQLITE_FAULTS:
+                    raise
                 except sqlite3.Error as exc:
                     # Nothing was written (an uncommitted insert is rolled back), so
                     # nothing that marks it done is set either: the draft stays, and the

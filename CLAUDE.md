@@ -645,13 +645,14 @@ and the MCP SDK, so the two together cover every code path CI will see.
   it. The SDK builds that text from the status code and the body, never the request's headers
   (read in anthropic 0.125.0, 1.8.0 and 2.3.0), so the key appears only if a server's own body
   quotes it. Nothing else is caught: a fault in our own code (building the prompt, reading the
-  reply), a reply the SDK cannot parse (a 2xx whose body is not JSON raises a
-  `JSONDecodeError`) and a refused save are still Streamlit's traceback, never worded as a
-  failed request (the save, the flash and `st.rerun()` run after the `try`, only when a note
-  came back; a refused save is its own message since the store-writes bullet below). Tests raise real SDK errors (`APIConnectionError`, a 401 whose body quotes
-  markdown) and fail on `246fbe9` at the script's exception; a fault reading the reply, a
-  refused save and a refused reply are each pinned as not the request failing, and so are the
-  page loading without importing the SDK and the button without it. CI installs
+  reply) and a reply the SDK cannot parse (a 2xx whose body is not JSON raises a
+  `JSONDecodeError`) are still Streamlit's traceback, never worded as a failed request (the
+  save, the flash and `st.rerun()` run after the `try`, only when a note came back). A refused
+  save was a traceback too until the store-writes bullet below. Tests raise real SDK errors
+  (`APIConnectionError`, a 401 whose body quotes markdown) and fail on `246fbe9` at the
+  script's exception; a fault reading the reply, a refused save and a refused reply are each
+  pinned as not the request failing, and so are the page loading without importing the SDK
+  and the button without it. CI installs
   no Streamlit (`.[dev,llm,mcp]`), so `test_app.py` is skipped on every CI job: the
   dashboard's tests run in the two venvs only. Version unchanged (1.2.0).
 - **CI's 3.9 runner (`fix/ci-python-3.9-runner`, after v1.2.0)** — `ubuntu-latest` moved from
@@ -665,25 +666,36 @@ and the MCP SDK, so the two together cover every code path CI will see.
 - **The dashboard's store writes (`fix/dashboard-store-errors`, after v1.2.0)** — the
   dashboard's two writes to the review database had no handling: saving a note that came back
   (`store.save_narrative`) and "Record decision" (`store.record`). A store that refused the
-  write (locked by another writer such as the CLI's `narrate` or another tab, a read-only file,
-  one removed since the page loaded, a disk or iCloud I/O error) raised a `sqlite3.Error`,
-  Streamlit drew its traceback and stopped the page, and a refused save lost a note that had
-  been requested (and paid for) without a word. Each write now catches `sqlite3.Error` and
-  nothing else. A refused save says the note came back but could not be stored, with the
-  error's type and text and the request's usage, and the note is not drawn: a decision must
-  point at advice on record (rule 8), and this note is not. A refused decision says it was not
-  recorded and that what was typed is kept; nothing that marks it done is set (the
+  write raised a `sqlite3.Error`, Streamlit drew its traceback and stopped the page, and a
+  refused save lost a note that had been requested (and paid for) without a word. A refusal
+  is a read-only file, a lock held past SQLite's five-second wait (a database browser in a
+  transaction: one insert by `narrate` or another tab is waited out), a file removed or
+  replaced while the note was being requested (`no such table`, `file is not a database`),
+  or a disk or iCloud error. (A file removed between clicks is not one: every run opens the
+  store, which creates and migrates an empty file, as before.) Each write now catches the
+  store's `sqlite3.Error`s and nothing else: `ProgrammingError` and `InterfaceError`, the
+  driver's errors for a value it cannot bind, are re-raised first as our own fault (a reply
+  whose `summary` is an object gets past `narrate.validate`, which reads it through `str()`,
+  and reaches the insert). A refused save says the note came back but could not be stored,
+  with the error's type and text and the request's usage, and the note is not drawn: a
+  decision must point at advice on record (rule 8), and this note is not; on a refused
+  rewrite the stored note stays on screen and a decision records it. A refused decision says
+  it was not recorded and that what was typed is kept; nothing that marks it done is set (the
   double-click guard, the flash, the draft's clearing), so the same submit records it on a
-  retry. Both messages quote the error, so they go through `md()`. `record`'s own
-  `ValueError`s (which the form cannot reach) and a fault in our own code stay Streamlit's
-  traceback. #27's test that pinned the traceback on a refused save now pins the message.
-  The tests refuse each write through a monkeypatched lock and through SQLite itself (the file
-  made read-only after the page loaded, then writable again for the retry), and check that a
-  fault that is not the store's is still a traceback. Not changed: the page's reads
-  (`get_narrative`, `history`, `summary`, `ledgers`) on a store that fails mid-session, and the
-  CLI's `narrate`, which saves only after the whole batch, so a refused save there loses the
-  notes still waiting. CI installs no Streamlit, so these tests run in the two venvs only.
-  Version unchanged (1.2.0).
+  retry. Both messages quote the error, so they go through `md()`, and the page goes on past
+  them. `record`'s own `ValueError`s (which the form cannot reach) and a fault in our own code
+  stay Streamlit's traceback. #27's test that pinned the traceback on a refused save now pins
+  the message. The tests refuse each write with an `OperationalError` and a plain
+  `DatabaseError` (monkeypatched) and through SQLite itself (the file made read-only after the
+  page loaded, then writable again for the retry), bind an object from a reply, and check that
+  `TypeError`, `ValueError`, `ProgrammingError` and `InterfaceError` are still tracebacks from
+  either write; 23 mutants are killed by named tests (building the `Decision` inside the `try`
+  is equivalent). Checked in a browser on a read-only file: the message, the form and the
+  draft, then the same click recording once the file was writable. Not changed: the page's
+  reads (`get_narrative`, `history`, `summary`, `ledgers`) on a store that fails mid-session,
+  and the CLI's `narrate`, which saves only after the whole batch, so a refused save there
+  loses the notes still waiting. CI installs no Streamlit, so these tests run in the two venvs
+  only. Version unchanged (1.2.0).
 - **Next** — the maintainer's call. Open, unchanged: re-recording `docs/demo.gif` (its model
   scores predate v1.0.0's tie fix), week 5's model train/test split (a re-measurement under
   rule 10), week 7 (multi-line entries change the default ledger, so every figure, the eval
@@ -692,9 +704,11 @@ and the MCP SDK, so the two together cover every code path CI will see.
   model and time in the workpaper and the MCP entry rows (the explain tool returns both); the
   prompt a note answered (a review-schema change); the reported model on new eval rows (a
   row-shape change); the dashboard's reads on a store that fails mid-session (still
-  Streamlit's traceback); and the CLI's `narrate` saving only after the whole batch (a refused
-  save loses the notes still waiting).
-- 1276 tests on 3.9 (1 skipped) / 1291 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
+  Streamlit's traceback); the CLI's `narrate` saving only after the whole batch (a refused
+  save loses the notes still waiting); and the decision form's draft, which a browser on
+  Streamlit 1.50.0 still shows after a decision was recorded (on `main` before the store-writes
+  change too; AppTest sees it cleared, and the double-click guard refuses the same submit).
+- 1286 tests on 3.9 (1 skipped) / 1301 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
