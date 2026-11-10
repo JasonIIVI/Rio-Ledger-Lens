@@ -378,7 +378,8 @@ def _assert_not_recorded_and_the_draft_kept(at, db, identity, picked, reason):
         assert at.radio(key=f"choice-{_entry_key(at)}").value == "escalate"
         at.run()
         assert not at.exception, at.exception
-    assert not at.success
+        # A flash is shown once, on the run after it is set: look on every run.
+        assert not at.success
 
 
 def _assert_the_retry_records_it(at, db, identity, picked):
