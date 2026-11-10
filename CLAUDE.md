@@ -13,7 +13,7 @@ Audit analytics over general ledger data. Read this before changing anything.
 | Working folder | `~/Library/Mobile Documents/com~apple~CloudDocs/LedgerGen project` (iCloud) |
 | Virtualenvs | `~/.venvs/ledgerlens` (3.9) and `~/.venvs/ledgerlens312` (3.12) — **deliberately outside iCloud**, one set per machine |
 | Python here | system 3.9.6 plus python.org **3.12.0** at `/usr/local/bin/python3.12`. Code must stay 3.9-compatible; only `mcp_server.py` needs 3.10+. pandas 2.2 or later (`ingest` imports `pandas.tseries.api.guess_datetime_format`), Streamlit 1.49 or later (`st.dataframe(width="stretch")`); CI installs the latest (pandas 2.3 on 3.9, 3.1 on 3.11 and 3.12; the venvs have 2.3 and 3.0.6), so the floors themselves are not run, and a new pandas reaches CI before the venvs |
-| CI | GitHub Actions: pytest on 3.9 / 3.11 / 3.12 + a detection-quality gate + a `rule-1` job (no data or secret file tracked); `claude.yml` answers `@claude`; `weekly.yml` regenerates the default ledger on Mondays and opens an Issue with `ledgerlens summary` |
+| CI | GitHub Actions: pytest on 3.9 / 3.11 / 3.12 + a detection-quality gate + a `rule-1` job (no data or secret file tracked); `claude.yml` answers `@claude`; `weekly.yml` regenerates the default ledger on Mondays and opens an Issue with `ledgerlens summary`. The 3.9 job runs on `ubuntu-24.04` (setup-python has no 3.9 for Ubuntu 26.04, `ubuntu-latest` since November 2026), the rest on `ubuntu-latest`; that holds while GitHub keeps 24.04 runners, and dropping 3.9 is the maintainer's call |
 
 ```bash
 source ~/.venvs/ledgerlens/bin/activate && pytest -q && ruff check src tests app.py
@@ -654,6 +654,14 @@ and the MCP SDK, so the two together cover every code path CI will see.
   page loading without importing the SDK and the button without it. CI installs
   no Streamlit (`.[dev,llm,mcp]`), so `test_app.py` is skipped on every CI job: the
   dashboard's tests run in the two venvs only. Version unchanged (1.2.0).
+- **CI's 3.9 runner (`fix/ci-python-3.9-runner`, after v1.2.0)** — `ubuntu-latest` moved from
+  Ubuntu 24.04 to 26.04 between #27's PR run (3 Nov, image 20261025) and its push to `main`
+  (8 Nov, image 20261101), and `actions/setup-python` has no 3.9 for 26.04, so `test (3.9)`
+  failed at setup before any test ran (the other four jobs passed). The test job's `runs-on`
+  sends 3.9 to `ubuntu-24.04` and the others to `ubuntu-latest`, through an expression rather
+  than a matrix key, so the check names do not change; `tests/test_workflows.py` pins it. It
+  lasts while GitHub keeps 24.04 runners; dropping 3.9 (end of life, but the Mac's system
+  Python) is the maintainer's call. Version unchanged (1.2.0).
 - **Next** — the maintainer's call. Open, unchanged: re-recording `docs/demo.gif` (its model
   scores predate v1.0.0's tie fix), week 5's model train/test split (a re-measurement under
   rule 10), week 7 (multi-line entries change the default ledger, so every figure, the eval
@@ -663,7 +671,7 @@ and the MCP SDK, so the two together cover every code path CI will see.
   prompt a note answered (a review-schema change); the reported model on new eval rows (a
   row-shape change); and a store error in the dashboard (saving a note, recording a decision),
   still Streamlit's traceback.
-- 1270 tests on 3.9 (1 skipped) / 1285 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
+- 1271 tests on 3.9 (1 skipped) / 1286 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth

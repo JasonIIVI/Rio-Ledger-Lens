@@ -9,7 +9,10 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # ubuntu-latest became Ubuntu 26.04 in November 2026, and setup-python has no 3.9 for
+    # it: 3.9 runs on 24.04 for as long as GitHub keeps that image. An expression, not a
+    # matrix key, so the check names stay "test (3.9)", "test (3.11)", "test (3.12)".
+    runs-on: ${{ matrix.python-version == '3.9' && 'ubuntu-24.04' || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
