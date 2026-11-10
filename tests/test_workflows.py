@@ -318,6 +318,15 @@ def test_the_workflows_keep_to_what_the_extractor_can_read():
 # --- the other two, as the weekly run relies on them ---------------------------
 
 
+def test_ci_runs_3_9_on_an_image_that_still_has_it():
+    """ubuntu-latest became Ubuntu 26.04 in November 2026, and setup-python has no 3.9 for it:
+    the 3.9 job stopped before any test ran. 3.9 runs on 24.04, the others on the latest."""
+    test_job = re.search(r"(?ms)^  test:\n(.*?)^  \S", read("ci.yml")).group(1)
+    assert re.search(r'(?m)^ +python-version: \["3\.9", "3\.11", "3\.12"\]$', test_job)
+    assert re.search(r"(?m)^    runs-on: (.+)$", test_job).group(1) == (
+        "${{ matrix.python-version == '3.9' && 'ubuntu-24.04' || 'ubuntu-latest' }}")
+
+
 def test_ci_still_has_its_rule_1_job_and_claude_yml_its_mention_gate():
     assert re.search(r"(?m)^  rule-1:$", read("ci.yml"))
     claude = read("claude.yml")
