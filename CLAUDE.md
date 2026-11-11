@@ -25,6 +25,14 @@ and the MCP SDK, so the two together cover every code path CI will see.
 
 ## Current state
 
+- **v1.2.1** is #21 to #30 (#21 `fix/pandas-4-warnings`, squash-merged 2026-10-25 as
+  `b0434a2`; #22 `fix/display-sort-ties`, 2026-10-26, `cd00a95`; #24
+  `fix/benford-small-sample`, 2026-10-30, `2b113b7`; #25 `fix/reported-model`, 2026-10-31,
+  `246fbe9`; #27 `fix/dashboard-request-errors`, 2026-11-08, `dbfe89c`; #29
+  `fix/ci-python-3.9-runner`, 2026-11-10, `dfda99d`; #30 `fix/dashboard-store-errors`,
+  2026-11-10, `c6ce5fd`) and the version bump (`release/v1.2.1`), to be tagged on the bump's
+  squash-merge commit with release notes reviewed against the code and covering all seven;
+  the tag's commit is recorded here by the next PR, as #21 recorded v1.2.0's.
 - **v1.2.0** is #18 to #20 (#18 `fix/pandas-3.1-review-state`, squash-merged 2026-10-23 as
   `8fcee26`; #19 `week6/sampling`, 2026-10-23, `540d078`; #20 `week6/materiality-band`,
   2026-10-23, `1f11203`), tagged on `1f11203` (annotated; the release published 2026-10-24
