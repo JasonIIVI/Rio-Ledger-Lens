@@ -394,7 +394,9 @@ def test_a_ledger_cell_a_cell_cannot_hold_is_shown_as_its_code_point(small_ledge
     reasons = flags.loc[flags["entry_id"] == manual, "reason"]
     n, quoting = int(reasons.str.count(VT).sum()), int(reasons.str.contains(VT).sum())
     assert n >= 1 and quoting >= 1  # JET-12 at least
+    as_given = flags.copy()
     path = build_workpaper(scored, flags, tmp_path / "wp.xlsx", top_n=len(scored))
+    pd.testing.assert_frame_equal(flags, as_given)  # the caller's flags are not rewritten
 
     shown = [reason.replace(VT, "[U+000B]") for reason in reasons]
     assert _cell(path, manual, "created_by") == "ana[U+000B]x"
@@ -476,7 +478,9 @@ def test_each_edge_of_what_a_cell_cannot_hold(small_ledger, tmp_path):
     # cannot hold half of a surrogate pair at all.
     labels = pd.Series([f"a{chr(cp)}b" for cp in _EDGES], dtype=object)
     benford = pd.DataFrame({"label": labels, "n": range(len(_EDGES))})
+    as_given = benford.copy()
     path = build_workpaper(scored, flags, tmp_path / "edges.xlsx", benford=benford)
+    pd.testing.assert_frame_equal(benford, as_given)  # nor is the caller's Benford table
 
     replaced = {8, 11, 12, 14, 31, 0xD800, 0xDFFF, 0xFFFE, 0xFFFF}
     expected = [f"a[U+{cp:04X}]b" if cp in replaced else "a" + (LF if cp == 13 else chr(cp)) + "b"
@@ -534,12 +538,14 @@ def test_a_cut_never_splits_a_code_point_shown_in_brackets(small_ledger, tmp_pat
     note = "w" * (room - 12) + VT * (40_000 - room + 12)  # room for one [U+000B] (8), not two
     store = ReviewStore(tmp_path / "review.sqlite", "csv:test")
     store.record(Decision(ids[0], "dismiss", "ana", note))
+    store.record(Decision(ids[1], "dismiss", "ana", "v" * 40_000))  # cut, with nothing to show
     path = build_workpaper(scored, flags, tmp_path / "wp.xlsx", store=store)
 
     assert _cell(path, ids[0], "note") == "w" * (room - 12) + "[U+000B]" + _tail(40_000)
     cells = _summary_cells(path)
-    assert cells["Texts cut to fit a cell"] == "1 (see Methodology)"
-    assert cells["Characters a cell cannot hold"] == f"1 in 1 cell(s), {SHOWN}"  # the one shown
+    assert cells["Texts cut to fit a cell"] == "2 (see Methodology)"
+    # The one shown, in the one cell that shows it: a text only cut is counted with the cuts.
+    assert cells["Characters a cell cannot hold"] == f"1 in 1 cell(s), {SHOWN}"
 
 
 def test_text_a_cell_can_hold_is_written_as_it_is_and_nothing_is_said(small_ledger, tmp_path):
