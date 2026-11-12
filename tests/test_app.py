@@ -418,22 +418,32 @@ def test_a_fault_in_saving_that_is_not_the_store_s_is_still_a_traceback(
     assert ReviewStore(db, identity).get_narrative(picked) is None
 
 
-def test_a_reply_field_the_store_cannot_bind_is_a_traceback_not_a_refused_save(
-        data_dir, tmp_path, identity, monkeypatch, llm):
-    """The path that reaches the driver's fault today: validate() reads a field through str()
-    and keeps it as it came, so a summary that is an object gets to the insert."""
-    payload = dict(llm.good, summary={"not": "text"})
+@pytest.mark.parametrize("summary, shown", [
+    pytest.param({"not": "text"}, "summary must be text\\, got dict", id="object"),
+    pytest.param("Manual credit " + chr(0xD800),
+                 "summary is not text the store can keep\\: it holds a lone surrogate",
+                 id="lone-surrogate"),
+])
+def test_a_reply_field_that_is_not_text_is_refused_before_the_store(
+        data_dir, tmp_path, identity, monkeypatch, llm, summary, shown):
+    """validate() refuses a field the schema says is text and is not, and text holding a lone
+    surrogate, so the reply is refused like any other that breaks the contract, and the page
+    goes on. Before, the object reached the insert as a value the driver cannot bind, and the
+    surrogate as text sqlite3 cannot encode: a traceback either way."""
+    payload = dict(llm.good, summary=summary)
     client = _narrating_with(monkeypatch, [llm.response(payload=payload)], llm)
     db = tmp_path / "review.sqlite"
     at = _run(data_dir, db, reviewer="ana")
     picked = at.selectbox(key="picked").value
-    next(b for b in at.button if b.label == "Write narrative").click()
-    at.run()
+
+    _click_write(at)  # asserts the script raised nothing
 
     assert len(client.calls) == 1
-    assert at.exception and "Error binding parameter" in at.exception[0].message
-    assert not any("could not be stored" in e.value for e in at.error)
+    assert [e.value for e in at.error] == [shown]  # through md()
     assert ReviewStore(db, identity).get_narrative(picked) is None
+    assert any("No narrative yet for this entry." in c.value for c in at.caption)
+    assert not at.success
+    assert not _record_button(at).disabled  # the rest of the page was drawn
 
 
 NOT_RECORDED = "The decision was not recorded \\("

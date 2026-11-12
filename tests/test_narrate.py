@@ -21,6 +21,7 @@ from ledgerlens.narrate import (
     NarrationResult,
     NarrativeError,
     Narrator,
+    NoteNotKept,
     Usage,
     build_prompt,
     build_system_prompt,
@@ -295,6 +296,100 @@ def test_validate_rejects_a_non_object():
         validate(["not", "an", "object"])
 
 
+# Every JSON value that is not a string, as json.loads gives it. Read through str(), each
+# passed under its Python spelling ("{'a': 'b'}", "True", "None"), and an object or an array
+# then reached the store's insert as a value the driver cannot bind.
+NOT_TEXT = [
+    pytest.param({"a": "b"}, "dict", id="object"),
+    pytest.param(["a"], "list", id="array"),
+    pytest.param(7, "int", id="number"),
+    pytest.param(7.5, "float", id="fraction"),
+    pytest.param(True, "bool", id="boolean"),
+    pytest.param(None, "null", id="null"),
+]
+
+
+@pytest.mark.parametrize("key", ["summary", "why_flagged", "suggested_control"])
+@pytest.mark.parametrize("value, kind", NOT_TEXT)
+def test_validate_refuses_a_text_field_that_is_not_text(key, value, kind, llm):
+    with pytest.raises(NarrativeError, match=f"^{key} must be text, got {kind}$"):
+        validate(dict(llm.good, **{key: value}))
+
+
+@pytest.mark.parametrize("value, kind", NOT_TEXT)
+def test_validate_refuses_an_evidence_item_that_is_not_text(value, kind, llm):
+    payload = dict(llm.good, evidence_to_request=["The signed contract", value, "Shipping notes"])
+    with pytest.raises(NarrativeError, match=f"^evidence_to_request item 2 must be text, got {kind}$"):
+        validate(payload)
+
+
+def test_validate_keeps_the_text_fields_as_written_and_tidies_the_evidence(llm):
+    """What a valid reply becomes is unchanged: the text fields as they came, the evidence
+    stripped with blank items dropped, the confidence in lower case."""
+    payload = dict(llm.good, summary="  Manual credit.  ", evidence_to_request=["  a ", "", " ", "b"])
+    cleaned = validate(payload)
+    assert cleaned == dict(payload, evidence_to_request=["a", "b"], confidence="high")
+    assert cleaned["summary"] == "  Manual credit.  "
+
+
+def test_a_reply_with_a_field_that_is_not_text_is_refused_before_it_can_be_kept(llm):
+    client = llm.client([llm.response(payload=dict(llm.good, summary={"text": "Manual credit"}))])
+    with pytest.raises(NarrativeError, match="^summary must be text, got dict$"):
+        Narrator(client=client).write_note("p")
+    assert len(client.calls) == 1
+
+
+#: Valid JSON as an unpaired surrogate escape, which json.loads reads back as this one
+#: character. No UTF-8 encoding holds it, so the store cannot keep text that does.
+LONE_SURROGATE = chr(0xD800)
+
+
+@pytest.mark.parametrize("key", ["summary", "why_flagged", "suggested_control"])
+def test_validate_refuses_text_the_store_cannot_keep(key, llm):
+    with pytest.raises(NarrativeError,
+                       match=f"^{key} is not text the store can keep: it holds a lone surrogate$"):
+        validate(dict(llm.good, **{key: "Manual credit " + LONE_SURROGATE}))
+
+
+def test_validate_refuses_an_evidence_item_the_store_cannot_keep(llm):
+    payload = dict(llm.good, evidence_to_request=["The signed contract", "Notes " + LONE_SURROGATE])
+    with pytest.raises(NarrativeError, match="^evidence_to_request item 2 is not text the store "
+                                             "can keep: it holds a lone surrogate$"):
+        validate(payload)
+
+
+def test_a_reply_holding_a_lone_surrogate_is_refused_without_quoting_it(llm):
+    """As the API would send it: json.dumps writes the character as an unpaired escape. The
+    refusal quotes none of the reply, so the CLI can print it and the eval can write it."""
+    client = llm.client([llm.response(payload=dict(llm.good, summary="Manual " + LONE_SURROGATE))])
+    with pytest.raises(NarrativeError) as refused:
+        Narrator(client=client).write_note("p")
+    assert str(refused.value) == "summary is not text the store can keep: it holds a lone surrogate"
+    assert len(client.calls) == 1
+
+
+def test_validate_joins_the_lines_of_an_evidence_item(llm):
+    """The store keeps the items one per line, so a line break inside one would read back as
+    two: its lines are joined with a space. An item with no line break comes out as before."""
+    payload = dict(llm.good, evidence_to_request=[
+        "The signed contract,\nincluding its rates", " Shipping\r\nnotes ", "Bank\rstatement",
+        " \n ", "  Remittance advice  "])
+    assert validate(payload)["evidence_to_request"] == [
+        "The signed contract, including its rates", "Shipping notes", "Bank statement",
+        "Remittance advice"]
+
+
+def test_an_evidence_item_with_a_line_break_reads_back_from_the_store_as_one(tmp_path, llm):
+    from ledgerlens.review import ReviewStore
+
+    note = validate(dict(llm.good, evidence_to_request=[
+        "The signed contract,\nincluding its rates", "Shipping notes"]))
+    store = ReviewStore(tmp_path / "review.sqlite", "csv:" + "a" * 64)
+    store.save_narrative("JE-1", note, model="claude-test")
+    assert store.get_narrative("JE-1")["evidence_to_request"] == [
+        "The signed contract, including its rates", "Shipping notes"]
+
+
 # --- batches ----------------------------------------------------------------
 
 
@@ -338,6 +433,60 @@ def test_narrate_files_each_note_under_the_model_its_response_names(ledger, scor
     assert list(result.narratives) == [asked[0], asked[2]]
     assert "named no model" in result.failures[asked[1]]  # that entry only; the batch went on
     assert result.model == DEFAULT_MODEL  # the id requested, kept apart
+
+
+def test_keep_has_each_note_before_the_next_is_requested(ledger, scored, llm):
+    """Only notes that came back are kept, each before the next request goes out."""
+    entries, flags = scored
+    client = llm.client([llm.response(), llm.response(stop_reason="max_tokens"), llm.response()])
+    kept = []
+
+    def keep(entry_id, note, model):
+        kept.append((entry_id, len(client.calls), note["confidence"], model))
+
+    result = Narrator(client=client).narrate(entries, flags, ledger, top_n=3, keep=keep)
+
+    asked = [call["messages"][0]["content"].split()[2] for call in client.calls]
+    assert kept == [(asked[0], 1, "high", DEFAULT_MODEL), (asked[2], 3, "high", DEFAULT_MODEL)]
+    assert list(result.narratives) == list(result.models) == [asked[0], asked[2]]
+    assert list(result.failures) == [asked[1]]
+    assert result.stopped_at is None and result.not_requested == 0
+
+
+@pytest.mark.parametrize("refused, top_n, left", [(2, 5, 3), (3, 3, 0)])
+def test_a_note_not_kept_fails_its_entry_and_stops_the_batch(ledger, scored, llm, refused, top_n,
+                                                             left):
+    entries, flags = scored
+    client = llm.client()
+
+    def keep(entry_id, note, model):
+        if len(client.calls) == refused:
+            raise NoteNotKept("the store refused it")
+
+    result = Narrator(client=client).narrate(entries, flags, ledger, top_n=top_n, keep=keep)
+
+    asked = [call["messages"][0]["content"].split()[2] for call in client.calls]
+    assert len(asked) == refused  # nothing more was requested
+    assert list(result.narratives) == list(result.models) == asked[:-1]
+    assert result.failures == {asked[-1]: "the store refused it"}
+    assert (result.stopped_at, result.not_requested) == (asked[-1], left)
+    assert (result.entries_requested, result.usage.requests) == (top_n, refused)
+    assert result.describe().splitlines()[0] == (
+        f"Narrated {refused - 1}/{top_n} entries with claude-opus-5 (1 failed)")
+
+
+def test_anything_else_keep_raises_is_not_caught(ledger, scored, llm):
+    """A fault in the caller's own keep is not the reply failing: it is not turned into that
+    entry's failure, and the batch does not go on past it."""
+    entries, flags = scored
+    client = llm.client()
+
+    def keep(entry_id, note, model):
+        raise TypeError("a fault in the caller's own code")
+
+    with pytest.raises(TypeError, match="caller's own code"):
+        Narrator(client=client).narrate(entries, flags, ledger, top_n=3, keep=keep)
+    assert len(client.calls) == 1
 
 
 def _result(models, failed=1, model=DEFAULT_MODEL):

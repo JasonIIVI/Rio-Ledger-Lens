@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sqlite3
 import sys
 import textwrap
 import warnings
@@ -44,9 +45,16 @@ from .ingest import IdentityError, ledger_identity, load_csv, load_labels, quote
 from .ledger_context import LedgerContext
 from .materiality import BAND_NOTE, FISCAL_YEAR_NOTE, bands, count_by_band, fiscal_year_for
 from .model import combine, score_ledger
-from .narrate import DEFAULT_EFFORT, DEFAULT_MAX_TOKENS, DEFAULT_MODEL, NarrativeError, Narrator
+from .narrate import (
+    DEFAULT_EFFORT,
+    DEFAULT_MAX_TOKENS,
+    DEFAULT_MODEL,
+    NarrativeError,
+    Narrator,
+    NoteNotKept,
+)
 from .report import build_workpaper
-from .review import LEGACY_LEDGER_ID, ReviewStore
+from .review import CALLER_FAULTS, LEGACY_LEDGER_ID, ReviewStore
 from .sampling import (
     DEFAULT_CONFIDENCE,
     DEFAULT_PERFORMANCE_SHARE,
@@ -677,7 +685,8 @@ def cmd_sample(args: argparse.Namespace) -> int:
 
 
 def cmd_narrate(args: argparse.Namespace) -> int:
-    """Write Claude narratives for the riskiest entries and cache them in the review store."""
+    """Write Claude narratives for the riskiest entries, each stored in the review store as it
+    comes back."""
     df, problem = _load_ledger(args.ledger)
     if problem:
         print(problem)
@@ -718,25 +727,44 @@ def cmd_narrate(args: argparse.Namespace) -> int:
               "scratch.")
         return 2
     skip = set() if args.force else store.narrative_ids()
+
+    def keep(entry_id: str, note: dict, model: str) -> None:
+        # Each note is stored as it comes back, so a refused write loses that note alone
+        # (and stops the batch), not every paid note still waiting for the batch to end.
+        try:
+            store.save_narrative(entry_id, note, model=model)
+        except CALLER_FAULTS:
+            raise  # a value the driver cannot bind is our fault, not the store refusing
+        except sqlite3.Error as exc:
+            raise NoteNotKept(f"the note came back, but the review database refused to store "
+                              f"it ({type(exc).__name__}: {exc})") from exc
+
     narrator = Narrator(model=args.model, max_tokens=args.max_tokens, effort=args.effort)
     try:
-        result = narrator.narrate(scored, flags, df, top_n=args.top, skip=skip)
+        result = narrator.narrate(scored, flags, df, top_n=args.top, skip=skip, keep=keep)
     except NarrativeError as exc:
         print(f"error: {exc}")
         return 1
 
-    for entry_id, narrative in result.narratives.items():
-        store.save_narrative(entry_id, narrative, model=result.models[entry_id])
-
     print(result.describe())
     if skip:
         print(f"Skipped {len(skip)} entries already narrated in {args.db} (--force redoes them)")
+    # Entry ids are ledger text: one_line keeps a line break in one from forging a line here.
     for entry_id, why in result.failures.items():
-        print(f"  FAILED {entry_id}: {why}")
+        print(f"  FAILED {one_line(entry_id)}: {why}")
+    if result.stopped_at is not None:
+        left = result.not_requested
+        unasked = (f", and the {left} queued entr{'y' if left == 1 else 'ies'} after it "
+                   f"{'was' if left == 1 else 'were'} not requested") if left else ""
+        print(f"Stopped at {one_line(result.stopped_at)}: the review database refused its "
+              f"note{unasked}. Once the database takes writes, run the command again (entries "
+              "already narrated are skipped unless --force).")
     if result.narratives:
         print(f"\n{len(result.narratives)} narrative(s) saved to {args.db}")
     elif result.entries_requested == 0:
         print("Nothing to narrate: every flagged entry in range already has a narrative")
+    if result.stopped_at is not None:
+        return 1  # whatever was stored before it: the store needs attention
     return 0 if result.narratives or result.entries_requested == 0 else 1
 
 

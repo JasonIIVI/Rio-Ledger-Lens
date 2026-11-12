@@ -58,6 +58,12 @@ REVIEW_STATE_COLUMNS = (
 #: copies such rows into the ledger they were written for.
 LEGACY_LEDGER_ID = "legacy"
 
+#: The driver's errors for a call it could not make: a value it cannot bind
+#: (ProgrammingError on 3.12, InterfaceError on 3.9), or a connection misused. They
+#: are the caller's fault, not the store refusing a write, but both are
+#: sqlite3.Errors, so a caller that catches the store's refusals re-raises these first.
+CALLER_FAULTS = (sqlite3.ProgrammingError, sqlite3.InterfaceError)
+
 NARRATIVES_TABLE = """
 CREATE TABLE IF NOT EXISTS narratives (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -62,7 +62,7 @@ VALID_CONFIDENCE = ("high", "medium", "low")
 
 #: What the API is asked to guarantee. Deliberately limited to the keywords
 #: structured outputs honour everywhere (types, enum, required,
-#: additionalProperties). Non-emptiness is checked in :func:`validate`.
+#: additionalProperties). :func:`validate` checks the types again, and non-emptiness.
 NARRATIVE_SCHEMA: dict = {
     "type": "object",
     "properties": {
@@ -246,6 +246,15 @@ class NarrativeError(RuntimeError):
     """Raised when a response cannot be used as a narrative."""
 
 
+class NoteNotKept(Exception):
+    """Raised by a batch's ``keep`` when the place notes are kept refused one.
+
+    The batch stops there. The note just written is lost, though its request still
+    counts in the usage, and nothing more is requested: a store that refused one
+    write will most likely refuse the next, and every request is paid for.
+    """
+
+
 @dataclass
 class Usage:
     """Token accounting across a batch, straight from the API's usage blocks.
@@ -292,6 +301,10 @@ class NarrationResult:
     usage: Usage = field(default_factory=Usage)
     #: entry_id -> the model its response named.
     models: dict[str, str] = field(default_factory=dict)
+    #: The entry whose note ``keep`` refused, where the batch stopped; None if it ran through.
+    stopped_at: str | None = None
+    #: Queued entries never requested because the batch stopped there.
+    not_requested: int = 0
 
     @property
     def success_rate(self) -> float:
@@ -361,7 +374,17 @@ Write the reviewer note as JSON.""".format(
 
 
 def validate(payload: dict) -> dict:
-    """Check a parsed response against the contract, or raise."""
+    """Check a parsed response against the contract, or raise.
+
+    A field the schema says is text must arrive as text the store can keep. The
+    request asks for that, but a reply is checked here as it was sent: read through
+    ``str()``, a value of another type passed under its Python spelling, and an object
+    or an array in a text field reached the store's insert as a value the driver
+    cannot bind. Text holding a lone surrogate (an unpaired surrogate escape is valid
+    JSON) cannot be encoded for the store either, and the refusal quotes none of it.
+    What this accepts is decided in this body and the two constants it reads, all of
+    which the narrative eval hashes as part of its grader.
+    """
     if not isinstance(payload, dict):
         raise NarrativeError("response was not a JSON object")
 
@@ -371,7 +394,22 @@ def validate(payload: dict) -> dict:
 
     if not isinstance(payload["evidence_to_request"], list):
         raise NarrativeError("evidence_to_request must be a list")
-    evidence = [str(item).strip() for item in payload["evidence_to_request"] if str(item).strip()]
+    evidence = []
+    for number, item in enumerate(payload["evidence_to_request"], 1):
+        if not isinstance(item, str):
+            kind = "null" if item is None else type(item).__name__
+            raise NarrativeError(f"evidence_to_request item {number} must be text, got {kind}")
+        try:
+            item.encode("utf-8")
+        except UnicodeEncodeError:
+            raise NarrativeError(f"evidence_to_request item {number} is not text the store can "
+                                 "keep: it holds a lone surrogate") from None
+        # The store keeps the items one per line, so a line break inside one would read
+        # back as two items: its lines are joined with a space instead.
+        lines = item.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        joined = " ".join(line.strip() for line in lines if line.strip())
+        if joined:
+            evidence.append(joined)
     if not evidence:
         raise NarrativeError("evidence_to_request must not be empty")
 
@@ -383,7 +421,16 @@ def validate(payload: dict) -> dict:
         )
 
     for key in ("summary", "why_flagged", "suggested_control"):
-        if not str(payload[key]).strip():
+        value = payload[key]
+        if not isinstance(value, str):
+            kind = "null" if value is None else type(value).__name__
+            raise NarrativeError(f"{key} must be text, got {kind}")
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError:
+            raise NarrativeError(f"{key} is not text the store can keep: it holds a lone "
+                                 "surrogate") from None
+        if not value.strip():
             raise NarrativeError(f"{key} must not be empty")
 
     cleaned = dict(payload)
@@ -569,12 +616,20 @@ class Narrator:
         lines: pd.DataFrame,
         top_n: int = 25,
         skip: set | None = None,
+        keep=None,
     ) -> NarrationResult:
         """Narrate the highest-risk flagged entries.
 
         Only the top N are narrated. Running an LLM over a whole population
         would be slow and expensive for no benefit - the entries nobody will
         open do not need a paragraph written about them.
+
+        ``keep``, when given, is called as ``keep(entry_id, note, model)`` with each
+        note as its response comes back, before the next request, so a note is
+        stored as soon as it is paid for rather than when the batch ends. If it
+        raises :class:`NoteNotKept`, that entry fails and the batch stops there;
+        anything else it raises is not caught. With ``keep``, ``narratives`` holds
+        the notes it kept.
         """
         skip = skip or set()
         self.usage = Usage()
@@ -590,19 +645,28 @@ class Narrator:
         narratives: dict[str, dict] = {}
         failures: dict[str, str] = {}
         models: dict[str, str] = {}
+        stopped_at, not_requested = None, 0
 
-        for entry in queue.itertuples():
+        for position, entry in enumerate(queue.itertuples(), 1):
             entry_id = entry.entry_id
             row, entry_flags, entry_lines = entry_context(scored, flags, lines, entry_id)
             try:
-                narratives[entry_id], models[entry_id] = self.write_note(
-                    build_prompt(row, entry_flags, entry_lines)
-                )
+                note, model = self.write_note(build_prompt(row, entry_flags, entry_lines))
             except Exception as exc:  # noqa: BLE001 - one bad entry must not stop the batch
                 if _is_auth_error(exc) and not narratives:
                     # A bad key fails every entry the same way; say so once.
                     raise NarrativeError(f"authentication failed on the first request: {exc}") from exc
                 failures[entry_id] = str(exc)
+                continue
+            if keep is not None:
+                # Outside the try above: a fault in keep is the caller's, not this reply's.
+                try:
+                    keep(entry_id, note, model)
+                except NoteNotKept as exc:
+                    failures[entry_id] = str(exc)
+                    stopped_at, not_requested = entry_id, len(queue) - position
+                    break
+            narratives[entry_id], models[entry_id] = note, model
 
         return NarrationResult(
             narratives=narratives,
@@ -611,6 +675,8 @@ class Narrator:
             entries_requested=len(queue),
             usage=self.usage,
             models=models,
+            stopped_at=stopped_at,
+            not_requested=not_requested,
         )
 
 
