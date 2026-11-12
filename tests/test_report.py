@@ -1,6 +1,7 @@
 import time
 
 import openpyxl
+import pandas as pd
 import pytest
 
 from ledgerlens import evaluate, jets
@@ -341,3 +342,216 @@ def test_exceptions_tied_on_risk_and_model_score_come_in_id_order(ledger, tmp_pa
     ids = [row[rows[0].index("entry_id")] for row in rows[1:]]
     assert len(ids) == int(flagged.sum()) > 16
     assert ids == sorted(ids)
+
+
+# --- text a cell cannot hold -------------------------------------------------------------------
+# openpyxl refuses a control character in a cell (IllegalCharacterError), writes U+FFFE, U+FFFF and
+# half of a surrogate pair into a file that then fails to open, and cut a text over 32,767
+# characters there without a word. A workpaper is evidence (rules 6 and 8): what a cell cannot
+# hold is shown where it stood, counted on the Summary sheet and stated on the Methodology sheet.
+# The characters are built with chr(): typed as escapes, the edit tools would decode them.
+
+VT, FF, US, TAB, LF = chr(11), chr(12), chr(31), chr(9), chr(10)
+SHOWN = "each shown as its code point (see Methodology)"
+
+
+def _sheet(path, name):
+    rows = list(openpyxl.load_workbook(path)[name].iter_rows(values_only=True))
+    return rows[0], rows[1:]
+
+
+def _cell(path, entry, column):
+    header, rows = _sheet(path, "Exceptions")
+    return next(r[header.index(column)] for r in rows if r[header.index("entry_id")] == entry)
+
+
+def _flat(text):
+    """Whitespace run together: the Methodology's notes are wrapped at 100 characters."""
+    return " ".join(text.split())
+
+
+def _methodology(path):
+    return _flat(" ".join(str(c.value) for row in openpyxl.load_workbook(path)["Methodology"].iter_rows()
+                          for c in row if c.value))
+
+
+def _flagged(ledger):
+    flags = jets.run_all(ledger)
+    scored = jets.score_entries(ledger, flags)
+    return scored, flags, list(scored.loc[scored["risk_score"] > 0, "entry_id"])
+
+
+def test_a_ledger_cell_a_cell_cannot_hold_is_shown_as_its_code_point(small_ledger, tmp_path):
+    """A vertical tab in a user's name made the workpaper raise IllegalCharacterError: the
+    Exceptions sheet carries the user, and the reasons that quote it (JET-12's for a manual
+    entry by anyone off the approver list) are on that sheet and on All flags."""
+    from ledgerlens.report import CUT_NOTE, UNWRITABLE_NOTE
+
+    ledger = small_ledger[0].copy()
+    manual = ledger.loc[ledger["source"] == "Manual", "entry_id"].iloc[0]
+    ledger.loc[ledger["entry_id"] == manual, "created_by"] = "ana" + VT + "x"
+    scored, flags, _ = _flagged(ledger)
+    reasons = flags.loc[flags["entry_id"] == manual, "reason"]
+    n, quoting = int(reasons.str.count(VT).sum()), int(reasons.str.contains(VT).sum())
+    assert n >= 1 and quoting >= 1  # JET-12 at least
+    path = build_workpaper(scored, flags, tmp_path / "wp.xlsx", top_n=len(scored))
+
+    shown = [reason.replace(VT, "[U+000B]") for reason in reasons]
+    assert _cell(path, manual, "created_by") == "ana[U+000B]x"
+    assert _cell(path, manual, "reasons") == " | ".join(shown)  # as written but for the tab
+    header, rows = _sheet(path, "All flags")
+    assert [r[header.index("reason")] for r in rows if r[header.index("entry_id")] == manual] == shown
+    cells = _summary_cells(path)
+    # The user's cell, the reasons cell and each reason on All flags that quotes the user.
+    assert cells["Characters a cell cannot hold"] == f"{1 + 2 * n} in {2 + quoting} cell(s), {SHOWN}"
+    assert "Texts cut to fit a cell" not in cells
+    labels = list(cells)  # column A, top to bottom
+    assert labels.index("Characters a cell cannot hold") == labels.index("Shown in this workpaper") + 1
+    assert _flat(UNWRITABLE_NOTE) in _methodology(path) and _flat(CUT_NOTE) not in _methodology(path)
+
+
+def test_a_decision_and_a_note_holding_a_control_character_are_shown_with_its_code_point(
+        small_ledger, tmp_path):
+    """The review store is append-only, so a decision or a note holding a control character (a
+    vertical tab is Word's line break, pasted into the note field) kept that store from ever
+    writing its workpaper again."""
+    from ledgerlens.review import Decision, ReviewStore
+
+    scored, flags, ids = _flagged(small_ledger[0])
+    first, second, third = ids[:3]
+    store = ReviewStore(tmp_path / "review.sqlite", "csv:test")
+    store.record(Decision(first, "dismiss", "a" + FF + "na", "checked" + VT + "twice" + VT + "fine"))
+    store.save_narrative(second, _note("Keyed" + US + "late"), model="claude-test")
+    path = build_workpaper(scored, flags, tmp_path / "wp.xlsx", store=store)
+
+    assert _cell(path, first, "note") == "checked[U+000B]twice[U+000B]fine"
+    assert _cell(path, first, "reviewer") == "a[U+000C]na"
+    assert _cell(path, second, "narrative") == "Keyed[U+001F]late"
+    # Blank stays blank in a column that had a cell changed: nothing undecided reads "nan".
+    assert _cell(path, second, "note") is None and _cell(path, third, "note") is None
+    assert _cell(path, third, "narrative") is None
+    # Characters, then cells: the note holds two.
+    assert _summary_cells(path)["Characters a cell cannot hold"] == f"4 in 3 cell(s), {SHOWN}"
+
+
+def test_a_character_xml_leaves_out_no_longer_makes_a_file_that_will_not_open(small_ledger, tmp_path):
+    """openpyxl writes U+FFFE, U+FFFF and half of a surrogate pair without a word (a CSV in UTF-8
+    and a reply in JSON can carry the first two), and the file then fails to load. The store
+    cannot hold a surrogate on its own, but a path can (Linux turns an undecodable byte of a file
+    name into one), and the controls file's path is on the Summary sheet. The Methodology's
+    lines are fitted too: a caller's model report is text like any other."""
+    from ledgerlens.controls import Controls
+    from ledgerlens.review import Decision, ReviewStore
+
+    scored, flags, ids = _flagged(small_ledger[0])
+    store = ReviewStore(tmp_path / "review.sqlite", "csv:test")
+    store.record(Decision(ids[0], "accept", "ana", "seen" + chr(0xFFFE)))
+    store.save_narrative(ids[1], _note("odd" + chr(0xFFFF) + "text"))
+    controls = Controls(("controller", "mchen"), 10_000, source="data/" + chr(0xDC80) + ".controls.json")
+    path = build_workpaper(scored, flags, tmp_path / "wp.xlsx", store=store, controls=controls,
+                           model_report="fitted" + chr(0xFFFF))
+
+    assert _cell(path, ids[0], "note") == "seen[U+FFFE]"  # the file opens
+    assert _cell(path, ids[1], "narrative") == "odd[U+FFFF]text"
+    cells = _summary_cells(path)
+    assert cells["Controls file"] == "data/[U+DC80].controls.json"
+    assert cells["Characters a cell cannot hold"] == f"4 in 4 cell(s), {SHOWN}"
+    # The note on what changed follows the limitations, ahead of the blocks a run adds.
+    text = _methodology(path)
+    assert text.index("Limitations") < text.index("Text changed to fit a cell") < text.index(
+        "Model fit") < text.index("fitted[U+FFFF]")
+
+
+#: The code points on either side of each edge of what a cell cannot hold, and its own ends.
+_EDGES = (8, 9, 10, 11, 12, 13, 14, 31, 32, 0x7F, 0xD7FF, 0xD800, 0xDFFF, 0xE000, 0xFFFD,
+          0xFFFE, 0xFFFF, 0x10000, 0x10FFFF)
+
+
+def test_each_edge_of_what_a_cell_cannot_hold(small_ledger, tmp_path):
+    """Shown as its code point: 0-8, 11, 12, 14-31, a surrogate on its own, U+FFFE and U+FFFF,
+    what XML 1.0 leaves out. Everything else as written; a carriage return reads back as a line
+    feed (XML's line-end handling), a line break either way. A Benford label is ledger text."""
+    scored, flags, _ = _flagged(small_ledger[0])
+    # As objects: pandas 3 keeps a text column in Arrow where pyarrow is installed, and Arrow
+    # cannot hold half of a surrogate pair at all.
+    labels = pd.Series([f"a{chr(cp)}b" for cp in _EDGES], dtype=object)
+    benford = pd.DataFrame({"label": labels, "n": range(len(_EDGES))})
+    path = build_workpaper(scored, flags, tmp_path / "edges.xlsx", benford=benford)
+
+    replaced = {8, 11, 12, 14, 31, 0xD800, 0xDFFF, 0xFFFE, 0xFFFF}
+    expected = [f"a[U+{cp:04X}]b" if cp in replaced else "a" + (LF if cp == 13 else chr(cp)) + "b"
+                for cp in _EDGES]
+    assert [row[0] for row in _sheet(path, "Benford")[1]] == expected
+    assert _summary_cells(path)["Characters a cell cannot hold"] == f"9 in 9 cell(s), {SHOWN}"
+
+
+def test_what_a_cell_cannot_hold_includes_every_character_openpyxl_refuses():
+    """openpyxl's own list, over every code point: a version that refused more would bring the
+    crash back without this."""
+    from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+
+    from ledgerlens.report import _UNWRITABLE
+
+    refused = [cp for cp in range(0x110000) if ILLEGAL_CHARACTERS_RE.match(chr(cp))]
+    assert refused and all(_UNWRITABLE.match(chr(cp)) for cp in refused)
+
+
+def _tail(units):
+    return f" [cut: the text runs to {units:,} characters; a cell holds 32,767]"
+
+
+def test_a_text_longer_than_a_cell_holds_is_cut_with_its_length_never_silently(small_ledger, tmp_path):
+    """openpyxl cut a text over 32,767 characters there without a word (pandas 3 warns on stderr,
+    pandas 2 not at all): a reviewer's long note, or the reasons of an entry with hundreds of
+    flagged lines. Excel counts in UTF-16, so an emoji takes two of the 32,767."""
+    from ledgerlens.report import CUT_NOTE, UNWRITABLE_NOTE
+    from ledgerlens.review import Decision, ReviewStore
+
+    scored, flags, ids = _flagged(small_ledger[0])
+    smile = chr(0x1F600)
+    notes = {ids[0]: "x" * 40_000, ids[1]: "y" * 32_767, ids[2]: "z" * 32_768, ids[3]: smile * 20_000}
+    store = ReviewStore(tmp_path / "review.sqlite", "csv:test")
+    for entry, note in notes.items():
+        store.record(Decision(entry, "dismiss", "ana", note))
+    path = build_workpaper(scored, flags, tmp_path / "wp.xlsx", store=store)
+
+    assert _cell(path, ids[1], "note") == notes[ids[1]]  # exactly a cell's worth: whole
+    for entry, units in ((ids[0], 40_000), (ids[2], 32_768)):
+        assert _cell(path, entry, "note") == notes[entry][:32_767 - len(_tail(units))] + _tail(units)
+    room = 32_767 - len(_tail(40_000))  # 20,000 emoji are 40,000 UTF-16 units
+    assert _cell(path, ids[3], "note") == smile * (room // 2) + _tail(40_000)
+    cells = _summary_cells(path)
+    assert cells["Texts cut to fit a cell"] == "3 (see Methodology)"
+    assert "Characters a cell cannot hold" not in cells
+    assert _flat(CUT_NOTE) in _methodology(path) and _flat(UNWRITABLE_NOTE) not in _methodology(path)
+
+
+def test_a_cut_never_splits_a_code_point_shown_in_brackets(small_ledger, tmp_path):
+    from ledgerlens.review import Decision, ReviewStore
+
+    scored, flags, ids = _flagged(small_ledger[0])
+    room = 32_767 - len(_tail(40_000))
+    note = "w" * (room - 12) + VT * (40_000 - room + 12)  # room for one [U+000B] (8), not two
+    store = ReviewStore(tmp_path / "review.sqlite", "csv:test")
+    store.record(Decision(ids[0], "dismiss", "ana", note))
+    path = build_workpaper(scored, flags, tmp_path / "wp.xlsx", store=store)
+
+    assert _cell(path, ids[0], "note") == "w" * (room - 12) + "[U+000B]" + _tail(40_000)
+    cells = _summary_cells(path)
+    assert cells["Texts cut to fit a cell"] == "1 (see Methodology)"
+    assert cells["Characters a cell cannot hold"] == f"1 in 1 cell(s), {SHOWN}"  # the one shown
+
+
+def test_text_a_cell_can_hold_is_written_as_it_is_and_nothing_is_said(small_ledger, tmp_path):
+    from ledgerlens.review import Decision, ReviewStore
+
+    scored, flags, ids = _flagged(small_ledger[0])
+    note = "line one" + LF + "line two" + TAB + "end, [U+000B] as typed"
+    store = ReviewStore(tmp_path / "review.sqlite", "csv:test")
+    store.record(Decision(ids[0], "dismiss", "ana", note))
+    path = build_workpaper(scored, flags, tmp_path / "wp.xlsx", store=store)
+
+    assert _cell(path, ids[0], "note") == note
+    cells = _summary_cells(path)
+    assert "Characters a cell cannot hold" not in cells and "Texts cut to fit a cell" not in cells
+    assert "Text changed to fit a cell" not in _methodology(path)
