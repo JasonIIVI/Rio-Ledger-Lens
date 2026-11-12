@@ -58,7 +58,8 @@ _UNWRITABLE_RANGES = (
 _UNWRITABLE = re.compile(
     "[" + "".join(f"{re.escape(chr(a))}-{re.escape(chr(b))}" for a, b in _UNWRITABLE_RANGES) + "]")
 
-#: What one cell holds, counted as Excel counts: in UTF-16 code units, so an emoji takes two.
+#: What one cell holds (Excel's limit), counted in UTF-16 code units, so an emoji takes two: the
+#: stricter count, as Excel's LEN counts a surrogate pair outside its Compatibility Version 2.
 #: openpyxl counts code points, and cut a longer text at 32,767 of them without a word.
 CELL_LIMIT = 32_767
 
@@ -70,9 +71,9 @@ UNWRITABLE_NOTE = (
     "the original."
 )
 CUT_NOTE = (
-    f"A cell holds at most {CELL_LIMIT:,} characters (an emoji counts as two). A longer text is "
-    "cut there and ends with a note in brackets giving its full length; the Summary sheet counts "
-    "the texts cut. The ledger and the review store still hold the whole text."
+    f"A cell holds at most {CELL_LIMIT:,} characters, and this workpaper counts an emoji as two. A "
+    "longer text is cut there and ends with a note in brackets giving its full length; the Summary "
+    "sheet counts the texts cut. The ledger and the review store still hold the whole text."
 )
 
 
@@ -81,7 +82,7 @@ def _marker(character: str) -> str:
 
 
 def _units(text: str) -> int:
-    """``text``'s length as Excel counts it: two for a character past U+FFFF."""
+    """``text``'s length in UTF-16 code units: two for a character past U+FFFF."""
     return len(text) + sum(1 for c in text if ord(c) > 0xFFFF)
 
 

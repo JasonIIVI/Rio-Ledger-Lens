@@ -507,7 +507,7 @@ def _tail(units):
 def test_a_text_longer_than_a_cell_holds_is_cut_with_its_length_never_silently(small_ledger, tmp_path):
     """openpyxl cut a text over 32,767 characters there without a word (pandas 3 warns on stderr,
     pandas 2 not at all): a reviewer's long note, or the reasons of an entry with hundreds of
-    flagged lines. Excel counts in UTF-16, so an emoji takes two of the 32,767."""
+    flagged lines. The count is in UTF-16 code units, the stricter one, so an emoji takes two."""
     from ledgerlens.report import CUT_NOTE, UNWRITABLE_NOTE
     from ledgerlens.review import Decision, ReviewStore
 
