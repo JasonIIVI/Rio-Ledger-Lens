@@ -376,12 +376,14 @@ Write the reviewer note as JSON.""".format(
 def validate(payload: dict) -> dict:
     """Check a parsed response against the contract, or raise.
 
-    A field the schema says is text must arrive as text. The request asks for that,
-    but a reply is checked here as it was sent: read through ``str()``, an object, an
-    array, a number, a boolean or null passed under its Python spelling, and an object
-    or an array then reached the store's insert as a value the driver cannot bind.
-    What this accepts is decided in this body, which the narrative eval hashes as part
-    of its grader.
+    A field the schema says is text must arrive as text the store can keep. The
+    request asks for that, but a reply is checked here as it was sent: read through
+    ``str()``, a value of another type passed under its Python spelling, and an object
+    or an array in a text field reached the store's insert as a value the driver
+    cannot bind. Text holding a lone surrogate (an unpaired surrogate escape is valid
+    JSON) cannot be encoded for the store either, and the refusal quotes none of it.
+    What this accepts is decided in this body and the two constants it reads, all of
+    which the narrative eval hashes as part of its grader.
     """
     if not isinstance(payload, dict):
         raise NarrativeError("response was not a JSON object")
@@ -392,11 +394,22 @@ def validate(payload: dict) -> dict:
 
     if not isinstance(payload["evidence_to_request"], list):
         raise NarrativeError("evidence_to_request must be a list")
+    evidence = []
     for number, item in enumerate(payload["evidence_to_request"], 1):
         if not isinstance(item, str):
             kind = "null" if item is None else type(item).__name__
             raise NarrativeError(f"evidence_to_request item {number} must be text, got {kind}")
-    evidence = [item.strip() for item in payload["evidence_to_request"] if item.strip()]
+        try:
+            item.encode("utf-8")
+        except UnicodeEncodeError:
+            raise NarrativeError(f"evidence_to_request item {number} is not text the store can "
+                                 "keep: it holds a lone surrogate") from None
+        # The store keeps the items one per line, so a line break inside one would read
+        # back as two items: its lines are joined with a space instead.
+        lines = item.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        joined = " ".join(line.strip() for line in lines if line.strip())
+        if joined:
+            evidence.append(joined)
     if not evidence:
         raise NarrativeError("evidence_to_request must not be empty")
 
@@ -412,6 +425,11 @@ def validate(payload: dict) -> dict:
         if not isinstance(value, str):
             kind = "null" if value is None else type(value).__name__
             raise NarrativeError(f"{key} must be text, got {kind}")
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError:
+            raise NarrativeError(f"{key} is not text the store can keep: it holds a lone "
+                                 "surrogate") from None
         if not value.strip():
             raise NarrativeError(f"{key} must not be empty")
 

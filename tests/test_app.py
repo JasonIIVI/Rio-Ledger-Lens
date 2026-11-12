@@ -418,12 +418,19 @@ def test_a_fault_in_saving_that_is_not_the_store_s_is_still_a_traceback(
     assert ReviewStore(db, identity).get_narrative(picked) is None
 
 
+@pytest.mark.parametrize("summary, shown", [
+    pytest.param({"not": "text"}, "summary must be text\\, got dict", id="object"),
+    pytest.param("Manual credit " + chr(0xD800),
+                 "summary is not text the store can keep\\: it holds a lone surrogate",
+                 id="lone-surrogate"),
+])
 def test_a_reply_field_that_is_not_text_is_refused_before_the_store(
-        data_dir, tmp_path, identity, monkeypatch, llm):
-    """validate() refuses a field the schema says is text and is not, so the reply is refused
-    like any other that breaks the contract, and the page goes on. Read through str(), a summary
-    that was an object reached the insert as a value the driver cannot bind: a traceback."""
-    payload = dict(llm.good, summary={"not": "text"})
+        data_dir, tmp_path, identity, monkeypatch, llm, summary, shown):
+    """validate() refuses a field the schema says is text and is not, and text holding a lone
+    surrogate, so the reply is refused like any other that breaks the contract, and the page
+    goes on. Before, the object reached the insert as a value the driver cannot bind, and the
+    surrogate as text sqlite3 cannot encode: a traceback either way."""
+    payload = dict(llm.good, summary=summary)
     client = _narrating_with(monkeypatch, [llm.response(payload=payload)], llm)
     db = tmp_path / "review.sqlite"
     at = _run(data_dir, db, reviewer="ana")
@@ -432,7 +439,7 @@ def test_a_reply_field_that_is_not_text_is_refused_before_the_store(
     _click_write(at)  # asserts the script raised nothing
 
     assert len(client.calls) == 1
-    assert [e.value for e in at.error] == ["summary must be text\\, got dict"]  # through md()
+    assert [e.value for e in at.error] == [shown]  # through md()
     assert ReviewStore(db, identity).get_narrative(picked) is None
     assert any("No narrative yet for this entry." in c.value for c in at.caption)
     assert not at.success

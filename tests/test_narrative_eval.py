@@ -175,6 +175,15 @@ def test_a_note_with_a_field_outside_the_schema_fails_every_check(sample, key):
     assert metrics == {**{m: False for m in METRICS}, "passed": False}
 
 
+def test_a_note_holding_text_the_store_cannot_keep_fails_every_check(sample):
+    """A lone surrogate is refused by the same schema check, so the note fails every check; a
+    run records such a reply as invalid, with a message that quotes none of it."""
+    case, prompt, entry, lines = sample
+    good = oracle(case, entry, lines)
+    metrics = grade({**good, "summary": good["summary"] + chr(0xD800)}, case, prompt)
+    assert metrics == {**{m: False for m in METRICS}, "passed": False}
+
+
 @pytest.mark.parametrize("damage, failing", [
     (lambda n: n.update(why_flagged=n["why_flagged"] + " The entry was deliberately concealed."),
      "no_assertions"),

@@ -339,6 +339,57 @@ def test_a_reply_with_a_field_that_is_not_text_is_refused_before_it_can_be_kept(
     assert len(client.calls) == 1
 
 
+#: Valid JSON as an unpaired surrogate escape, which json.loads reads back as this one
+#: character. No UTF-8 encoding holds it, so the store cannot keep text that does.
+LONE_SURROGATE = chr(0xD800)
+
+
+@pytest.mark.parametrize("key", ["summary", "why_flagged", "suggested_control"])
+def test_validate_refuses_text_the_store_cannot_keep(key, llm):
+    with pytest.raises(NarrativeError,
+                       match=f"^{key} is not text the store can keep: it holds a lone surrogate$"):
+        validate(dict(llm.good, **{key: "Manual credit " + LONE_SURROGATE}))
+
+
+def test_validate_refuses_an_evidence_item_the_store_cannot_keep(llm):
+    payload = dict(llm.good, evidence_to_request=["The signed contract", "Notes " + LONE_SURROGATE])
+    with pytest.raises(NarrativeError, match="^evidence_to_request item 2 is not text the store "
+                                             "can keep: it holds a lone surrogate$"):
+        validate(payload)
+
+
+def test_a_reply_holding_a_lone_surrogate_is_refused_without_quoting_it(llm):
+    """As the API would send it: json.dumps writes the character as an unpaired escape. The
+    refusal quotes none of the reply, so the CLI can print it and the eval can write it."""
+    client = llm.client([llm.response(payload=dict(llm.good, summary="Manual " + LONE_SURROGATE))])
+    with pytest.raises(NarrativeError) as refused:
+        Narrator(client=client).write_note("p")
+    assert str(refused.value) == "summary is not text the store can keep: it holds a lone surrogate"
+    assert len(client.calls) == 1
+
+
+def test_validate_joins_the_lines_of_an_evidence_item(llm):
+    """The store keeps the items one per line, so a line break inside one would read back as
+    two: its lines are joined with a space. An item with no line break comes out as before."""
+    payload = dict(llm.good, evidence_to_request=[
+        "The signed contract,\nincluding its rates", " Shipping\r\nnotes ", "Bank\rstatement",
+        " \n ", "  Remittance advice  "])
+    assert validate(payload)["evidence_to_request"] == [
+        "The signed contract, including its rates", "Shipping notes", "Bank statement",
+        "Remittance advice"]
+
+
+def test_an_evidence_item_with_a_line_break_reads_back_from_the_store_as_one(tmp_path, llm):
+    from ledgerlens.review import ReviewStore
+
+    note = validate(dict(llm.good, evidence_to_request=[
+        "The signed contract,\nincluding its rates", "Shipping notes"]))
+    store = ReviewStore(tmp_path / "review.sqlite", "csv:" + "a" * 64)
+    store.save_narrative("JE-1", note, model="claude-test")
+    assert store.get_narrative("JE-1")["evidence_to_request"] == [
+        "The signed contract, including its rates", "Shipping notes"]
+
+
 # --- batches ----------------------------------------------------------------
 
 

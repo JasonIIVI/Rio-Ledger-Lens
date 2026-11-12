@@ -749,15 +749,16 @@ def cmd_narrate(args: argparse.Namespace) -> int:
     print(result.describe())
     if skip:
         print(f"Skipped {len(skip)} entries already narrated in {args.db} (--force redoes them)")
+    # Entry ids are ledger text: one_line keeps a line break in one from forging a line here.
     for entry_id, why in result.failures.items():
-        print(f"  FAILED {entry_id}: {why}")
+        print(f"  FAILED {one_line(entry_id)}: {why}")
     if result.stopped_at is not None:
         left = result.not_requested
         unasked = (f", and the {left} queued entr{'y' if left == 1 else 'ies'} after it "
                    f"{'was' if left == 1 else 'were'} not requested") if left else ""
-        print(f"Stopped at {result.stopped_at}: the review database refused its note{unasked}. "
-              "Once the database takes writes, run the command again (entries already "
-              "narrated are skipped unless --force).")
+        print(f"Stopped at {one_line(result.stopped_at)}: the review database refused its "
+              f"note{unasked}. Once the database takes writes, run the command again (entries "
+              "already narrated are skipped unless --force).")
     if result.narratives:
         print(f"\n{len(result.narratives)} narrative(s) saved to {args.db}")
     elif result.entries_requested == 0:
