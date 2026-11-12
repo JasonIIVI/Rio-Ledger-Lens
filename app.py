@@ -116,9 +116,9 @@ def md(text: str) -> str:
     return _MARKUP.sub(r"\\\1", str(text))
 
 
-# The driver's errors for a call it could not make (a value it cannot bind, such as a reply
-# field that is not text, which narrate.validate lets through): our fault, not the store
-# refusing a write, so a store write re-raises them as tracebacks before it catches the rest.
+# The driver's errors for a call it could not make (a value it cannot bind; a reply field that
+# is not text no longer gets that far, since narrate.validate refuses it): our fault, not the
+# store refusing a write, so a store write re-raises them as tracebacks before it catches the rest.
 _OUR_SQLITE_FAULTS = (sqlite3.ProgrammingError, sqlite3.InterfaceError)
 
 

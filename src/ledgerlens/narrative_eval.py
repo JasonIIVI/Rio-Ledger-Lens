@@ -120,6 +120,15 @@ GRADER_NOTES = (
      "not only here; a test fails if the committed rows were not graded by the grader in the "
      "same commit. One offline re-grade of the 2026-09-23 run from its previous rows changed no "
      "check on any row; the score stayed at 94%."),
+    ("2026-11-12",
+     "The schema check the grader calls (narrate.validate) read summary, why_flagged and "
+     "suggested_control through str() and kept them as they came, and every evidence item "
+     "through str(), so a reply with an object, an array, a number, a boolean or null where "
+     "the schema asks for text was graded schema_valid, on its Python spelling. Such a reply is "
+     "now refused like any other break of the contract: a run records it as invalid, and a "
+     "re-grade fails it on every check. The grader's sha256 moved with it. One offline re-grade "
+     "of the 2026-09-23 run changed no check on any row (every stored field was already text); "
+     "the score stayed at 94%."),
 )
 
 #: Changes to what is judged, as opposed to the judge: a case added or

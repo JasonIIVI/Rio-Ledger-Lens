@@ -295,6 +295,49 @@ def test_validate_rejects_a_non_object():
         validate(["not", "an", "object"])
 
 
+# Every JSON value that is not a string, as json.loads gives it. Read through str(), each
+# passed under its Python spelling ("{'a': 'b'}", "True", "None"), and an object or an array
+# then reached the store's insert as a value the driver cannot bind.
+NOT_TEXT = [
+    pytest.param({"a": "b"}, "dict", id="object"),
+    pytest.param(["a"], "list", id="array"),
+    pytest.param(7, "int", id="number"),
+    pytest.param(7.5, "float", id="fraction"),
+    pytest.param(True, "bool", id="boolean"),
+    pytest.param(None, "null", id="null"),
+]
+
+
+@pytest.mark.parametrize("key", ["summary", "why_flagged", "suggested_control"])
+@pytest.mark.parametrize("value, kind", NOT_TEXT)
+def test_validate_refuses_a_text_field_that_is_not_text(key, value, kind, llm):
+    with pytest.raises(NarrativeError, match=f"^{key} must be text, got {kind}$"):
+        validate(dict(llm.good, **{key: value}))
+
+
+@pytest.mark.parametrize("value, kind", NOT_TEXT)
+def test_validate_refuses_an_evidence_item_that_is_not_text(value, kind, llm):
+    payload = dict(llm.good, evidence_to_request=["The signed contract", value, "Shipping notes"])
+    with pytest.raises(NarrativeError, match=f"^evidence_to_request item 2 must be text, got {kind}$"):
+        validate(payload)
+
+
+def test_validate_keeps_the_text_fields_as_written_and_tidies_the_evidence(llm):
+    """What a valid reply becomes is unchanged: the text fields as they came, the evidence
+    stripped with blank items dropped, the confidence in lower case."""
+    payload = dict(llm.good, summary="  Manual credit.  ", evidence_to_request=["  a ", "", " ", "b"])
+    cleaned = validate(payload)
+    assert cleaned == dict(payload, evidence_to_request=["a", "b"], confidence="high")
+    assert cleaned["summary"] == "  Manual credit.  "
+
+
+def test_a_reply_with_a_field_that_is_not_text_is_refused_before_it_can_be_kept(llm):
+    client = llm.client([llm.response(payload=dict(llm.good, summary={"text": "Manual credit"}))])
+    with pytest.raises(NarrativeError, match="^summary must be text, got dict$"):
+        Narrator(client=client).write_note("p")
+    assert len(client.calls) == 1
+
+
 # --- batches ----------------------------------------------------------------
 
 

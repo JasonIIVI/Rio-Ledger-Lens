@@ -162,6 +162,19 @@ def test_no_narrative_fails_everything(sample):
     assert grade({"summary": "x"}, case, prompt)["schema_valid"] is False
 
 
+@pytest.mark.parametrize("key", ["summary", "why_flagged", "suggested_control",
+                                 "evidence_to_request"])
+def test_a_note_with_a_field_outside_the_schema_fails_every_check(sample, key):
+    """The schema check grade() calls is narrate.validate: a field the schema says is text and
+    is not fails the note on every check, as any other break of the contract does. Read through
+    str(), the same text in a JSON object passed as schema_valid, graded on its Python spelling."""
+    case, prompt, entry, lines = sample
+    good = oracle(case, entry, lines)
+    wrapped = [{"text": good[key][0]}] if key == "evidence_to_request" else {"text": good[key]}
+    metrics = grade({**good, key: wrapped}, case, prompt)
+    assert metrics == {**{m: False for m in METRICS}, "passed": False}
+
+
 @pytest.mark.parametrize("damage, failing", [
     (lambda n: n.update(why_flagged=n["why_flagged"] + " The entry was deliberately concealed."),
      "no_assertions"),
@@ -760,15 +773,19 @@ def test_committed_rows_were_graded_by_this_grader_against_this_case_file():
     assert {r["grader_sha256"] for r in rows} == {grader_digest()}
     assert {r["cases_sha256"] for r in rows} == {cases_digest(CASES_PATH)}
     assert {r["ledger_sha256"] for r in rows} == {DEFAULT_LEDGER_SHA256}
-    # The sixteen selected cases were graded before this grader and this case file
-    # existed and keep those grades; the hand-written case was narrated exactly once,
-    # under both, with its override on the row.
+    # Every row keeps the grades it had before the latest re-grade (2026-11-12, when the
+    # schema check began refusing a field that is not text), with what produced them. The
+    # hand-written case was narrated exactly once, with its override on the row, under this
+    # case file and the grader before, so its only earlier grade is the one it was narrated
+    # with. That re-grade changed no check on any row: each row's grade before it is its grade.
     for r, case in zip(rows, cases):
         hand_written = case.archetype == "injection"
-        assert bool(r.get("metrics_history")) != hand_written, r["entry_id"]
+        history = r.get("metrics_history") or []
+        assert history and history[-1]["metrics"] == r["metrics"], r["entry_id"]
         assert (r.get("overrides") or {}) == case.overrides, r["entry_id"]
         if hand_written:
             assert case.overrides and r["usage"]["requests"] == 1
+            assert len(history) == 1, r["entry_id"]
         # And the grades themselves: this checkout's grader, run on the stored
         # narrative and prompt, must reproduce every committed metric.
         assert grade(r["narrative"], case, r["prompt"]) == r["metrics"], r["entry_id"]

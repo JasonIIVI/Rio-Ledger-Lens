@@ -309,6 +309,35 @@ def test_narrate_stores_the_model_each_response_names_not_the_one_requested(
             f"claude-opus-5 (1), {dated} (1)") in capsys.readouterr().out
 
 
+def test_narrate_refuses_a_reply_outside_the_schema_and_goes_on(tmp_path, capsys, monkeypatch, llm):
+    """A summary that is an object is that entry's failure, and the batch goes on. Read through
+    str(), it reached the insert as a value the driver cannot bind: a traceback that lost that
+    note and every note after it."""
+    from ledgerlens import cli
+    from ledgerlens.ingest import ledger_identity, load_csv
+    from ledgerlens.narrate import Narrator
+    from ledgerlens.review import ReviewStore
+
+    monkeypatch.chdir(tmp_path)
+    main(["generate", "--start", "2024-01-01", "--end", "2024-06-30",
+          "--out-dir", str(tmp_path)])
+    capsys.readouterr()
+    outside = llm.response(payload=dict(llm.good, summary={"text": "Manual credit"}))
+    client = llm.client([llm.response(), outside, llm.response()])
+    monkeypatch.setattr(cli, "Narrator", lambda **kw: Narrator(client=client, **kw))
+    db, ledger = tmp_path / "review.sqlite", str(tmp_path / "ledger.csv")
+
+    assert main(["narrate", ledger, "--db", str(db), "--top", "3", "--no-model"]) == 0
+
+    first, second, third = (call["messages"][0]["content"].split()[2] for call in client.calls)
+    out = capsys.readouterr().out
+    assert "Narrated 2/3 entries with claude-opus-5 (1 failed)\n3 request(s): " in out
+    assert f"  FAILED {second}: summary must be text, got dict\n" in out
+    assert "\n2 narrative(s) saved to " in out
+    store = ReviewStore(db, ledger_identity(load_csv(ledger), ledger))
+    assert store.narrative_ids() == {first, third}
+
+
 def test_report_attaches_an_existing_review_db_only(tmp_path, capsys):
     from ledgerlens.ingest import ledger_identity, load_csv
     from ledgerlens.review import Decision, ReviewStore

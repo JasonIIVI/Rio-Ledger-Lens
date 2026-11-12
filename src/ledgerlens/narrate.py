@@ -62,7 +62,7 @@ VALID_CONFIDENCE = ("high", "medium", "low")
 
 #: What the API is asked to guarantee. Deliberately limited to the keywords
 #: structured outputs honour everywhere (types, enum, required,
-#: additionalProperties). Non-emptiness is checked in :func:`validate`.
+#: additionalProperties). :func:`validate` checks the types again, and non-emptiness.
 NARRATIVE_SCHEMA: dict = {
     "type": "object",
     "properties": {
@@ -361,7 +361,15 @@ Write the reviewer note as JSON.""".format(
 
 
 def validate(payload: dict) -> dict:
-    """Check a parsed response against the contract, or raise."""
+    """Check a parsed response against the contract, or raise.
+
+    A field the schema says is text must arrive as text. The request asks for that,
+    but a reply is checked here as it was sent: read through ``str()``, an object, an
+    array, a number, a boolean or null passed under its Python spelling, and an object
+    or an array then reached the store's insert as a value the driver cannot bind.
+    What this accepts is decided in this body, which the narrative eval hashes as part
+    of its grader.
+    """
     if not isinstance(payload, dict):
         raise NarrativeError("response was not a JSON object")
 
@@ -371,7 +379,11 @@ def validate(payload: dict) -> dict:
 
     if not isinstance(payload["evidence_to_request"], list):
         raise NarrativeError("evidence_to_request must be a list")
-    evidence = [str(item).strip() for item in payload["evidence_to_request"] if str(item).strip()]
+    for number, item in enumerate(payload["evidence_to_request"], 1):
+        if not isinstance(item, str):
+            kind = "null" if item is None else type(item).__name__
+            raise NarrativeError(f"evidence_to_request item {number} must be text, got {kind}")
+    evidence = [item.strip() for item in payload["evidence_to_request"] if item.strip()]
     if not evidence:
         raise NarrativeError("evidence_to_request must not be empty")
 
@@ -383,7 +395,11 @@ def validate(payload: dict) -> dict:
         )
 
     for key in ("summary", "why_flagged", "suggested_control"):
-        if not str(payload[key]).strip():
+        value = payload[key]
+        if not isinstance(value, str):
+            kind = "null" if value is None else type(value).__name__
+            raise NarrativeError(f"{key} must be text, got {kind}")
+        if not value.strip():
             raise NarrativeError(f"{key} must not be empty")
 
     cleaned = dict(payload)
