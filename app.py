@@ -34,7 +34,7 @@ from ledgerlens.materiality import (
 )
 from ledgerlens.model import combine, score_ledger
 from ledgerlens.narrate import NarrativeError, Narrator, build_prompt, entry_context
-from ledgerlens.review import DECISIONS, LEGACY_LEDGER_ID, Decision, ReviewStore
+from ledgerlens.review import CALLER_FAULTS, DECISIONS, LEGACY_LEDGER_ID, Decision, ReviewStore
 from ledgerlens.summary import code_span
 
 load_dotenv()
@@ -114,12 +114,6 @@ def md(text: str) -> str:
     nothing is redrawn; checked in a browser on both Streamlit versions.
     """
     return _MARKUP.sub(r"\\\1", str(text))
-
-
-# The driver's errors for a call it could not make (a value it cannot bind; a reply field that
-# is not text no longer gets that far, since narrate.validate refuses it): our fault, not the
-# store refusing a write, so a store write re-raises them as tracebacks before it catches the rest.
-_OUR_SQLITE_FAULTS = (sqlite3.ProgrammingError, sqlite3.InterfaceError)
 
 
 def _sdk_errors() -> tuple:
@@ -408,7 +402,7 @@ with tab_queue:
                 fresh, model = written
                 try:
                     note_id = store.save_narrative(picked, fresh, model=model)
-                except _OUR_SQLITE_FAULTS:
+                except CALLER_FAULTS:
                     raise
                 except sqlite3.Error as exc:
                     # The review database refused the write: a read-only file, a lock held
@@ -488,7 +482,7 @@ with tab_queue:
                 )
                 try:
                     store.record(decision)
-                except _OUR_SQLITE_FAULTS:
+                except CALLER_FAULTS:
                     raise
                 except sqlite3.Error as exc:
                     # Nothing was written (an uncommitted insert is rolled back), so

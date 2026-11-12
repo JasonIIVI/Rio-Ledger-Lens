@@ -21,6 +21,7 @@ from ledgerlens.narrate import (
     NarrationResult,
     NarrativeError,
     Narrator,
+    NoteNotKept,
     Usage,
     build_prompt,
     build_system_prompt,
@@ -381,6 +382,60 @@ def test_narrate_files_each_note_under_the_model_its_response_names(ledger, scor
     assert list(result.narratives) == [asked[0], asked[2]]
     assert "named no model" in result.failures[asked[1]]  # that entry only; the batch went on
     assert result.model == DEFAULT_MODEL  # the id requested, kept apart
+
+
+def test_keep_has_each_note_before_the_next_is_requested(ledger, scored, llm):
+    """Only notes that came back are kept, each before the next request goes out."""
+    entries, flags = scored
+    client = llm.client([llm.response(), llm.response(stop_reason="max_tokens"), llm.response()])
+    kept = []
+
+    def keep(entry_id, note, model):
+        kept.append((entry_id, len(client.calls), note["confidence"], model))
+
+    result = Narrator(client=client).narrate(entries, flags, ledger, top_n=3, keep=keep)
+
+    asked = [call["messages"][0]["content"].split()[2] for call in client.calls]
+    assert kept == [(asked[0], 1, "high", DEFAULT_MODEL), (asked[2], 3, "high", DEFAULT_MODEL)]
+    assert list(result.narratives) == list(result.models) == [asked[0], asked[2]]
+    assert list(result.failures) == [asked[1]]
+    assert result.stopped_at is None and result.not_requested == 0
+
+
+@pytest.mark.parametrize("refused, top_n, left", [(2, 5, 3), (3, 3, 0)])
+def test_a_note_not_kept_fails_its_entry_and_stops_the_batch(ledger, scored, llm, refused, top_n,
+                                                             left):
+    entries, flags = scored
+    client = llm.client()
+
+    def keep(entry_id, note, model):
+        if len(client.calls) == refused:
+            raise NoteNotKept("the store refused it")
+
+    result = Narrator(client=client).narrate(entries, flags, ledger, top_n=top_n, keep=keep)
+
+    asked = [call["messages"][0]["content"].split()[2] for call in client.calls]
+    assert len(asked) == refused  # nothing more was requested
+    assert list(result.narratives) == list(result.models) == asked[:-1]
+    assert result.failures == {asked[-1]: "the store refused it"}
+    assert (result.stopped_at, result.not_requested) == (asked[-1], left)
+    assert (result.entries_requested, result.usage.requests) == (top_n, refused)
+    assert result.describe().splitlines()[0] == (
+        f"Narrated {refused - 1}/{top_n} entries with claude-opus-5 (1 failed)")
+
+
+def test_anything_else_keep_raises_is_not_caught(ledger, scored, llm):
+    """A fault in the caller's own keep is not the reply failing: it is not turned into that
+    entry's failure, and the batch does not go on past it."""
+    entries, flags = scored
+    client = llm.client()
+
+    def keep(entry_id, note, model):
+        raise TypeError("a fault in the caller's own code")
+
+    with pytest.raises(TypeError, match="caller's own code"):
+        Narrator(client=client).narrate(entries, flags, ledger, top_n=3, keep=keep)
+    assert len(client.calls) == 1
 
 
 def _result(models, failed=1, model=DEFAULT_MODEL):

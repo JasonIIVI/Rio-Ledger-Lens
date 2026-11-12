@@ -246,6 +246,15 @@ class NarrativeError(RuntimeError):
     """Raised when a response cannot be used as a narrative."""
 
 
+class NoteNotKept(Exception):
+    """Raised by a batch's ``keep`` when the place notes are kept refused one.
+
+    The batch stops there. The note just written is lost, though its request still
+    counts in the usage, and nothing more is requested: a store that refused one
+    write will most likely refuse the next, and every request is paid for.
+    """
+
+
 @dataclass
 class Usage:
     """Token accounting across a batch, straight from the API's usage blocks.
@@ -292,6 +301,10 @@ class NarrationResult:
     usage: Usage = field(default_factory=Usage)
     #: entry_id -> the model its response named.
     models: dict[str, str] = field(default_factory=dict)
+    #: The entry whose note ``keep`` refused, where the batch stopped; None if it ran through.
+    stopped_at: str | None = None
+    #: Queued entries never requested because the batch stopped there.
+    not_requested: int = 0
 
     @property
     def success_rate(self) -> float:
@@ -585,12 +598,20 @@ class Narrator:
         lines: pd.DataFrame,
         top_n: int = 25,
         skip: set | None = None,
+        keep=None,
     ) -> NarrationResult:
         """Narrate the highest-risk flagged entries.
 
         Only the top N are narrated. Running an LLM over a whole population
         would be slow and expensive for no benefit - the entries nobody will
         open do not need a paragraph written about them.
+
+        ``keep``, when given, is called as ``keep(entry_id, note, model)`` with each
+        note as its response comes back, before the next request, so a note is
+        stored as soon as it is paid for rather than when the batch ends. If it
+        raises :class:`NoteNotKept`, that entry fails and the batch stops there;
+        anything else it raises is not caught. With ``keep``, ``narratives`` holds
+        the notes it kept.
         """
         skip = skip or set()
         self.usage = Usage()
@@ -606,19 +627,28 @@ class Narrator:
         narratives: dict[str, dict] = {}
         failures: dict[str, str] = {}
         models: dict[str, str] = {}
+        stopped_at, not_requested = None, 0
 
-        for entry in queue.itertuples():
+        for position, entry in enumerate(queue.itertuples(), 1):
             entry_id = entry.entry_id
             row, entry_flags, entry_lines = entry_context(scored, flags, lines, entry_id)
             try:
-                narratives[entry_id], models[entry_id] = self.write_note(
-                    build_prompt(row, entry_flags, entry_lines)
-                )
+                note, model = self.write_note(build_prompt(row, entry_flags, entry_lines))
             except Exception as exc:  # noqa: BLE001 - one bad entry must not stop the batch
                 if _is_auth_error(exc) and not narratives:
                     # A bad key fails every entry the same way; say so once.
                     raise NarrativeError(f"authentication failed on the first request: {exc}") from exc
                 failures[entry_id] = str(exc)
+                continue
+            if keep is not None:
+                # Outside the try above: a fault in keep is the caller's, not this reply's.
+                try:
+                    keep(entry_id, note, model)
+                except NoteNotKept as exc:
+                    failures[entry_id] = str(exc)
+                    stopped_at, not_requested = entry_id, len(queue) - position
+                    break
+            narratives[entry_id], models[entry_id] = note, model
 
         return NarrationResult(
             narratives=narratives,
@@ -627,6 +657,8 @@ class Narrator:
             entries_requested=len(queue),
             usage=self.usage,
             models=models,
+            stopped_at=stopped_at,
+            not_requested=not_requested,
         )
 
 

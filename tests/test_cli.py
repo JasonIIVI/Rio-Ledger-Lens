@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -336,6 +337,163 @@ def test_narrate_refuses_a_reply_outside_the_schema_and_goes_on(tmp_path, capsys
     assert "\n2 narrative(s) saved to " in out
     store = ReviewStore(db, ledger_identity(load_csv(ledger), ledger))
     assert store.narrative_ids() == {first, third}
+
+
+def _six_months_to_narrate(tmp_path, monkeypatch, capsys, client):
+    """A six-month ledger in tmp_path, and the CLI's Narrator on the fake client."""
+    from ledgerlens import cli
+    from ledgerlens.narrate import Narrator
+
+    monkeypatch.chdir(tmp_path)
+    main(["generate", "--start", "2024-01-01", "--end", "2024-06-30",
+          "--out-dir", str(tmp_path)])
+    capsys.readouterr()
+    monkeypatch.setattr(cli, "Narrator", lambda **kw: Narrator(client=client, **kw))
+    return tmp_path / "review.sqlite", str(tmp_path / "ledger.csv")
+
+
+def _store(db, ledger):
+    from ledgerlens.ingest import ledger_identity, load_csv
+    from ledgerlens.review import ReviewStore
+
+    return ReviewStore(db, ledger_identity(load_csv(ledger), ledger))
+
+
+def _asked(client):
+    return [call["messages"][0]["content"].split()[2] for call in client.calls]
+
+
+def _refusing_the_save_after_request(monkeypatch, client, request, error):
+    from ledgerlens.review import ReviewStore
+
+    save = ReviewStore.save_narrative
+
+    def refuse(self, entry_id, narrative, model=""):
+        if len(client.calls) == request:
+            raise error
+        return save(self, entry_id, narrative, model=model)
+
+    monkeypatch.setattr(ReviewStore, "save_narrative", refuse)
+
+
+def test_narrate_stores_each_note_as_it_comes_back(tmp_path, capsys, monkeypatch, llm):
+    """Each note is in the store before the next is requested, so nothing that goes wrong later
+    in the batch can take an earlier note with it."""
+    client = llm.client()
+    db, ledger = _six_months_to_narrate(tmp_path, monkeypatch, capsys, client)
+    store = _store(db, ledger)
+    stored_when_asked = []
+    create = client.messages.create
+
+    def counting(**kwargs):
+        stored_when_asked.append(len(store.narrative_ids()))
+        return create(**kwargs)
+
+    client.messages.create = counting
+
+    assert main(["narrate", ledger, "--db", str(db), "--top", "4", "--no-model"]) == 0
+    assert stored_when_asked == [0, 1, 2, 3]
+    assert store.narrative_ids() == set(_asked(client))
+
+
+# What a store's refusal of a write looks like to the driver (#30 caught the same in the
+# dashboard): a lock held past SQLite's wait, a file replaced by one that is not a database,
+# a constraint, a value too big.
+STORE_REFUSALS = [
+    pytest.param(sqlite3.OperationalError("database is locked"), id="OperationalError"),
+    pytest.param(sqlite3.DatabaseError("file is not a database"), id="DatabaseError"),
+    pytest.param(sqlite3.IntegrityError("NOT NULL constraint failed: narratives.generated_at"),
+                 id="IntegrityError"),
+    pytest.param(sqlite3.DataError("string or blob too big"), id="DataError"),
+]
+
+
+@pytest.mark.parametrize("error", STORE_REFUSALS)
+def test_narrate_stops_at_a_refused_save_and_requests_nothing_more(tmp_path, capsys, monkeypatch,
+                                                                   llm, error):
+    """A store that refused one write will most likely refuse the next, and each request is
+    paid for: the batch stops at the refused note, and the notes stored before it stay."""
+    client = llm.client()
+    db, ledger = _six_months_to_narrate(tmp_path, monkeypatch, capsys, client)
+    _refusing_the_save_after_request(monkeypatch, client, 2, error)
+
+    assert main(["narrate", ledger, "--db", str(db), "--top", "4", "--no-model"]) == 1
+
+    first, second = _asked(client)
+    out = capsys.readouterr().out
+    assert "Narrated 1/4 entries with claude-opus-5 (1 failed)\n2 request(s): " in out
+    assert (f"  FAILED {second}: the note came back, but the review database refused to store "
+            f"it ({type(error).__name__}: {error})\n") in out
+    assert out.endswith(
+        f"Stopped at {second}: the review database refused its note, and the 2 queued entries "
+        "after it were not requested. Once the database takes writes, run the command again "
+        f"(entries already narrated are skipped unless --force).\n\n1 narrative(s) saved to {db}\n")
+    assert _store(db, ledger).narrative_ids() == {first}
+
+
+def test_narrate_stops_when_the_review_database_turns_read_only(tmp_path, capsys, monkeypatch,
+                                                                llm):
+    """The same, from SQLite itself: the file became read-only while the second note was being
+    written. Before, every note was requested first and the first save was a traceback."""
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("root writes to a read-only file")
+    client = llm.client()
+    db, ledger = _six_months_to_narrate(tmp_path, monkeypatch, capsys, client)
+    create = client.messages.create
+
+    def read_only_from_the_second(**kwargs):
+        if client.calls:
+            db.chmod(0o444)
+        return create(**kwargs)
+
+    client.messages.create = read_only_from_the_second
+    try:
+        assert main(["narrate", ledger, "--db", str(db), "--top", "3", "--no-model"]) == 1
+    finally:
+        db.chmod(0o644)
+
+    first, second = _asked(client)
+    out = capsys.readouterr().out
+    assert (f"  FAILED {second}: the note came back, but the review database refused to store "
+            "it (OperationalError: attempt to write a readonly database)\n") in out
+    assert (f"Stopped at {second}: the review database refused its note, and the 1 queued entry "
+            "after it was not requested. ") in out
+    assert _store(db, ledger).narrative_ids() == {first}
+
+
+def test_narrate_says_nothing_was_left_when_the_last_note_is_refused(tmp_path, capsys,
+                                                                     monkeypatch, llm):
+    client = llm.client()
+    db, ledger = _six_months_to_narrate(tmp_path, monkeypatch, capsys, client)
+    _refusing_the_save_after_request(monkeypatch, client, 2,
+                                     sqlite3.OperationalError("database is locked"))
+
+    assert main(["narrate", ledger, "--db", str(db), "--top", "2", "--no-model"]) == 1
+
+    _, second = _asked(client)
+    assert (f"\nStopped at {second}: the review database refused its note. Once the database "
+            "takes writes, run the command again") in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("error", [
+    pytest.param(sqlite3.ProgrammingError("Error binding parameter 2: type 'dict' is not supported"),
+                 id="ProgrammingError"),
+    pytest.param(sqlite3.InterfaceError("Error binding parameter 1 - probably unsupported type."),
+                 id="InterfaceError"),
+])
+def test_narrate_leaves_a_value_the_driver_cannot_bind_a_traceback(tmp_path, capsys, monkeypatch,
+                                                                   llm, error):
+    """Our own fault, not the store refusing a write: a traceback, as in the dashboard, and the
+    notes stored before it are kept."""
+    client = llm.client()
+    db, ledger = _six_months_to_narrate(tmp_path, monkeypatch, capsys, client)
+    _refusing_the_save_after_request(monkeypatch, client, 2, error)
+
+    with pytest.raises(type(error), match="Error binding parameter"):
+        main(["narrate", ledger, "--db", str(db), "--top", "4", "--no-model"])
+
+    first, _ = _asked(client)
+    assert _store(db, ledger).narrative_ids() == {first}
 
 
 def test_report_attaches_an_existing_review_db_only(tmp_path, capsys):
