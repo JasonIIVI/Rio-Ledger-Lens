@@ -795,41 +795,58 @@ and the MCP SDK, so the two together cover every code path CI will see.
   written a workpaper that would not open. And it cut a text over 32,767 characters there in
   silence (pandas 3 warns on stderr, pandas 2 not at all): a reviewer's long note, or the
   reasons of an entry with hundreds of flagged lines (found while planning this; the maintainer
-  chose to fix it here). `report._CellText` now fits every text the workbook carries: the
-  Exceptions, All flags and Benford frames before `to_excel`, and every Summary label and value
-  and Methodology line (the Methodology's lines moved into `_methodology()`, so they are fitted
-  before the Summary sheet is written and its count is whole). A character XML 1.0 leaves out
-  (`_UNWRITABLE_RANGES`) is shown where it stood as its code point in brackets (`[U+000B]`:
-  ASCII, so any font draws it, and not Excel's own `_xHHHH_` escape, which Excel decodes). A
-  text over `CELL_LIMIT` (32,767, counted in UTF-16 code units, so an emoji takes two: the
-  stricter count, since openpyxl counts code points; Excel's LEN counts a surrogate pair as two
-  unless the workbook is set to its Compatibility Version 2, and Excel was not opened to see
-  which count its cell limit uses) keeps what fits and ends with ` [cut: the text runs to N
-  characters; a cell holds 32,767]`, N in the same units; the cut is measured on the
-  text as written, so no code point in brackets is cut in half. Only the text cells that need it
-  change (`iloc` on a copy), so dtypes, blanks and the caller's frames stay as they were. When
-  anything changed, the Summary sheet counts it right after "Shown in this workpaper"
-  (`Characters a cell cannot hold`: N in M cell(s); `Texts cut to fit a cell`: K) and the
-  Methodology sheet says so after Limitations (`UNWRITABLE_NOTE`, `CUT_NOTE`, one wording each).
-  A workpaper that needs neither is written as before: the same cell for cell (value, type,
-  number format, bold, wrap, fill, widths, panes) as `7c702e0`'s on the default ledger with the
-  model, labels and a copy of the review database, with materiality, and on the sandbox pull,
-  under 3.9 and 3.12. The ledger and the review store keep the original text, and
-  `docs/methodology.md` says so. Not changed: a carriage return is written as it is and read
+  chose to fix it here). `report._CellText` now fits all the text the workbook carries but its
+  own fixed headings: the Exceptions, All flags and Benford frames before `to_excel`, and every
+  Summary label and value and Methodology line (the Methodology's lines moved into
+  `_methodology()`, so they are fitted before the Summary sheet is written and its count is
+  whole). A character XML 1.0 leaves out (`_UNWRITABLE_RANGES`) is shown where it stood as its
+  code point in brackets (`[U+000B]`: ASCII, so any font draws it, and not the file format's own
+  `_xHHHH_` escape). A text longer than `CELL_LIMIT` as shown, code points in brackets included
+  (32,767, counted in UTF-16 code units, so a character past U+FFFF, as many emoji are, takes
+  two: the stricter count, since openpyxl counts code points; Excel's LEN counts a surrogate pair
+  as two unless the workbook is set to its Compatibility Version 2, and Excel was not opened to
+  see which count its cell limit uses), keeps what fits and ends with ` [cut: shown in full, the
+  text would run to N characters; a cell holds 32,767]`; the cut is measured on the text as
+  written, so no code point in brackets is cut in half, and a character too wide for the room
+  left ends it. Only the cells that need it change, on a copy: a column with one to change is
+  written back as objects by position (a categorical cannot take a value it did not have), and
+  every other cell, blanks included, and the caller's frames stay as they were. When anything
+  changed, the Summary sheet counts it right after "Shown in this workpaper" (`Characters a cell
+  cannot hold`: N in M cell(s); `Texts cut to fit a cell`: K) and the Methodology sheet says so
+  after Limitations (`UNWRITABLE_NOTE`, `CUT_NOTE`, one wording each): only the workpaper shows
+  the text this way, and the ledger and the review store are not changed (`docs/methodology.md`
+  says so too). A workpaper that needs neither is written as before: the same cell for cell
+  (value, type, number format, bold, wrap, fill, widths, panes) as `7c702e0`'s on the default
+  ledger with the model, labels and a copy of the review database, with materiality, and on the
+  sandbox pull, under 3.9 and 3.12. Not changed: a carriage return is written as it is and read
   back as a line feed (XML's line-end handling), the same break; text already holding a literal
-  `[U+000B]` reads like a replacement (the Summary's count tells them apart); `build_workpaper`
-  still returns the path and the CLI prints no extra line (the workpaper is the record). Nine
-  tests: a ledger cell (the user, and the reasons quoting it on Exceptions and All flags), a
-  decision's note and reviewer, and a note's text through `build_workpaper`, and all three
-  through `report`; U+FFFE, U+FFFF, a surrogate (in the controls file's path) and a model report,
-  whose file now opens; each edge of the set (a Benford label per code point either side of
-  it); the set against openpyxl's own list over every code point; the cut (40,000 characters,
-  exactly 32,767, 32,768, 20,000 emoji, a cut beside a run of markers); and nothing said when
-  nothing changed. Seven fail on `7c702e0` with only the new constants added (five on
-  `IllegalCharacterError`, one on a file that will not load, one on the silent cut); the pin
-  and the guard pass there. 35 mutants on a scratch clone: the tests killed 33, and the pins
-  added for the other two (a text only cut counted as a changed cell; the caller's frames
-  rewritten in place) kill those. Version unchanged (1.2.1).
+  `[U+000B]` reads like a replacement (the Summary's count tells them apart); a literal
+  `_xHHHH_` is written as it is, as before, and the file format reads it as an escape, so Excel
+  may show the character it names (not checked in Excel; openpyxl reads it back as written);
+  `build_workpaper` still returns the path and the CLI prints no extra line (the workpaper is the
+  record). Eleven tests: a ledger cell (the user, and the reasons quoting it on Exceptions and All
+  flags), a decision's note and reviewer, and a note's text through `build_workpaper`, and all
+  three through `report`; U+FFFE, U+FFFF, a surrogate (in the controls file's path) and a model
+  report, whose file now opens; each edge of the set (a Benford label per code point either side
+  of it); the set against openpyxl's own list over every code point; the cut (40,000 characters,
+  exactly 32,767, 32,768, 20,000, 16,384 and 16,383 emoji, a wide character at the cut, a cut
+  beside a run of markers, a text a cell would hold as written but not as shown); a categorical
+  and an Arrow column; and nothing said when nothing changed. Seven of the first nine fail on
+  `7c702e0` with only the new constants added (five on `IllegalCharacterError`, one on a file
+  that will not load, one on the silent cut); the pin and the guard pass there. Mutants on a
+  scratch clone, one at a time: 35 against the first commit, 33 killed, and the pins added for the
+  other two (a text only cut counted as a changed cell; the caller's frames rewritten in place)
+  kill those. A review (one reviewer, scratch clone) found no crash or regression on input the CLI
+  can produce, and one medium: a text a cell would hold as written was cut for what its code
+  points in brackets took, with a tail giving the length as written ("runs to 32,200 characters;
+  a cell holds 32,767"); the tail now gives the length as shown. And five lows, all fixed: three
+  surviving mutants (the half-limit threshold raised; a wide character at the cut skipped where it
+  should end it; the count rows after the blank row, which `_summary_cells` drops), a categorical
+  or Arrow text column left unfitted (the CLI's frames hold none, but `build_workpaper` takes the
+  caller's), "counts an emoji as two" (it is any character past U+FFFF) and "the ledger and the
+  review store still hold the original" (not a reasons cell, a path or a model report). The
+  changed tests fail on the reviewed commit; 40 mutants of the result are all killed by named
+  tests. Version unchanged (1.2.1).
 - **Next** — the maintainer's call. Open, unchanged: re-recording `docs/demo.gif` (its model
   scores predate v1.0.0's tie fix), week 5's model train/test split (a re-measurement under
   rule 10), week 7 (multi-line entries change the default ledger, so every figure, the eval
@@ -841,7 +858,7 @@ and the MCP SDK, so the two together cover every code path CI will see.
   Streamlit's traceback); and the decision form's draft, which a browser on Streamlit 1.50.0
   still shows after a decision was recorded (on `main` before the store-writes change too;
   AppTest sees it cleared, and the double-click guard refuses the same submit).
-- 1360 tests on 3.9 (1 skipped) / 1375 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
+- 1362 tests on 3.9 (1 skipped) / 1377 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
@@ -878,7 +895,7 @@ ledger CSV ──▶ ingest ──┼──▶ Isolation Forest ─────�
 | `features.py` | 16 engineered per-entry features for the model tier |
 | `model.py` | Isolation Forest, rank-based flagging, tier comparison |
 | `evaluate.py` | precision/recall, by archetype, by test, tier comparison, model lift; `attribution` (which test caught each archetype), `budget_recall_by_archetype` / `held_out_budget` (the model's budget against chance), `sweep`; `check_labels` (labels must cover exactly the ledger's entries) and the two caveat constants |
-| `report.py` | 5-tab Excel workpaper; every text it writes goes through `_CellText` (what a cell cannot hold shown as its code point, a text over a cell's limit cut with its length, both counted on the Summary sheet) |
+| `report.py` | 5-tab Excel workpaper; all the text it writes but its own fixed headings goes through `_CellText` (what a cell cannot hold shown as its code point, a text longer than a cell holds cut with its length, both counted on the Summary sheet) |
 | `review.py` | append-only SQLite store keyed by ledger (`ledger_id`; schema version 4 via `PRAGMA user_version`, numbered migrations from frozen DDL): decisions and versioned narratives, enforced by triggers; `read_only()` opener; `ledgers()` / `adopt_legacy()`; `CALLER_FAULTS`, the driver's errors that are a caller's fault rather than a refused write |
 | `narrate.py` | Claude narratives: structured-output JSON contract (checked again by `validate`: a field that is not text, or text the store cannot encode, refused; an evidence item's lines joined into one), cacheable system prompt, usage accounting, the model each response names (`response_model`), each note of a batch handed to the caller's `keep` as it comes back (`NoteNotKept` stops the batch) |
 | `narrative_eval.py` | case selection (the one label reader), rubric grader (the citation stripped before numbers are counted), `case_prompt` with per-case `overrides`, runner with case-file and ledger provenance, report with grader notes, case-set notes and baseline |
@@ -1025,7 +1042,7 @@ unhelpful. Say so wherever the number is quoted.
   through the data-not-instructions rule, a refusal through `ascii` of the id it quotes, the workpaper's string cells written
   as text (openpyxl would store one beginning with `=` as a formula) and through
   `report._CellText` (a character a cell cannot hold shown as its code point in brackets, a
-  text over a cell's 32,767 cut with its length, each counted on the Summary sheet), the CLI's own lines
+  text longer than a cell holds cut with its length, each counted on the Summary sheet), the CLI's own lines
   through `summary.one_line`, and in the dashboard a flag's reason and an approver's name as
   code spans (`summary.code_span`) and the note's prose with its markdown escaped (`app.md`: no construct
   forms, though Streamlit still links a bare URL and redraws `->`); its tables are drawn as
