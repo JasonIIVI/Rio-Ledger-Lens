@@ -127,8 +127,9 @@ GRADER_NOTES = (
      "the schema asks for text was graded schema_valid, on its Python spelling. Such a reply is "
      "now refused like any other break of the contract, and so is text holding a lone "
      "surrogate, which the review store cannot encode: a run records it as invalid, and a "
-     "re-grade fails it on every check. A line break inside an evidence item now becomes a "
-     "space, since the store keeps the items one per line. The grader's sha256 moved with it. "
+     "re-grade fails it on every check. An evidence item's lines (split at a carriage return or "
+     "a line feed) are now joined with one space, since the store keeps the items one per "
+     "line. The grader's sha256 moved with it. "
      "One offline re-grade of the 2026-09-23 run changed no check on any row (every stored "
      "field was already text, and no evidence item held a line break); the score stayed at "
      "94%."),

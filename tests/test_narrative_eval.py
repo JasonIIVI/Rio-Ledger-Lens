@@ -184,6 +184,22 @@ def test_a_note_holding_text_the_store_cannot_keep_fails_every_check(sample):
     assert metrics == {**{m: False for m in METRICS}, "passed": False}
 
 
+def test_a_run_records_a_reply_holding_a_lone_surrogate_as_invalid_and_its_report_writes(
+        sample, scored, ledger, llm, tmp_path):
+    """The eval's own path: the refusal is the row's error, it quotes none of the reply, and the
+    report renders as UTF-8. Before, the row was graded as it came and writing the report
+    raised UnicodeEncodeError."""
+    case, prompt, entry, lines = sample
+    combined, flags = scored
+    reply = dict(oracle(case, entry, lines), summary="Entry " + chr(0xD800))
+    rows = run_eval([case], Narrator(client=llm.client([llm.response(reply)])), combined, flags,
+                    ledger, tmp_path, cases_sha256="a" * 64)
+    assert (rows[0]["status"], rows[0]["error"]) == (
+        "invalid", "summary is not text the store can keep: it holds a lone surrogate")
+    assert rows[0]["metrics"] == {**{m: False for m in METRICS}, "passed": False}
+    render_markdown(rows, aggregate(rows)).encode("utf-8")
+
+
 @pytest.mark.parametrize("damage, failing", [
     (lambda n: n.update(why_flagged=n["why_flagged"] + " The entry was deliberately concealed."),
      "no_assertions"),
