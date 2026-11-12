@@ -593,6 +593,23 @@ def test_an_arrow_text_column_is_fitted_too(small_ledger, tmp_path):
     assert [row[0] for row in _sheet(path, "Benford")[1]] == ["e[U+000B]f", "plain", None]
 
 
+def test_the_callers_column_names_are_fitted_and_its_cells_set_back_by_position(small_ledger, tmp_path):
+    """A caller's frame can name a column with a control character (its header cell raised
+    IllegalCharacterError) and repeat an index label or a column name: set back by name, the
+    second "label" column's text would land in both."""
+    scored, flags, _ = _flagged(small_ledger[0])
+    benford = pd.DataFrame([["a" + VT, "plain", 1], ["plain", "b" + VT, 2]],
+                           columns=["label", "label", "n" + VT], index=[7, 7])
+    as_given = benford.copy()
+    path = build_workpaper(scored, flags, tmp_path / "wp.xlsx", benford=benford)
+    pd.testing.assert_frame_equal(benford, as_given)
+
+    header, rows = _sheet(path, "Benford")
+    assert list(header) == ["label", "label", "n[U+000B]"]
+    assert [list(row) for row in rows] == [["a[U+000B]", "plain", 1], ["plain", "b[U+000B]", 2]]
+    assert _summary_cells(path)["Characters a cell cannot hold"] == f"3 in 3 cell(s), {SHOWN}"
+
+
 def test_text_a_cell_can_hold_is_written_as_it_is_and_nothing_is_said(small_ledger, tmp_path):
     from ledgerlens.review import Decision, ReviewStore
 

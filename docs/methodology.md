@@ -40,7 +40,7 @@ latest decision per exception, and the MCP server exposes all of it read-only. T
 shows them as written, except what a spreadsheet cell cannot hold: a control character (a
 vertical tab, say) is shown as its code point in brackets, and a text longer than a cell holds
 (32,767 characters, as shown there) is cut with a note of its full length, each counted on its
-Summary sheet. Every decision
+Summary sheet; the ledger and the review store are not changed. Every decision
 and note is filed under the ledger it belongs to (a canonical hash of a CSV, or a QuickBooks
 realm id), so one review database can hold several ledgers without a decision ever attaching
 to the wrong company's entry.

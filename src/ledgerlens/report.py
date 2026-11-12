@@ -98,10 +98,10 @@ def _needs_fitting(value: object) -> bool:
 class _CellText:
     """Text as a cell can hold it, with a count of every change.
 
-    A ledger's text, a note and a decision are evidence (rules 6 and 8), so nothing is dropped
-    and nothing changes silently: a character a cell cannot hold is shown where it stood as its
-    code point, a text too long for a cell ends with the length it has as shown, and the Summary
-    and Methodology sheets say how many of each.
+    A ledger's text, a note and a decision are evidence (rules 6 and 8), so nothing changes
+    silently: a character a cell cannot hold is shown where it stood as its code point, a text too
+    long for a cell is cut with a note of the length it has as shown, the Summary sheet counts
+    both and the Methodology sheet says what they mean.
     """
 
     def __init__(self) -> None:
@@ -145,10 +145,11 @@ class _CellText:
         return head + tail, found
 
     def frame(self, df: pd.DataFrame) -> pd.DataFrame:
-        """``df`` with every text cell as a cell can hold it, on a copy: the caller's frame as it was.
+        """``df`` with every text cell and column name as a cell can hold it, on a copy.
 
-        A column with a cell to change is written back as objects, so a categorical or an Arrow
-        column can take text it did not have; every other cell, blanks included, is as it was.
+        A column with a cell to change is set back by position from an object array, so a
+        categorical or an Arrow column can take text it did not have (pandas 3 may store it as
+        text again); every other cell, blanks included, and the caller's frame are as they were.
         """
         out = df
         for j in range(df.shape[1]):
@@ -162,7 +163,11 @@ class _CellText:
                 values = column.to_numpy(dtype=object, copy=True)
                 for i in rows:
                     values[i] = self.text(values[i])
-                out.isetitem(j, values)  # by position: an index with repeated labels is no matter
+                out.isetitem(j, values)  # by position: repeated labels or names are no matter
+        if any(_needs_fitting(name) for name in df.columns):  # the header row is text too
+            if out is df:
+                out = df.copy()
+            out.columns = [self.text(name) for name in df.columns]
         return out
 
     def rows(self) -> list[tuple[str, str]]:
@@ -342,8 +347,8 @@ def build_workpaper(
         if col in exceptions.columns:
             exceptions[col] = pd.to_datetime(exceptions[col]).dt.tz_localize(None)
 
-    # Every text the workbook carries goes through one count, and the Summary sheet reports it:
-    # the frames and the Methodology's lines are fitted before that sheet is written.
+    # All the text the workbook carries but its own fixed headings goes through one count, and the
+    # Summary sheet reports it: the frames and the Methodology's lines are fitted before it is.
     fit = _CellText()
     with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
         # placeholder so the sheet exists; real content written below
