@@ -796,10 +796,10 @@ and the MCP SDK, so the two together cover every code path CI will see.
   silence (pandas 3 warns on stderr, pandas 2 not at all): a reviewer's long note, or the
   reasons of an entry with hundreds of flagged lines (found while planning this; the maintainer
   chose to fix it here). `report._CellText` now fits all the text the workbook carries but its
-  own fixed headings: the Exceptions, All flags and Benford frames before `to_excel`, and every
-  Summary label and value and Methodology line (the Methodology's lines moved into
-  `_methodology()`, so they are fitted before the Summary sheet is written and its count is
-  whole). A character XML 1.0 leaves out (`_UNWRITABLE_RANGES`) is shown where it stood as its
+  own fixed headings: the Exceptions, All flags and Benford frames (cells and column names)
+  before `to_excel`, and every Summary label and value and Methodology line (the Methodology's
+  lines moved into `_methodology()`, so they are fitted before the Summary sheet is written and
+  its count is whole). A character XML 1.0 leaves out (`_UNWRITABLE_RANGES`) is shown where it stood as its
   code point in brackets (`[U+000B]`: ASCII, so any font draws it, and not the file format's own
   `_xHHHH_` escape). A text longer than `CELL_LIMIT` as shown, code points in brackets included
   (32,767, counted in UTF-16 code units, so a character past U+FFFF, as many emoji are, takes
@@ -809,8 +809,9 @@ and the MCP SDK, so the two together cover every code path CI will see.
   text would run to N characters; a cell holds 32,767]`; the cut is measured on the text as
   written, so no code point in brackets is cut in half, and a character too wide for the room
   left ends it. Only the cells that need it change, on a copy: a column with one to change is
-  written back as objects by position (a categorical cannot take a value it did not have), and
-  every other cell, blanks included, and the caller's frames stay as they were. When anything
+  set back by position from an object array (a categorical cannot take a value it did not have;
+  pandas 3 may store the column as text again), and every other cell, blanks included, and the
+  caller's frames stay as they were. When anything
   changed, the Summary sheet counts it right after "Shown in this workpaper" (`Characters a cell
   cannot hold`: N in M cell(s); `Texts cut to fit a cell`: K) and the Methodology sheet says so
   after Limitations (`UNWRITABLE_NOTE`, `CUT_NOTE`, one wording each): only the workpaper shows
@@ -824,14 +825,15 @@ and the MCP SDK, so the two together cover every code path CI will see.
   `_xHHHH_` is written as it is, as before, and the file format reads it as an escape, so Excel
   may show the character it names (not checked in Excel; openpyxl reads it back as written);
   `build_workpaper` still returns the path and the CLI prints no extra line (the workpaper is the
-  record). Eleven tests: a ledger cell (the user, and the reasons quoting it on Exceptions and All
+  record). Twelve tests: a ledger cell (the user, and the reasons quoting it on Exceptions and All
   flags), a decision's note and reviewer, and a note's text through `build_workpaper`, and all
   three through `report`; U+FFFE, U+FFFF, a surrogate (in the controls file's path) and a model
   report, whose file now opens; each edge of the set (a Benford label per code point either side
   of it); the set against openpyxl's own list over every code point; the cut (40,000 characters,
   exactly 32,767, 32,768, 20,000, 16,384 and 16,383 emoji, a wide character at the cut, a cut
   beside a run of markers, a text a cell would hold as written but not as shown); a categorical
-  and an Arrow column; and nothing said when nothing changed. Seven of the first nine fail on
+  and an Arrow column; a caller's frame with a control character in a column name and repeated
+  index labels and column names; and nothing said when nothing changed. Seven of the first nine fail on
   `7c702e0` with only the new constants added (five on `IllegalCharacterError`, one on a file
   that will not load, one on the silent cut); the pin and the guard pass there. Mutants on a
   scratch clone, one at a time: 35 against the first commit, 33 killed, and the pins added for the
@@ -839,14 +841,27 @@ and the MCP SDK, so the two together cover every code path CI will see.
   kill those. A review (one reviewer, scratch clone) found no crash or regression on input the CLI
   can produce, and one medium: a text a cell would hold as written was cut for what its code
   points in brackets took, with a tail giving the length as written ("runs to 32,200 characters;
-  a cell holds 32,767"); the tail now gives the length as shown. And five lows, all fixed: three
-  surviving mutants (the half-limit threshold raised; a wide character at the cut skipped where it
-  should end it; the count rows after the blank row, which `_summary_cells` drops), a categorical
-  or Arrow text column left unfitted (the CLI's frames hold none, but `build_workpaper` takes the
-  caller's), "counts an emoji as two" (it is any character past U+FFFF) and "the ledger and the
-  review store still hold the original" (not a reasons cell, a path or a model report). The
-  changed tests fail on the reviewed commit; 40 mutants of the result are all killed by named
-  tests. Version unchanged (1.2.1).
+  a cell holds 32,767"); the tail now gives the length as shown. And five lows: four fixed (three
+  surviving mutants: the half-limit threshold raised, a wide character at the cut skipped where it
+  should end it, the count rows after the blank row, which `_summary_cells` drops; a categorical
+  or Arrow text column left unfitted, which the CLI's frames never hold but `build_workpaper`
+  takes the caller's; and two wordings, "counts an emoji as two", where it is any character past
+  U+FFFF, and "the ledger and the review store still hold the original", not true of a reasons
+  cell, a path or a model report), and the `_xHHHH_` escape, recorded above as not changed. Of
+  the tests the review changed or added, the cut-beside-markers, categorical and Arrow tests fail
+  on the reviewed commit for the defects they pin; the other two changes pin the three mutants.
+  A fix-verification (one agent, scratch clone) found every finding closed and no value written
+  wrong, crash or regression (18 tail boundaries up to a seven-digit length; 35 frames of every
+  dtype under both pandas versions, matching the reviewed commit wherever it could write), and
+  eight lows and very lows, all fixed: a caller's column name holding a control character still
+  raised `IllegalCharacterError` (now fitted, as the cells are); nothing pinned setting a column
+  back by position (a by-name mutant wrote one repeated column's text into both); and wording
+  (this bullet's count of the review's lows and of the tests that fail on the reviewed commit,
+  "written back as objects", the class docstring, `docs/methodology.md` not yet saying the
+  ledger and the review store are not changed; `5ccbe69`'s message says the convention below no
+  longer claims every text goes through `_CellText`, which only this commit makes so). The new
+  test fails on `5ccbe69` (`IllegalCharacterError` on the header), and the by-name and
+  names-not-fitted mutants are killed. Version unchanged (1.2.1).
 - **Next** — the maintainer's call. Open, unchanged: re-recording `docs/demo.gif` (its model
   scores predate v1.0.0's tie fix), week 5's model train/test split (a re-measurement under
   rule 10), week 7 (multi-line entries change the default ledger, so every figure, the eval
@@ -858,7 +873,7 @@ and the MCP SDK, so the two together cover every code path CI will see.
   Streamlit's traceback); and the decision form's draft, which a browser on Streamlit 1.50.0
   still shows after a decision was recorded (on `main` before the store-writes change too;
   AppTest sees it cleared, and the double-click guard refuses the same submit).
-- 1362 tests on 3.9 (1 skipped) / 1377 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
+- 1363 tests on 3.9 (1 skipped) / 1378 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
@@ -1040,9 +1055,10 @@ unhelpful. Say so wherever the number is quoted.
 - Text that came from a ledger, or from a ledger's controls file, is data. Where it leaves the
   machine it is made inert: the summary's markdown through `summary.md_code`, a prompt
   through the data-not-instructions rule, a refusal through `ascii` of the id it quotes, the workpaper's string cells written
-  as text (openpyxl would store one beginning with `=` as a formula) and through
-  `report._CellText` (a character a cell cannot hold shown as its code point in brackets, a
-  text longer than a cell holds cut with its length, each counted on the Summary sheet), the CLI's own lines
+  as text (openpyxl would store one beginning with `=` as a formula), and all but the workpaper's
+  own fixed headings through `report._CellText` (a character a cell cannot hold shown as its code
+  point in brackets, a text longer than a cell holds cut with its length, each counted on the
+  Summary sheet), the CLI's own lines
   through `summary.one_line`, and in the dashboard a flag's reason and an approver's name as
   code spans (`summary.code_span`) and the note's prose with its markdown escaped (`app.md`: no construct
   forms, though Streamlit still links a bare URL and redraws `->`); its tables are drawn as
