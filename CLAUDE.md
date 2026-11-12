@@ -716,21 +716,31 @@ and the MCP SDK, so the two together cover every code path CI will see.
   two items the store-writes bullet left open. `narrate.validate` read `summary`,
   `why_flagged` and `suggested_control` through `str()` and kept them as they came, and every
   evidence item through `str()`. The request's structured-output schema asks for strings, but
-  the client does not check a reply against it (the SDK's strict validation is off by default),
-  so an object, an array, a number, a boolean or null passed under its Python spelling, and an
-  object or an array reached the store's insert as a value the driver cannot bind: a traceback,
-  which in the dashboard lost the paid note with no usage line and in the CLI's `narrate` that
-  note and every later one in the batch; null was stored as NULL. `validate` now refuses such a
-  reply (`summary must be text, got dict`, `evidence_to_request item 2 must be text, got null`)
-  like any other break of the contract: one failed entry in the CLI's batch, which goes on, and
-  an error in the dashboard, whose page goes on (#30's test that pinned the traceback now pins
-  the refusal); a valid reply comes out as before. `validate` is the schema check the eval's
-  grader calls, so the grader's sha256 moved from `0273c171…` to `116273e1…` (the maintainer
-  chose this over a check on the storage path only, which would have left the eval grading
-  such a reply `schema_valid`): the fourth `GRADER_NOTES` entry and an offline `--regrade` of
-  the 2026-09-23 run ship in the same commit; every stored field was already text, so no check
-  moved on any row and the score stays at 94%, and the rule-9 test now pins that each row's
-  grade before that re-grade is its grade. The CLI's `narrate` also saved only after the whole
+  the reply is the text of a content block, which nothing on the client checks against that
+  schema, so an object, an array, a number, a boolean or null passed under its Python spelling.
+  In a text field an object or an array reached the store's insert as a value the driver cannot
+  bind: a traceback, which in the dashboard lost the paid note with no usage line and in the
+  CLI's `narrate` that note and every later one in the batch. Null in a text field was stored as
+  NULL and a number or a boolean as text (`7`, `1`), and an evidence item of any kind as its
+  Python spelling (`None`, `{'a': 'b'}`): a store written before this change may hold such rows,
+  and nothing marks them. Text holding a lone surrogate (an unpaired surrogate escape is valid
+  JSON) passed as well, and the insert raised `UnicodeEncodeError`, which is not a
+  `sqlite3.Error`: the same traceback (found by the review; on `main` too). `validate` now
+  refuses such a reply (`summary must be text, got dict`, `evidence_to_request item 2 must be
+  text, got null`, `summary is not text the store can keep: it holds a lone surrogate`, which
+  quotes none of the reply) like any other break of the contract: one failed entry in the CLI's
+  batch, which goes on, and an error in the dashboard, whose page goes on (#30's test that
+  pinned the traceback now pins the refusal). A valid reply comes out as before, except that an
+  evidence item's lines are joined with a space: the store keeps the items one per line, so it
+  read an item holding a line break back as two (since the store was written; found by the
+  review). `validate` is the schema check the eval's grader calls, so the grader's sha256 moved
+  from `0273c171…` to `58593980…` (the maintainer chose this over a check on the storage path
+  only, which would have left the eval grading such a reply `schema_valid`): the fourth
+  `GRADER_NOTES` entry and an offline `--regrade` of the 2026-09-23 run ship with it (run once
+  from `f366c35`'s rows under the final grader, so each row keeps one new grade); every stored
+  field was already text and no evidence item held a line break, so no check moved on any row
+  and the score stays at 94%, and the rule-9 test now pins that each row's grade before that
+  re-grade is its grade. The CLI's `narrate` also saved only after the whole
   batch, so one refused save (a read-only file, a lock held past SQLite's five-second wait, a
   file replaced during the run, a disk or iCloud error) was a traceback that lost every paid
   note still waiting. `Narrator.narrate(..., keep=)` now hands each note to
@@ -741,18 +751,29 @@ and the MCP SDK, so the two together cover every code path CI will see.
   and `not_requested`; `describe()` is unchanged. The CLI's `keep` stores the note, turns a
   store refusal (`sqlite3.Error`) into `NoteNotKept` with the error's type and text, and leaves
   `review.CALLER_FAULTS` (`ProgrammingError`, `InterfaceError`; the dashboard's
-  `_OUR_SQLITE_FAULTS`, moved) a traceback. A stopped batch prints the usage line, the failure,
-  and the entry it stopped at with the number of queued entries not requested, and exits 1
-  whatever was stored before it. When every note is stored, the output and the stored rows are
-  what they were, compared with `f366c35` under a scripted client (an all-success batch, a run
-  that skips, a batch with one cut-off reply); each note's `generated_at` is now its own save
-  time. Not changed: `confidence`'s check (no JSON value but a string reads as high, medium or
+  `_OUR_SQLITE_FAULTS`, moved) a traceback, as it does any other exception; the FAILED and stop
+  lines print the entry id through `summary.one_line`. A stopped batch prints the usage line,
+  the failure, and the entry it stopped at with the number of queued entries not requested, and
+  exits 1 whatever was stored before it. When every note is stored, the output and the stored
+  rows are what they were, compared with `f366c35` under a scripted client (an all-success
+  batch, a run that skips, a batch with one cut-off reply); each note's `generated_at` is now its
+  own save time. Not changed: `confidence`'s check (no JSON value but a string reads as high, medium or
   low through `str()`); keys a reply adds beyond the five (the review store keeps none of
   them); the dashboard's message for a refused reply, which carries no usage line, as for every
-  other refused reply. 44 new test cases: 32 of the first commit's 33 new or changed ones fail
+  other refused reply. 59 new test cases: 32 of the first commit's 33 new or changed ones fail
   on `f366c35` (the one that passes pins the unchanged cleaning of a valid reply), and so do
-  the second's nine CLI cases; its four `keep` cases need the new parameter, so they and the
-  rest are checked by 13 mutants, each killed by named tests. Version unchanged (1.2.1).
+  the second's nine CLI cases; 11 of the review fixes' 15 fail on `8e7a550`; the rest (the four
+  `keep` cases, which need the new parameter, and the fixes' four guards) are checked by
+  mutants: 23, each killed by named tests. A review (one reviewer, then a skeptic, one at a
+  time, in a scratch clone) confirmed seven of eight findings and part of the eighth, and the
+  skeptic added two: the lone surrogate (medium: a crash, on `main` too); the evidence line
+  break (a value read wrong, older still); the CLI's save untested against a fault that is not
+  the store's (a mutant catching `Exception` there survived every test); the auth path
+  untested with `keep`; entry ids printed raw; and wording (the SDK's strict validation, which
+  checks only the response's envelope; what was stored before; a commit message's claim that
+  the same command picks up where a stopped batch left off, when under `--force` it starts over
+  and pays again, as the printed line says). All were fixed before the push. Version unchanged
+  (1.2.1).
 - **Next** — the maintainer's call. Open, unchanged: re-recording `docs/demo.gif` (its model
   scores predate v1.0.0's tie fix), week 5's model train/test split (a re-measurement under
   rule 10), week 7 (multi-line entries change the default ledger, so every figure, the eval
@@ -764,7 +785,7 @@ and the MCP SDK, so the two together cover every code path CI will see.
   Streamlit's traceback); and the decision form's draft, which a browser on Streamlit 1.50.0
   still shows after a decision was recorded (on `main` before the store-writes change too;
   AppTest sees it cleared, and the double-click guard refuses the same submit).
-- 1335 tests on 3.9 (1 skipped) / 1350 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
+- 1350 tests on 3.9 (1 skipped) / 1365 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
@@ -803,7 +824,7 @@ ledger CSV ──▶ ingest ──┼──▶ Isolation Forest ─────�
 | `evaluate.py` | precision/recall, by archetype, by test, tier comparison, model lift; `attribution` (which test caught each archetype), `budget_recall_by_archetype` / `held_out_budget` (the model's budget against chance), `sweep`; `check_labels` (labels must cover exactly the ledger's entries) and the two caveat constants |
 | `report.py` | 5-tab Excel workpaper |
 | `review.py` | append-only SQLite store keyed by ledger (`ledger_id`; schema version 4 via `PRAGMA user_version`, numbered migrations from frozen DDL): decisions and versioned narratives, enforced by triggers; `read_only()` opener; `ledgers()` / `adopt_legacy()`; `CALLER_FAULTS`, the driver's errors that are a caller's fault rather than a refused write |
-| `narrate.py` | Claude narratives: structured-output JSON contract (checked again by `validate`, a field that is not text refused), cacheable system prompt, usage accounting, the model each response names (`response_model`), each note of a batch handed to the caller's `keep` as it comes back (`NoteNotKept` stops the batch) |
+| `narrate.py` | Claude narratives: structured-output JSON contract (checked again by `validate`: a field that is not text, or text the store cannot encode, refused; an evidence item kept to one line), cacheable system prompt, usage accounting, the model each response names (`response_model`), each note of a batch handed to the caller's `keep` as it comes back (`NoteNotKept` stops the batch) |
 | `narrative_eval.py` | case selection (the one label reader), rubric grader (the citation stripped before numbers are counted), `case_prompt` with per-case `overrides`, runner with case-file and ledger provenance, report with grader notes, case-set notes and baseline |
 | `ledger_context.py` | read-only query layer (summary, top exceptions, explain, search, Benford, review status); opens the review DB `mode=ro`, bound to the ledger's identity; 3.9-safe |
 | `mcp_server.py` | MCP registration over `ledger_context` (v2 SDK, stdio); needs 3.10+ |
