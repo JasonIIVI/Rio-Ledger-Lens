@@ -10,6 +10,7 @@ Deliberately plain formatting. A workpaper is evidence, not a dashboard.
 
 from __future__ import annotations
 
+import re
 import textwrap
 from datetime import datetime
 from pathlib import Path
@@ -45,6 +46,148 @@ SEVERITY_FILL = {
     "Medium": PatternFill("solid", fgColor="FFF3CD"),
     "Low": PatternFill("solid", fgColor="E2E3E5"),
 }
+
+#: What a cell cannot hold: the characters XML 1.0 leaves out. openpyxl refuses the controls
+#: among them with IllegalCharacterError, and writes the others into a file that then fails to
+#: open. Ranges, not literals, so the list can be read.
+_UNWRITABLE_RANGES = (
+    (0x0000, 0x0008), (0x000B, 0x000C), (0x000E, 0x001F),  # C0 controls but tab, LF and CR
+    (0xD800, 0xDFFF),                                       # half of a surrogate pair, alone
+    (0xFFFE, 0xFFFF),                                       # the two noncharacters XML leaves out
+)
+_UNWRITABLE = re.compile(
+    "[" + "".join(f"{re.escape(chr(a))}-{re.escape(chr(b))}" for a, b in _UNWRITABLE_RANGES) + "]")
+
+#: What one cell holds (Excel's limit), counted in UTF-16 code units, so a character past U+FFFF
+#: (as many emoji are) takes two: the stricter count, as Excel's LEN counts a surrogate pair
+#: outside its Compatibility Version 2. openpyxl counts code points, and cut a longer text at
+#: 32,767 of them without a word.
+CELL_LIMIT = 32_767
+
+UNWRITABLE_NOTE = (
+    "A cell cannot hold a control character other than tab, line feed and carriage return (code "
+    "points 0-8, 11, 12 and 14-31), U+FFFE, U+FFFF or half of a surrogate pair. Each one is shown "
+    "where it stood as its code point in brackets ([U+000B] for a vertical tab) and counted on the "
+    "Summary sheet; the rest of the text is as written. Only the workpaper shows the text this way: "
+    "the ledger and the review store are not changed."
+)
+CUT_NOTE = (
+    f"A cell holds at most {CELL_LIMIT:,} characters, and this workpaper counts a character past "
+    "U+FFFF (as many emoji are) as two. A text longer than that as shown here, code points in "
+    "brackets included, is cut there and ends with a note in brackets giving its full length as "
+    "shown; the Summary sheet counts the texts cut. Only the workpaper shows the text this way: the "
+    "ledger and the review store are not changed."
+)
+
+
+def _marker(character: str) -> str:
+    return f"[U+{ord(character):04X}]"
+
+
+def _units(text: str) -> int:
+    """``text``'s length in UTF-16 code units: two for a character past U+FFFF."""
+    return len(text) + sum(1 for c in text if ord(c) > 0xFFFF)
+
+
+def _needs_fitting(value: object) -> bool:
+    # Under half the limit, a text fits however many of its characters take two units.
+    return isinstance(value, str) and (
+        len(value) > CELL_LIMIT // 2 or _UNWRITABLE.search(value) is not None)
+
+
+class _CellText:
+    """Text as a cell can hold it, with a count of every change.
+
+    A ledger's text, a note and a decision are evidence (rules 6 and 8), so nothing changes
+    silently: a character a cell cannot hold is shown where it stood as its code point, a text too
+    long for a cell is cut with a note of the length it has as shown, the Summary sheet counts
+    both and the Methodology sheet says what they mean.
+    """
+
+    def __init__(self) -> None:
+        self.replaced = 0  # characters shown as their code point
+        self.cells = 0  # cells holding one or more of them
+        self.cut = 0  # texts cut at the limit
+
+    def text(self, value):
+        """``value`` as a cell can hold it; anything but text as it came."""
+        if not _needs_fitting(value):
+            return value
+        shown, found = _UNWRITABLE.subn(lambda m: _marker(m.group()), value)
+        if _units(shown) > CELL_LIMIT:
+            shown, found = self._cut(value, _units(shown))
+            self.cut += 1
+        if found:
+            self.replaced += found
+            self.cells += 1
+        return shown
+
+    @staticmethod
+    def _cut(value: str, full: int) -> tuple[str, int]:
+        """As much of ``value`` as fits before a note of its length, and the code points it shows.
+
+        ``full`` is the length shown in full, code points in brackets included: a short text of
+        many control characters is cut for what its brackets take, and the note says so. The cut
+        is measured on the text as written, so a code point shown in brackets is never cut in half.
+        """
+        tail = f" [cut: shown in full, the text would run to {full:,} characters; a cell holds {CELL_LIMIT:,}]"
+        room, kept = CELL_LIMIT - len(tail), 0  # the note is ASCII: one unit a character
+        for character in value:
+            if _UNWRITABLE.match(character):
+                width = len(_marker(character))
+            else:
+                width = 2 if ord(character) > 0xFFFF else 1
+            if width > room:
+                break
+            room -= width
+            kept += 1
+        head, found = _UNWRITABLE.subn(lambda m: _marker(m.group()), value[:kept])
+        return head + tail, found
+
+    def frame(self, df: pd.DataFrame) -> pd.DataFrame:
+        """``df`` with every text cell and column name as a cell can hold it, on a copy.
+
+        A column with a cell to change is set back by position from an object array, so a
+        categorical or an Arrow column can take text it did not have (pandas 3 may store it as
+        text again); every other cell, blanks included, and the caller's frame are as they were.
+        """
+        out = df
+        for j in range(df.shape[1]):
+            column = df.iloc[:, j]
+            if column.dtype.kind in "biufcmM":  # numbers, booleans and times hold no text
+                continue
+            rows = [i for i, value in enumerate(column) if _needs_fitting(value)]
+            if rows:
+                if out is df:
+                    out = df.copy()
+                values = column.to_numpy(dtype=object, copy=True)
+                for i in rows:
+                    values[i] = self.text(values[i])
+                out.isetitem(j, values)  # by position: repeated labels or names are no matter
+        if any(_needs_fitting(name) for name in df.columns):  # the header row is text too
+            if out is df:
+                out = df.copy()
+            out.columns = [self.text(name) for name in df.columns]
+        return out
+
+    def rows(self) -> list[tuple[str, str]]:
+        """The Summary sheet's count of what changed: nothing when nothing did."""
+        rows = []
+        if self.replaced:
+            rows.append(("Characters a cell cannot hold",
+                         f"{self.replaced:,} in {self.cells:,} cell(s), each shown as its code point "
+                         "(see Methodology)"))
+        if self.cut:
+            rows.append(("Texts cut to fit a cell", f"{self.cut:,} (see Methodology)"))
+        return rows
+
+    def notes(self) -> list[str]:
+        """The Methodology sheet's block on the same, wrapped as its other notes are."""
+        notes = [note for note, count in ((UNWRITABLE_NOTE, self.replaced), (CUT_NOTE, self.cut)) if count]
+        if not notes:
+            return []
+        return ["", "Text changed to fit a cell"] + [
+            "  " + line for note in notes for line in textwrap.wrap(note, 100, break_on_hyphens=False)]
 
 
 def _autofit(ws, max_width: int = 60, skip_wrapped: bool = False) -> None:
@@ -113,6 +256,49 @@ def _attach_review(exceptions: pd.DataFrame, store: ReviewStore) -> pd.DataFrame
     return out[[c for c in out.columns if c not in REVIEW_COLUMNS] + list(REVIEW_COLUMNS)]
 
 
+def _methodology(materiality: Materiality | None, model_report: str | None) -> tuple[list[str], list[str]]:
+    """The Methodology sheet's lines: what every workpaper says, and the blocks this run adds.
+
+    Two parts, so a note on text changed to fit a cell can follow the limitations.
+    """
+    text = [
+        "Tiers",
+        "  1. Deterministic journal-entry tests. Explainable rules, each producing a written reason.",
+        "  2. Unsupervised scoring (Isolation Forest) over engineered per-entry features.",
+        "  The two scores are reported separately. They answer different questions and are not blended.",
+        "",
+        "Scoring",
+        "  Rule score = severity-weighted sum over the flags raised (High 3, Medium 2, Low 1);",
+        "  a test that flags two lines of one entry (JET-09, JET-11) counts twice.",
+        "  Model score = Isolation Forest, rescaled to 0-1. Flagged by rank, not by absolute cutoff.",
+        "",
+        "Controls",
+        "  JET-12's approver list and JET-06's approval limit are the company's, read from a",
+        "  <stem>.controls.json file beside the ledger, or the synthetic company's when there is none.",
+        "  They are facts about the company, not thresholds tuned against data.",
+        "",
+        "Benford's Law",
+        "  MAD is reported with Nigrini's conformity bands alongside chi-square. Chi-square rejects",
+        "  conformity on almost any large population, so MAD is the operative statistic.",
+        # Not at a hyphen: "first-digit" and "chi-square" stay whole on one line.
+        *["  " + line for line in textwrap.wrap(SMALL_SAMPLE_NOTE, 100, break_on_hyphens=False)],
+        "  Non-conformity is a pointer, not a finding.",
+        "",
+        "Limitations",
+        "  Settings were measured against synthetic data (only JET-11's chosen there) and are a "
+        "starting point on a real ledger.",
+        "  Synthetic anomalies do not adapt to the controls looking for them.",
+        "  This is a demonstration of technique. It is not an audit procedure or professional advice.",
+    ]
+    later = []
+    if materiality is not None:
+        later += ["", "Materiality"] + [
+            "  " + line for note in (BAND_NOTE, FISCAL_YEAR_NOTE) for line in textwrap.wrap(note, 100)]
+    if model_report:
+        later += ["", "Model fit"] + ["  " + ln for ln in model_report.splitlines()]
+    return text, later
+
+
 def build_workpaper(
     scored: pd.DataFrame,
     flags: pd.DataFrame,
@@ -161,16 +347,21 @@ def build_workpaper(
         if col in exceptions.columns:
             exceptions[col] = pd.to_datetime(exceptions[col]).dt.tz_localize(None)
 
+    # All the text the workbook carries but its own fixed headings goes through one count, and the
+    # Summary sheet reports it: the frames and the Methodology's lines are fitted before it is.
+    fit = _CellText()
     with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
         # placeholder so the sheet exists; real content written below
         pd.DataFrame().to_excel(writer, sheet_name="Summary")
-        exceptions.to_excel(writer, sheet_name="Exceptions", index=False)
-        flags.to_excel(writer, sheet_name="All flags", index=False)
+        fit.frame(exceptions).to_excel(writer, sheet_name="Exceptions", index=False)
+        fit.frame(flags).to_excel(writer, sheet_name="All flags", index=False)
         if benford is not None and not benford.empty:
-            benford.to_excel(writer, sheet_name="Benford", index=False)
+            fit.frame(benford).to_excel(writer, sheet_name="Benford", index=False)
         pd.DataFrame().to_excel(writer, sheet_name="Methodology")
 
         book = writer.book
+        methodology, later = _methodology(materiality, model_report)
+        methodology, later = [fit.text(line) for line in methodology], [fit.text(line) for line in later]
 
         # ---- Summary ----
         ws = book["Summary"]
@@ -231,6 +422,10 @@ def build_workpaper(
                 rows += [("Other ledgers in this database (not shown)",
                           f"{len(others)} ledger(s): {int(others['narratives'].sum())} narrated, "
                           f"{int(others['decisions'].sum())} decided entries")]
+        rows = [(fit.text(label), fit.text(value)) for label, value in rows]
+        # Every text is fitted by now, so the count is whole: beside the counts of what is shown.
+        shown = next(i for i, (label, _) in enumerate(rows) if label == "Shown in this workpaper")
+        rows[shown + 1:shown + 1] = fit.rows()
         for i, (label, value) in enumerate(rows, start=3):
             ws.cell(row=i, column=1, value=label).font = LABEL_FONT
             cell = ws.cell(row=i, column=2, value=value)
@@ -281,41 +476,7 @@ def build_workpaper(
         ws = book["Methodology"]
         ws["A1"] = "Methodology and limitations"
         ws["A1"].font = TITLE_FONT
-        text = [
-            "Tiers",
-            "  1. Deterministic journal-entry tests. Explainable rules, each producing a written reason.",
-            "  2. Unsupervised scoring (Isolation Forest) over engineered per-entry features.",
-            "  The two scores are reported separately. They answer different questions and are not blended.",
-            "",
-            "Scoring",
-            "  Rule score = severity-weighted sum over the flags raised (High 3, Medium 2, Low 1);",
-            "  a test that flags two lines of one entry (JET-09, JET-11) counts twice.",
-            "  Model score = Isolation Forest, rescaled to 0-1. Flagged by rank, not by absolute cutoff.",
-            "",
-            "Controls",
-            "  JET-12's approver list and JET-06's approval limit are the company's, read from a",
-            "  <stem>.controls.json file beside the ledger, or the synthetic company's when there is none.",
-            "  They are facts about the company, not thresholds tuned against data.",
-            "",
-            "Benford's Law",
-            "  MAD is reported with Nigrini's conformity bands alongside chi-square. Chi-square rejects",
-            "  conformity on almost any large population, so MAD is the operative statistic.",
-            # Not at a hyphen: "first-digit" and "chi-square" stay whole on one line.
-            *["  " + line for line in textwrap.wrap(SMALL_SAMPLE_NOTE, 100, break_on_hyphens=False)],
-            "  Non-conformity is a pointer, not a finding.",
-            "",
-            "Limitations",
-            "  Settings were measured against synthetic data (only JET-11's chosen there) and are a "
-            "starting point on a real ledger.",
-            "  Synthetic anomalies do not adapt to the controls looking for them.",
-            "  This is a demonstration of technique. It is not an audit procedure or professional advice.",
-        ]
-        if materiality is not None:
-            text += ["", "Materiality"] + [
-                "  " + line for note in (BAND_NOTE, FISCAL_YEAR_NOTE) for line in textwrap.wrap(note, 100)]
-        if model_report:
-            text += ["", "Model fit"] + ["  " + ln for ln in model_report.splitlines()]
-        for i, line in enumerate(text, start=3):
+        for i, line in enumerate(methodology + fit.notes() + later, start=3):
             cell = ws.cell(row=i, column=1, value=line)
             if line and not line.startswith("  "):
                 cell.font = LABEL_FONT
