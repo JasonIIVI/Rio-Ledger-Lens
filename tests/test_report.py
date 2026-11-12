@@ -407,8 +407,8 @@ def test_a_ledger_cell_a_cell_cannot_hold_is_shown_as_its_code_point(small_ledge
     # The user's cell, the reasons cell and each reason on All flags that quotes the user.
     assert cells["Characters a cell cannot hold"] == f"{1 + 2 * n} in {2 + quoting} cell(s), {SHOWN}"
     assert "Texts cut to fit a cell" not in cells
-    labels = list(cells)  # column A, top to bottom
-    assert labels.index("Characters a cell cannot hold") == labels.index("Shown in this workpaper") + 1
+    column_a = [c.value for c in openpyxl.load_workbook(path)["Summary"]["A"]]  # blank rows too
+    assert column_a[column_a.index("Shown in this workpaper") + 1] == "Characters a cell cannot hold"
     assert _flat(UNWRITABLE_NOTE) in _methodology(path) and _flat(CUT_NOTE) not in _methodology(path)
 
 
@@ -501,51 +501,96 @@ def test_what_a_cell_cannot_hold_includes_every_character_openpyxl_refuses():
 
 
 def _tail(units):
-    return f" [cut: the text runs to {units:,} characters; a cell holds 32,767]"
+    return f" [cut: shown in full, the text would run to {units:,} characters; a cell holds 32,767]"
+
+
+#: What a cell keeps of a text cut with a five-digit length: every such tail is as long.
+_ROOM = 32_767 - len(_tail(40_000))
 
 
 def test_a_text_longer_than_a_cell_holds_is_cut_with_its_length_never_silently(small_ledger, tmp_path):
     """openpyxl cut a text over 32,767 characters there without a word (pandas 3 warns on stderr,
     pandas 2 not at all): a reviewer's long note, or the reasons of an entry with hundreds of
-    flagged lines. The count is in UTF-16 code units, the stricter one, so an emoji takes two."""
+    flagged lines. The count is in UTF-16 code units, the stricter one, so a character past
+    U+FFFF takes two, and one that no longer fits ends the text, whatever narrower ones follow."""
     from ledgerlens.report import CUT_NOTE, UNWRITABLE_NOTE
     from ledgerlens.review import Decision, ReviewStore
 
     scored, flags, ids = _flagged(small_ledger[0])
     smile = chr(0x1F600)
-    notes = {ids[0]: "x" * 40_000, ids[1]: "y" * 32_767, ids[2]: "z" * 32_768, ids[3]: smile * 20_000}
+    notes = {
+        ids[0]: "x" * 40_000,
+        ids[1]: "y" * 32_767,  # exactly a cell's worth: whole
+        ids[2]: "z" * 32_768,
+        ids[3]: smile * 20_000,  # 40,000 units
+        ids[4]: smile * 16_384,  # 32,768 units, though half the code points openpyxl takes
+        ids[5]: smile * 16_383,  # 32,766 units: whole
+        ids[6]: "a" * (_ROOM - 1) + smile + "b" * 100,  # the emoji needs two units, one is left
+    }
     store = ReviewStore(tmp_path / "review.sqlite", "csv:test")
     for entry, note in notes.items():
         store.record(Decision(entry, "dismiss", "ana", note))
     path = build_workpaper(scored, flags, tmp_path / "wp.xlsx", store=store)
 
-    assert _cell(path, ids[1], "note") == notes[ids[1]]  # exactly a cell's worth: whole
+    assert _cell(path, ids[1], "note") == notes[ids[1]] and _cell(path, ids[5], "note") == notes[ids[5]]
     for entry, units in ((ids[0], 40_000), (ids[2], 32_768)):
-        assert _cell(path, entry, "note") == notes[entry][:32_767 - len(_tail(units))] + _tail(units)
-    room = 32_767 - len(_tail(40_000))  # 20,000 emoji are 40,000 UTF-16 units
-    assert _cell(path, ids[3], "note") == smile * (room // 2) + _tail(40_000)
+        assert _cell(path, entry, "note") == notes[entry][:_ROOM] + _tail(units)
+    for entry, units in ((ids[3], 40_000), (ids[4], 32_768)):
+        assert _cell(path, entry, "note") == smile * (_ROOM // 2) + _tail(units)
+    assert _cell(path, ids[6], "note") == "a" * (_ROOM - 1) + _tail(_ROOM + 101)
     cells = _summary_cells(path)
-    assert cells["Texts cut to fit a cell"] == "3 (see Methodology)"
+    assert cells["Texts cut to fit a cell"] == "5 (see Methodology)"
     assert "Characters a cell cannot hold" not in cells
     assert _flat(CUT_NOTE) in _methodology(path) and _flat(UNWRITABLE_NOTE) not in _methodology(path)
 
 
 def test_a_cut_never_splits_a_code_point_shown_in_brackets(small_ledger, tmp_path):
+    """And a text a cell would hold as written, but not with its code points in brackets, is cut
+    with the length it has as shown: 32,200 characters, 200 of them control characters, showed
+    a tail that said the text ran to 32,200 characters and was cut all the same."""
     from ledgerlens.review import Decision, ReviewStore
 
     scored, flags, ids = _flagged(small_ledger[0])
-    room = 32_767 - len(_tail(40_000))
-    note = "w" * (room - 12) + VT * (40_000 - room + 12)  # room for one [U+000B] (8), not two
+    note = "w" * (_ROOM - 12) + VT * 100  # room for one [U+000B] (8) after the w's, not two
+    short = "a" * 32_000 + VT * 200  # 32,200 as written, 33,600 as shown
     store = ReviewStore(tmp_path / "review.sqlite", "csv:test")
     store.record(Decision(ids[0], "dismiss", "ana", note))
     store.record(Decision(ids[1], "dismiss", "ana", "v" * 40_000))  # cut, with nothing to show
+    store.record(Decision(ids[2], "dismiss", "ana", short))
     path = build_workpaper(scored, flags, tmp_path / "wp.xlsx", store=store)
 
-    assert _cell(path, ids[0], "note") == "w" * (room - 12) + "[U+000B]" + _tail(40_000)
+    assert _cell(path, ids[0], "note") == "w" * (_ROOM - 12) + "[U+000B]" + _tail(_ROOM - 12 + 800)
+    kept = (_ROOM - 32_000) // 8
+    assert _cell(path, ids[2], "note") == "a" * 32_000 + "[U+000B]" * kept + _tail(33_600)
     cells = _summary_cells(path)
-    assert cells["Texts cut to fit a cell"] == "2 (see Methodology)"
-    # The one shown, in the one cell that shows it: a text only cut is counted with the cuts.
-    assert cells["Characters a cell cannot hold"] == f"1 in 1 cell(s), {SHOWN}"
+    assert cells["Texts cut to fit a cell"] == "3 (see Methodology)"
+    # Those shown, in the cells that show them: a text only cut is counted with the cuts.
+    assert cells["Characters a cell cannot hold"] == f"{1 + kept} in 2 cell(s), {SHOWN}"
+
+
+def test_a_categorical_text_column_is_fitted_too(small_ledger, tmp_path):
+    """`report` builds its frames with text as objects or strings, but build_workpaper writes the
+    caller's: a categorical column, which cannot take a value it did not have, raised
+    IllegalCharacterError. A column with a cell to change is written back as objects."""
+    scored, flags, _ = _flagged(small_ledger[0])
+    benford = pd.DataFrame({"category": pd.Categorical(["a" + VT + "b", "plain", None]),
+                            "string": pd.Series(["c" + VT + "d", "plain", None], dtype="string")})
+    as_given = benford.copy()
+    path = build_workpaper(scored, flags, tmp_path / "wp.xlsx", benford=benford)
+    pd.testing.assert_frame_equal(benford, as_given)
+
+    header, rows = _sheet(path, "Benford")
+    assert [list(row) for row in rows] == [["a[U+000B]b", "c[U+000B]d"], ["plain", "plain"], [None, None]]
+    assert _summary_cells(path)["Characters a cell cannot hold"] == f"2 in 2 cell(s), {SHOWN}"
+
+
+def test_an_arrow_text_column_is_fitted_too(small_ledger, tmp_path):
+    pa = pytest.importorskip("pyarrow")
+    scored, flags, _ = _flagged(small_ledger[0])
+    benford = pd.DataFrame({"arrow": pd.Series(["e" + VT + "f", "plain", None], dtype=pd.ArrowDtype(pa.string()))})
+    path = build_workpaper(scored, flags, tmp_path / "wp.xlsx", benford=benford)
+
+    assert [row[0] for row in _sheet(path, "Benford")[1]] == ["e[U+000B]f", "plain", None]
 
 
 def test_text_a_cell_can_hold_is_written_as_it_is_and_nothing_is_said(small_ledger, tmp_path):

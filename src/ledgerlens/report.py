@@ -58,22 +58,25 @@ _UNWRITABLE_RANGES = (
 _UNWRITABLE = re.compile(
     "[" + "".join(f"{re.escape(chr(a))}-{re.escape(chr(b))}" for a, b in _UNWRITABLE_RANGES) + "]")
 
-#: What one cell holds (Excel's limit), counted in UTF-16 code units, so an emoji takes two: the
-#: stricter count, as Excel's LEN counts a surrogate pair outside its Compatibility Version 2.
-#: openpyxl counts code points, and cut a longer text at 32,767 of them without a word.
+#: What one cell holds (Excel's limit), counted in UTF-16 code units, so a character past U+FFFF
+#: (as many emoji are) takes two: the stricter count, as Excel's LEN counts a surrogate pair
+#: outside its Compatibility Version 2. openpyxl counts code points, and cut a longer text at
+#: 32,767 of them without a word.
 CELL_LIMIT = 32_767
 
 UNWRITABLE_NOTE = (
     "A cell cannot hold a control character other than tab, line feed and carriage return (code "
     "points 0-8, 11, 12 and 14-31), U+FFFE, U+FFFF or half of a surrogate pair. Each one is shown "
     "where it stood as its code point in brackets ([U+000B] for a vertical tab) and counted on the "
-    "Summary sheet; the rest of the text is as written. The ledger and the review store still hold "
-    "the original."
+    "Summary sheet; the rest of the text is as written. Only the workpaper shows the text this way: "
+    "the ledger and the review store are not changed."
 )
 CUT_NOTE = (
-    f"A cell holds at most {CELL_LIMIT:,} characters, and this workpaper counts an emoji as two. A "
-    "longer text is cut there and ends with a note in brackets giving its full length; the Summary "
-    "sheet counts the texts cut. The ledger and the review store still hold the whole text."
+    f"A cell holds at most {CELL_LIMIT:,} characters, and this workpaper counts a character past "
+    "U+FFFF (as many emoji are) as two. A text longer than that as shown here, code points in "
+    "brackets included, is cut there and ends with a note in brackets giving its full length as "
+    "shown; the Summary sheet counts the texts cut. Only the workpaper shows the text this way: the "
+    "ledger and the review store are not changed."
 )
 
 
@@ -97,8 +100,8 @@ class _CellText:
 
     A ledger's text, a note and a decision are evidence (rules 6 and 8), so nothing is dropped
     and nothing changes silently: a character a cell cannot hold is shown where it stood as its
-    code point, a text too long for a cell ends with its full length, and the Summary and
-    Methodology sheets say how many of each.
+    code point, a text too long for a cell ends with the length it has as shown, and the Summary
+    and Methodology sheets say how many of each.
     """
 
     def __init__(self) -> None:
@@ -112,7 +115,7 @@ class _CellText:
             return value
         shown, found = _UNWRITABLE.subn(lambda m: _marker(m.group()), value)
         if _units(shown) > CELL_LIMIT:
-            shown, found = self._cut(value)
+            shown, found = self._cut(value, _units(shown))
             self.cut += 1
         if found:
             self.replaced += found
@@ -120,12 +123,14 @@ class _CellText:
         return shown
 
     @staticmethod
-    def _cut(value: str) -> tuple[str, int]:
+    def _cut(value: str, full: int) -> tuple[str, int]:
         """As much of ``value`` as fits before a note of its length, and the code points it shows.
 
-        Measured on the text as written, so a code point shown in brackets is never cut in half.
+        ``full`` is the length shown in full, code points in brackets included: a short text of
+        many control characters is cut for what its brackets take, and the note says so. The cut
+        is measured on the text as written, so a code point shown in brackets is never cut in half.
         """
-        tail = f" [cut: the text runs to {_units(value):,} characters; a cell holds {CELL_LIMIT:,}]"
+        tail = f" [cut: shown in full, the text would run to {full:,} characters; a cell holds {CELL_LIMIT:,}]"
         room, kept = CELL_LIMIT - len(tail), 0  # the note is ASCII: one unit a character
         for character in value:
             if _UNWRITABLE.match(character):
@@ -140,17 +145,24 @@ class _CellText:
         return head + tail, found
 
     def frame(self, df: pd.DataFrame) -> pd.DataFrame:
-        """``df`` with every text cell as a cell can hold it; other cells and the dtypes as they were."""
+        """``df`` with every text cell as a cell can hold it, on a copy: the caller's frame as it was.
+
+        A column with a cell to change is written back as objects, so a categorical or an Arrow
+        column can take text it did not have; every other cell, blanks included, is as it was.
+        """
         out = df
         for j in range(df.shape[1]):
             column = df.iloc[:, j]
-            if not (column.dtype == object or isinstance(column.dtype, pd.StringDtype)):
+            if column.dtype.kind in "biufcmM":  # numbers, booleans and times hold no text
                 continue
             rows = [i for i, value in enumerate(column) if _needs_fitting(value)]
             if rows:
                 if out is df:
                     out = df.copy()
-                out.iloc[rows, j] = [self.text(column.iat[i]) for i in rows]
+                values = column.to_numpy(dtype=object, copy=True)
+                for i in rows:
+                    values[i] = self.text(values[i])
+                out.isetitem(j, values)  # by position: an index with repeated labels is no matter
         return out
 
     def rows(self) -> list[tuple[str, str]]:
