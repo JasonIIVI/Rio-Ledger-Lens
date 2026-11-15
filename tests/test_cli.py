@@ -602,6 +602,60 @@ def test_report_attaches_an_existing_review_db_only(tmp_path, capsys):
         "1 ledger(s): 0 narrated, 2 decided entries")
 
 
+def test_report_writes_the_workpaper_when_the_ledger_and_the_store_hold_a_control_character(
+        tmp_path, capsys):
+    """A vertical tab (Word's line break, pasted into a note) in a ledger cell, a decision's note
+    or a note's text made `report` raise openpyxl's IllegalCharacterError, and the review store
+    is append-only: a store holding one could never write its workpaper again. The characters
+    are built with chr(), never typed as escapes."""
+    import openpyxl
+    import pandas as pd
+
+    from ledgerlens import jets
+    from ledgerlens.ingest import ledger_identity, load_csv
+    from ledgerlens.report import UNWRITABLE_NOTE
+    from ledgerlens.review import Decision, ReviewStore
+
+    vt, us = chr(11), chr(31)
+    main(["generate", "--start", "2024-01-01", "--end", "2024-03-31", "--out-dir", str(tmp_path)])
+    capsys.readouterr()
+    csv = tmp_path / "ledger.csv"
+    lines = pd.read_csv(csv, dtype=str, keep_default_na=False)
+    manual = lines.loc[lines["source"] == "Manual", "entry_id"].iloc[0]
+    lines.loc[lines["entry_id"] == manual, "created_by"] = "ana" + vt + "x"
+    lines.to_csv(csv, index=False)
+    ledger = load_csv(csv)
+    db = tmp_path / "review.sqlite"
+    store = ReviewStore(db, ledger_identity(ledger, str(csv)))
+    store.record(Decision(manual, "dismiss", "ana", "checked" + vt + "fine"))
+    store.save_narrative(manual, {"summary": "Keyed" + us + "late", "why_flagged": "w",
+                                  "evidence_to_request": ["x"], "suggested_control": "c",
+                                  "confidence": "low"}, model="claude-test")
+    xlsx = tmp_path / "wp.xlsx"
+    assert main(["report", str(csv), "--no-model", "--db", str(db), "--top", "5000",
+                 "--out", str(xlsx)]) == 0
+    assert "Workpaper written" in capsys.readouterr().out
+
+    book = openpyxl.load_workbook(xlsx)
+    rows = list(book["Exceptions"].iter_rows(values_only=True))
+    col = rows[0].index
+    row = next(r for r in rows[1:] if r[col("entry_id")] == manual)
+    assert (row[col("created_by")], row[col("note")], row[col("narrative")]) == (
+        "ana[U+000B]x", "checked[U+000B]fine", "Keyed[U+001F]late")
+    assert "ana[U+000B]x" in row[col("reasons")] and vt not in row[col("reasons")]
+    flags = jets.run_all(ledger)
+    reasons = flags.loc[flags["entry_id"] == manual, "reason"]
+    n, quoting = int(reasons.str.count(vt).sum()), int(reasons.str.contains(vt).sum())
+    assert n >= 1  # JET-12 quotes the user of a manual entry off the approver list
+    summary = {r[0]: r[1] for r in book["Summary"].iter_rows(values_only=True) if r[0]}
+    # The user, the reasons, the note and the narrative on Exceptions; each quoting reason on
+    # All flags.
+    assert summary["Characters a cell cannot hold"] == (
+        f"{3 + 2 * n} in {4 + quoting} cell(s), each shown as its code point (see Methodology)")
+    methodology = " ".join(str(c.value) for r in book["Methodology"].iter_rows() for c in r if c.value)
+    assert " ".join(UNWRITABLE_NOTE.split()) in " ".join(methodology.split())
+
+
 def test_eval_narratives_select_writes_a_skeleton_and_will_not_clobber_it(tmp_path, capsys):
     main(["generate", "--start", "2024-01-01", "--end", "2024-06-30",
           "--out-dir", str(tmp_path)])
