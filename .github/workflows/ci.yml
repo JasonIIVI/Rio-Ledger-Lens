@@ -32,11 +32,58 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev,llm,mcp]"
 
+      # This job is the suite's run without pyarrow (see the dashboard job below). A
+      # dependency that began to bring pyarrow in would change how pandas 3 keeps text
+      # here, and nothing else would say so.
+      - name: No pyarrow in this job
+        run: |
+          python -c "import importlib.util, sys; sys.exit('pyarrow is installed in this job' if importlib.util.find_spec('pyarrow') else 0)"
+
       - name: Lint
         run: ruff check src tests app.py
 
       - name: Test
         run: pytest -q --cov=ledgerlens --cov-report=term-missing
+
+  # The tests that need what the app extra installs, which the test job leaves out on
+  # purpose: the dashboard's need Streamlit, and one of the workpaper's needs pyarrow.
+  # Streamlit requires pyarrow, and with pyarrow pandas 3 keeps text columns in Arrow.
+  # Installed in the test job, it would end the suite's only runs on pandas 3 without
+  # pyarrow (that job's 3.11 and 3.12 legs), which is what an install without the app
+  # extra has. So those two test files run here as well, under the last Streamlit that
+  # Python 3.9 can install (1.50) and under the newest. The rest of the suite does not
+  # run in CI with pyarrow installed.
+  dashboard:
+    # 3.9 on 24.04, as in the test job: setup-python has no 3.9 for ubuntu-latest.
+    runs-on: ${{ matrix.python-version == '3.9' && 'ubuntu-24.04' || 'ubuntu-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,llm,app]"
+
+      # Both files skip the tests whose package they cannot import, and with two files
+      # collected a file that skipped itself is still a green job. This step fails
+      # instead, and its log says which versions the tests below ran under.
+      - name: Import what the tests below would skip without
+        run: |
+          python -c "import anthropic, pyarrow, streamlit; from streamlit.testing.v1 import AppTest; print('streamlit', streamlit.__version__, 'pyarrow', pyarrow.__version__, 'anthropic', anthropic.__version__)"
+
+      - name: Test the dashboard and the workpaper
+        run: pytest -q tests/test_app.py tests/test_report.py
 
   # Rule 1 in CLAUDE.md: no ledgers, labels, workpapers, review databases or
   # secrets are ever committed. This checks file names in the final tree; the

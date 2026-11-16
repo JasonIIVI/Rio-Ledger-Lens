@@ -22,6 +22,9 @@ pytest -q --cov=ledgerlens
 
 CI runs both on Python 3.9, 3.11 and 3.12, plus a detection-quality job that
 regenerates the ledger and fails if precision drops below 0.80 or recall below 0.90.
+The dashboard's tests (`tests/test_app.py`) need the `app` extra, which those jobs do not
+install, and one workpaper test (in `tests/test_report.py`) needs the pyarrow that comes
+with it. CI runs both files in its `dashboard` job, on Python 3.9 and 3.12.
 
 ## Adding a journal-entry test
 

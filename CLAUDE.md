@@ -13,7 +13,7 @@ Audit analytics over general ledger data. Read this before changing anything.
 | Working folder | `~/Library/Mobile Documents/com~apple~CloudDocs/LedgerGen project` (iCloud) |
 | Virtualenvs | `~/.venvs/ledgerlens` (3.9) and `~/.venvs/ledgerlens312` (3.12) — **deliberately outside iCloud**, one set per machine |
 | Python here | system 3.9.6 plus python.org **3.12.0** at `/usr/local/bin/python3.12`. Code must stay 3.9-compatible; only `mcp_server.py` needs 3.10+. pandas 2.2 or later (`ingest` imports `pandas.tseries.api.guess_datetime_format`), Streamlit 1.49 or later (`st.dataframe(width="stretch")`); CI installs the latest (pandas 2.3 on 3.9, 3.1 on 3.11 and 3.12; the venvs have 2.3 and 3.0.6), so the floors themselves are not run, and a new pandas reaches CI before the venvs |
-| CI | GitHub Actions: pytest on 3.9 / 3.11 / 3.12 + a detection-quality gate + a `rule-1` job (no data or secret file tracked); `claude.yml` answers `@claude`; `weekly.yml` regenerates the default ledger on Mondays and opens an Issue with `ledgerlens summary`. The 3.9 job runs on `ubuntu-24.04` (setup-python has no 3.9 for Ubuntu 26.04, `ubuntu-latest` since November 2026), the rest on `ubuntu-latest`; that holds while GitHub keeps 24.04 runners, and dropping 3.9 is the maintainer's call |
+| CI | GitHub Actions: pytest on 3.9 / 3.11 / 3.12 + a detection-quality gate + a `rule-1` job (no data or secret file tracked) + a `dashboard` job (the dashboard's tests and the workpaper's with the `app` extra installed: on 3.9 under Streamlit 1.50, the last one 3.9 can install, and on 3.12 under the newest; the test jobs install no Streamlit, which requires pyarrow, so their 3.11 and 3.12 legs stay the suite's runs on pandas 3 without pyarrow, and a step in them fails if pyarrow is there); `claude.yml` answers `@claude`; `weekly.yml` regenerates the default ledger on Mondays and opens an Issue with `ledgerlens summary`. The 3.9 jobs run on `ubuntu-24.04` (setup-python has no 3.9 for Ubuntu 26.04, `ubuntu-latest` since November 2026), the rest on `ubuntu-latest`; that holds while GitHub keeps 24.04 runners, and dropping 3.9 is the maintainer's call |
 
 ```bash
 source ~/.venvs/ledgerlens/bin/activate && pytest -q && ruff check src tests app.py
@@ -21,7 +21,13 @@ source ~/.venvs/ledgerlens312/bin/activate && pytest -q      # also runs the MCP
 ```
 
 Run both before every commit. The 3.9 venv has anthropic 0.x; the 3.12 venv has anthropic 1.x
-and the MCP SDK, so the two together cover every code path CI will see.
+and the MCP SDK, so between them the suite runs under both SDKs and the MCP tests run. They
+do not run every version CI does: each CI job installs the newest release its Python allows,
+so every job differs from the venvs (the three test jobs on 2026-11-15, among others: ruff
+and python-dateutil newer on each; pandas, anthropic, pytest and mcp newer on 3.11 and 3.12;
+numpy newer on 3.12; numpy and scipy on 3.11 older than the 3.12 venv's). The dashboard
+job's 3.12 leg resolves to a newer Streamlit and pyarrow too. Green here is not yet green
+there.
 
 ## Current state
 
@@ -662,7 +668,8 @@ and the MCP SDK, so the two together cover every code path CI will see.
   pinned as not the request failing, and so are the page loading without importing the SDK
   and the button without it. CI installs
   no Streamlit (`.[dev,llm,mcp]`), so `test_app.py` is skipped on every CI job: the
-  dashboard's tests run in the two venvs only. Version unchanged (1.2.0).
+  dashboard's tests run in the two venvs only (until the dashboard-job bullet below).
+  Version unchanged (1.2.0).
 - **CI's 3.9 runner (`fix/ci-python-3.9-runner`, after v1.2.0)** — `ubuntu-latest` moved from
   Ubuntu 24.04 to 26.04 between #27's PR run (3 Nov, image 20261025) and its push to `main`
   (8 Nov, image 20261101), and `actions/setup-python` has no 3.9 for 26.04, so `test (3.9)`
@@ -711,7 +718,8 @@ and the MCP SDK, so the two together cover every code path CI will see.
   reads (`get_narrative`, `history`, `summary`, `ledgers`) on a store that fails mid-session,
   and the CLI's `narrate`, which saved only after the whole batch, so a refused save there lost
   the notes still waiting (until the narrate bullet below). CI installs no Streamlit, so these
-  tests run in the two venvs only. Version unchanged (1.2.0).
+  tests run in the two venvs only (until the dashboard-job bullet below). Version unchanged
+  (1.2.0).
 - **Narrate's contract and per-note save (`fix/narrate-validate-and-save`, after v1.2.1)** —
   two items the store-writes bullet left open. `narrate.validate` read `summary`,
   `why_flagged` and `suggested_control` through `str()` and kept them as they came, and every
@@ -862,18 +870,114 @@ and the MCP SDK, so the two together cover every code path CI will see.
   longer claims every text goes through `_CellText`, which only this commit makes so). The new
   test fails on `5ccbe69` (`IllegalCharacterError` on the header), and the by-name and
   names-not-fitted mutants are killed. Version unchanged (1.2.1).
-- **Next** — the maintainer's call. Open, unchanged: re-recording `docs/demo.gif` (its model
-  scores predate v1.0.0's tie fix), week 5's model train/test split (a re-measurement under
-  rule 10), week 7 (multi-line entries change the default ledger, so every figure, the eval
-  cases and the held-out measurement are re-measured), and week 8 (PyPI). Also open: a
-  Benford baseline for a ledger's own size (the bands still depend on n above 300); a note's
-  model and time in the workpaper and the MCP entry rows (the explain tool returns both); the
-  prompt a note answered (a review-schema change); the reported model on new eval rows (a
-  row-shape change); the dashboard's reads on a store that fails mid-session (still
-  Streamlit's traceback); and the decision form's draft, which a browser on Streamlit 1.50.0
-  still shows after a decision was recorded (on `main` before the store-writes change too;
-  AppTest sees it cleared, and the double-click guard refuses the same submit).
-- 1363 tests on 3.9 (1 skipped) / 1378 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
+- **The dashboard's tests in CI (`ci/dashboard-tests`, after v1.2.1)** — CI's test jobs
+  install `.[dev,llm,mcp]`, so `tests/test_app.py` skipped itself on every job and the
+  dashboard's 73 test cases ran in the two venvs only (the #27 and #30 bullets above). So
+  did `test_an_arrow_text_column_is_fitted_too` in `tests/test_report.py`, which skips
+  itself without pyarrow. `ci.yml` now has a `dashboard` job for the two files, on Python
+  3.9 and 3.12: it installs `.[dev,llm,app]`, imports what the tests would skip without
+  (Streamlit's test harness, pyarrow, anthropic) in a step of its own, and runs `pytest -q
+  tests/test_app.py tests/test_report.py`. The import step is what turns a missing package
+  red: with two files collected, a file that skipped itself is a green job (collected alone
+  it is not: pytest exits 5), and the step's log names the versions that ran. On 3.9 the
+  extra brings Streamlit 1.50.0, the last version Python 3.9 can install, and on 3.12 the
+  newest (1.67.0 on 2026-11-16; the 3.12 venv has 1.64.0), so a new Streamlit can now fail
+  CI before the venvs see it, as a new pandas can. The extra stays out of the test jobs:
+  Streamlit requires pyarrow, and with pyarrow installed pandas 3 keeps text columns in
+  Arrow (without it, in Python objects), so adding it there would end the suite's only runs
+  on pandas 3 without pyarrow (the 3.11 and 3.12 legs; 3.9 runs pandas 2.3), which is what
+  an install without the `app` extra has. A step in the test job now fails if pyarrow can be
+  imported there. Not changed: the rest of the suite is not run in CI with pyarrow installed
+  (the 3.12 venv runs it so, on the pandas it has); one test still runs in no CI job, by its
+  own condition (`test_a_differently_cased_spelling_of_the_checkout_is_still_refused` in
+  `tests/test_tokens.py` skips on a case-sensitive filesystem, which every runner has); and
+  the jobs on one Python share a pip cache key, and an entry that was hit is not saved
+  again, so each job downloads on every run what the job that wrote the entry did not
+  install (with today's entries, the dashboard job downloads Streamlit's wheels).
+  `tests/test_workflows.py` pins both jobs line for line, comment and blank lines aside,
+  because a line beside the ones that matter changes what they do (an `if`, a
+  `continue-on-error`, an `env`, a second install); runs the two guard steps as the runner
+  would (each step's script as `ci.yml` has it, through `bash -e`, where `python` is a
+  stand-in that records what it is handed and runs it with only stand-in packages
+  importable); pins the workflow's triggers, its three top-level keys and the names of its
+  four jobs; pins every line of the two gates (`rule-1` and `detection-quality`) outside
+  their scripts; and holds the three workflow files to printable ASCII and line feeds. The
+  gates' scripts are not pinned: as before, one test reads rule 1's pattern and another runs
+  the detection gate's script, which must now be its one command and here-document. A review
+  of the first commit (one reviewer, scratch clone) found no fault in the job as written and
+  three mediums in what was tested and said: 28 of its 40 mutants of the workflow passed the
+  two tests that commit had, which matched six lines; the reason given for the import step
+  was false for a job that collected one file; and the pyarrow test above still ran nowhere
+  in CI. Those and its wording lows (which legs run pandas 3, what the two venvs cover, what
+  the check before the push ran under) are fixed. A fix-verification (one agent, scratch
+  clone) found no fault in either job as written, one medium in the tests and seven lows.
+  The medium: a job's lines were read up to the first line at the jobs' indent, and the
+  comment above the next job is one, so a key written below that comment (still the job's,
+  in YAML) was in no job's pinned lines: twelve such mutants passed (a `continue-on-error`,
+  an `if`, an `env`, a `shell`, a `working-directory`). A job is now read with the comment
+  lines taken out first. The lows: a fifth job passed the four-jobs pin if its key line was
+  quoted, carried a comment or held the job in braces (every line at the jobs' indent is
+  compared now); the two gates could be switched off beside their scripts (first a pin that
+  no `if` or `continue-on-error` is anywhere in the workflow, then the pin of the gates' own
+  lines); the two guard tests ran the test's own copy of each step's Python, in the folder
+  pytest was started in: started where the real packages were they failed, and two
+  weakenings made in the workflow and in that copy at once passed (an import of
+  `streamlit.testing` alone; `python -S`, under which a job's interpreter does not look in
+  site-packages), which is why they now run the workflow's own lines; and wording (which
+  releases CI installs that the venvs lack, which job downloads wheels, the test that runs
+  in no CI job, two paragraphs left unwrapped). A claims audit of the same commit (one
+  agent) found the same hole, by nine mutants of its own, and more wording: the first
+  commit's two tests matched six lines, not five; the two venvs do not "run every code path"
+  (CI's coverage is 97% and 98%: they run the suite under both SDKs, and the MCP tests); 26
+  of the workpaper's 27 tests need neither package and already ran on Linux; the squash body
+  had dropped "over the venv's other packages". A last check of the two fix commits (one
+  agent; each finding was reproduced before it was fixed) found one medium and six lows. The
+  medium: these tests end a line, and so a comment, at a line feed, and a YAML parser also
+  ends one at U+0085, U+2028 and U+2029, so a key written after a comment and one of those
+  characters was a key to the runner and a comment to every pin (eight mutants of `ci.yml`,
+  one of `weekly.yml`). The three workflow files are now held to printable ASCII and line
+  feeds. The lows: the no-`if` pin did not keep a gate from being switched off by a `shell`
+  key, a `defaults` or an unusual spelling of `if`, and a line of shell before the detection
+  gate's command passed (hence the pin of the gates' lines, which replaces it, and the
+  script that must be its one command); the guard tests ran a step's script and read none of
+  its other keys, so a `shell` added in the workflow and in the pinned lines at once passed
+  (the step must now be its name and its script); the mutant count said 138 where seven
+  repeated an earlier one; a comment called a `v1` with no `AppTest` a skip in
+  `tests/test_app.py`, where it is a collection error; a temporary folder whose path holds a
+  colon split `PATH`, which failed the guard tests and let the older Issue-step tests find
+  the real `gh` before their stand-in (it was handed the tests' own token and refused, so
+  nothing was created; both now skip there); and the cause given for the old guard tests'
+  dependence on the folder. Mutants against the final tests, one at a time on a scratch
+  copy: 170 runs of 160 different mutants, of which 156 are each killed by a named test. The
+  other four: one adds only a comment as a job's first line, which changes nothing the
+  runner reads (the earlier tests failed on it, because they ended a job's text at a
+  comment), and three are guard scripts written, in the workflow and in the pinned text at
+  once, to tell the tests' harness from a runner (an empty folder, a stripped environment,
+  `-S`), which takes intent. The two job pins and the two guard tests fail on `f7f4b21`'s
+  `ci.yml`, and they and the four-jobs pin on `c5ec5d3`'s. Before the push the job's two
+  commands passed in the 3.9 venv, whose Streamlit, pandas, numpy, pyarrow, anthropic and
+  pytest are the ones the 3.9 leg resolves to, and on 3.12 under the ones the 3.12 leg
+  resolved to that day (1.67.0, 3.1.1, 2.5.5, 26.0.1, 2.8.0 and 9.2.0, from a `pip --target`
+  folder over the venv's other packages; neither venv changed). CI's checks go from five to
+  seven, and the pull request's own run was the first on Linux for the dashboard's tests:
+  100 passed on each of the two new legs (2026-11-16). Version unchanged (1.2.1).
+- **Next** — in the order the maintainer set on 2026-11-16. First, in one PR: the dashboard's
+  reads on a store that fails mid-session (still Streamlit's traceback), and the decision
+  form's draft, which a browser on Streamlit 1.50.0 still shows after a decision was recorded
+  (on `main` before the store-writes change too; AppTest sees it cleared, and the double-click
+  guard refuses the same submit). Then a v1.2.2 release; week 8's hardening (a changelog, mypy
+  in CI, `mcp_server.py`'s coverage, a performance pass, and the whole suite in CI with the
+  `app` extra installed); week 7 as a separate ledger
+  (`generate --realistic`, from its own streams as the held-out ledger is, so the default
+  ledger, the eval cases and the held-out measurement do not move); and publishing last,
+  under another distribution name (on PyPI, `ledgerlens` has been another project's package
+  since 2026-11-10). Open beyond that, unchanged: re-recording `docs/demo.gif` (its model
+  scores predate v1.0.0's tie fix); week 5's model train/test split (a re-measurement under
+  rule 10); a Benford baseline for a ledger's own size (the bands still depend on n above
+  300); a note's model and time in the workpaper and the MCP entry rows (the explain tool
+  returns both); the prompt a note answered (a review-schema change); and the reported model
+  on new eval rows (a row-shape change).
+- 1370 tests on 3.9 (1 skipped) / 1385 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
