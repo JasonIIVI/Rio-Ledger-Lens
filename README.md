@@ -767,7 +767,11 @@ pytest --cov=ledgerlens      # coverage
 ruff check src tests app.py  # lint
 ```
 
-CI runs the suite on Python 3.9, 3.11 and 3.12 plus a detection-quality gate. Nothing in
+CI runs the suite on Python 3.9, 3.11 and 3.12 plus a detection-quality gate, and the
+dashboard's tests in a job of their own, under Streamlit 1.50 (the last version Python 3.9
+can install) and under the newest. The suite's jobs install no Streamlit on purpose: it
+brings pyarrow, and with pyarrow pandas 3 keeps text columns in Arrow, so those jobs are
+where the suite runs on pandas 3 without it. Nothing in
 `narrate.py` or the eval needs a key to be tested: the API is replaced by a fake that returns
 responses shaped like the real ones. No test touches the network: QuickBooks responses are
 replayed from `tests/fixtures/qbo/`, and the sign-in test follows a real redirect to a

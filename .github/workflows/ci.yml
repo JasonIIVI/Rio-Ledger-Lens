@@ -38,6 +38,43 @@ jobs:
       - name: Test
         run: pytest -q --cov=ledgerlens --cov-report=term-missing
 
+  # The dashboard's tests need Streamlit, which the test job leaves out on purpose.
+  # Streamlit installs pyarrow, and with pyarrow pandas 3 keeps text columns in Arrow:
+  # installed in the test job, it would end the suite's only run on pandas 3 without
+  # pyarrow, which is what an install without the app extra has. So the dashboard has its
+  # own job, under the last Streamlit that Python 3.9 can install (1.50) and the newest.
+  dashboard:
+    # 3.9 on 24.04, as in the test job: setup-python has no 3.9 for ubuntu-latest.
+    runs-on: ${{ matrix.python-version == '3.9' && 'ubuntu-24.04' || 'ubuntu-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,llm,app]"
+
+      # tests/test_app.py skips itself when Streamlit's test harness cannot be imported,
+      # and a module that skipped is a green job. This step fails instead, and its log
+      # says which Streamlit the tests below ran under.
+      - name: Import Streamlit's test harness
+        run: |
+          python -c "import streamlit; from streamlit.testing.v1 import AppTest; print('streamlit', streamlit.__version__)"
+
+      - name: Test the dashboard
+        run: pytest -q tests/test_app.py
+
   # Rule 1 in CLAUDE.md: no ledgers, labels, workpapers, review databases or
   # secrets are ever committed. This checks file names in the final tree; the
   # committed eval rows are covered by a test in the test job, which rebuilds

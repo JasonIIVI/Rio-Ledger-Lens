@@ -327,6 +327,44 @@ def test_ci_runs_3_9_on_an_image_that_still_has_it():
         "${{ matrix.python-version == '3.9' && 'ubuntu-24.04' || 'ubuntu-latest' }}")
 
 
+def job(ci, name):
+    """One job's lines in ci.yml: from its key to the next line at the jobs' own indent."""
+    match = re.search(rf"(?ms)^  {name}:\n(.*?)(?=^  \S|\Z)", ci)
+    assert match, f"ci.yml has no {name} job"
+    return match.group(1)
+
+
+def installs(job_text):
+    """The ``pip install -e`` lines a job runs."""
+    return re.findall(r"(?m)^ +(pip install -e .+)$", uncommented(job_text))
+
+
+def test_the_dashboard_s_tests_run_in_ci_under_both_streamlits():
+    """CI installed no Streamlit, so tests/test_app.py skipped itself on every job and the
+    dashboard was tested on the maintainer's machine only. Its own job installs the app extra:
+    on 3.9 that brings Streamlit 1.50, the last one 3.9 can install, and on 3.12 the newest;
+    3.9 runs on the image that still has it, as in the test job."""
+    dashboard = job(read("ci.yml"), "dashboard")
+    assert re.search(r'(?m)^ +python-version: \["3\.9", "3\.12"\]$', dashboard)
+    assert re.search(r"(?m)^    runs-on: (.+)$", dashboard).group(1) == (
+        "${{ matrix.python-version == '3.9' && 'ubuntu-24.04' || 'ubuntu-latest' }}")
+    assert installs(dashboard) == ['pip install -e ".[dev,llm,app]"']
+    assert re.search(r"(?m)^ +run: pytest -q tests/test_app\.py$", dashboard)
+    # A module that skipped itself is a green job, so the harness is imported in a step of
+    # its own before the tests: without Streamlit that step fails.
+    steps = uncommented(dashboard)
+    harness, tests = (steps.find(text) for text in
+                      ("from streamlit.testing.v1 import AppTest", "pytest -q tests/test_app.py"))
+    assert 0 <= harness < tests
+
+
+def test_the_test_job_installs_no_streamlit():
+    """Streamlit installs pyarrow, and with pyarrow pandas 3 keeps text columns in Arrow. The
+    test job is the suite's only run on pandas 3 without it (the maintainer's 3.12 venv has
+    both), so the app extra stays out of that job."""
+    assert installs(job(read("ci.yml"), "test")) == ['pip install -e ".[dev,llm,mcp]"']
+
+
 def test_ci_still_has_its_rule_1_job_and_claude_yml_its_mention_gate():
     assert re.search(r"(?m)^  rule-1:$", read("ci.yml"))
     claude = read("claude.yml")

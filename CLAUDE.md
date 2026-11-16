@@ -13,7 +13,7 @@ Audit analytics over general ledger data. Read this before changing anything.
 | Working folder | `~/Library/Mobile Documents/com~apple~CloudDocs/LedgerGen project` (iCloud) |
 | Virtualenvs | `~/.venvs/ledgerlens` (3.9) and `~/.venvs/ledgerlens312` (3.12) — **deliberately outside iCloud**, one set per machine |
 | Python here | system 3.9.6 plus python.org **3.12.0** at `/usr/local/bin/python3.12`. Code must stay 3.9-compatible; only `mcp_server.py` needs 3.10+. pandas 2.2 or later (`ingest` imports `pandas.tseries.api.guess_datetime_format`), Streamlit 1.49 or later (`st.dataframe(width="stretch")`); CI installs the latest (pandas 2.3 on 3.9, 3.1 on 3.11 and 3.12; the venvs have 2.3 and 3.0.6), so the floors themselves are not run, and a new pandas reaches CI before the venvs |
-| CI | GitHub Actions: pytest on 3.9 / 3.11 / 3.12 + a detection-quality gate + a `rule-1` job (no data or secret file tracked); `claude.yml` answers `@claude`; `weekly.yml` regenerates the default ledger on Mondays and opens an Issue with `ledgerlens summary`. The 3.9 job runs on `ubuntu-24.04` (setup-python has no 3.9 for Ubuntu 26.04, `ubuntu-latest` since November 2026), the rest on `ubuntu-latest`; that holds while GitHub keeps 24.04 runners, and dropping 3.9 is the maintainer's call |
+| CI | GitHub Actions: pytest on 3.9 / 3.11 / 3.12 + a detection-quality gate + a `rule-1` job (no data or secret file tracked) + a `dashboard` job (the dashboard's tests on 3.9, under Streamlit 1.50, the last one 3.9 can install, and on 3.12 under the newest; the three test jobs install no Streamlit, which brings pyarrow, so they stay the suite's run on pandas 3 without it); `claude.yml` answers `@claude`; `weekly.yml` regenerates the default ledger on Mondays and opens an Issue with `ledgerlens summary`. The 3.9 jobs run on `ubuntu-24.04` (setup-python has no 3.9 for Ubuntu 26.04, `ubuntu-latest` since November 2026), the rest on `ubuntu-latest`; that holds while GitHub keeps 24.04 runners, and dropping 3.9 is the maintainer's call |
 
 ```bash
 source ~/.venvs/ledgerlens/bin/activate && pytest -q && ruff check src tests app.py
@@ -662,7 +662,8 @@ and the MCP SDK, so the two together cover every code path CI will see.
   pinned as not the request failing, and so are the page loading without importing the SDK
   and the button without it. CI installs
   no Streamlit (`.[dev,llm,mcp]`), so `test_app.py` is skipped on every CI job: the
-  dashboard's tests run in the two venvs only. Version unchanged (1.2.0).
+  dashboard's tests run in the two venvs only (until the dashboard-job bullet below).
+  Version unchanged (1.2.0).
 - **CI's 3.9 runner (`fix/ci-python-3.9-runner`, after v1.2.0)** — `ubuntu-latest` moved from
   Ubuntu 24.04 to 26.04 between #27's PR run (3 Nov, image 20261025) and its push to `main`
   (8 Nov, image 20261101), and `actions/setup-python` has no 3.9 for 26.04, so `test (3.9)`
@@ -711,7 +712,8 @@ and the MCP SDK, so the two together cover every code path CI will see.
   reads (`get_narrative`, `history`, `summary`, `ledgers`) on a store that fails mid-session,
   and the CLI's `narrate`, which saved only after the whole batch, so a refused save there lost
   the notes still waiting (until the narrate bullet below). CI installs no Streamlit, so these
-  tests run in the two venvs only. Version unchanged (1.2.0).
+  tests run in the two venvs only (until the dashboard-job bullet below). Version unchanged
+  (1.2.0).
 - **Narrate's contract and per-note save (`fix/narrate-validate-and-save`, after v1.2.1)** —
   two items the store-writes bullet left open. `narrate.validate` read `summary`,
   `why_flagged` and `suggested_control` through `str()` and kept them as they came, and every
@@ -862,18 +864,42 @@ and the MCP SDK, so the two together cover every code path CI will see.
   longer claims every text goes through `_CellText`, which only this commit makes so). The new
   test fails on `5ccbe69` (`IllegalCharacterError` on the header), and the by-name and
   names-not-fitted mutants are killed. Version unchanged (1.2.1).
-- **Next** — the maintainer's call. Open, unchanged: re-recording `docs/demo.gif` (its model
-  scores predate v1.0.0's tie fix), week 5's model train/test split (a re-measurement under
-  rule 10), week 7 (multi-line entries change the default ledger, so every figure, the eval
-  cases and the held-out measurement are re-measured), and week 8 (PyPI). Also open: a
-  Benford baseline for a ledger's own size (the bands still depend on n above 300); a note's
-  model and time in the workpaper and the MCP entry rows (the explain tool returns both); the
-  prompt a note answered (a review-schema change); the reported model on new eval rows (a
-  row-shape change); the dashboard's reads on a store that fails mid-session (still
-  Streamlit's traceback); and the decision form's draft, which a browser on Streamlit 1.50.0
-  still shows after a decision was recorded (on `main` before the store-writes change too;
-  AppTest sees it cleared, and the double-click guard refuses the same submit).
-- 1363 tests on 3.9 (1 skipped) / 1378 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
+- **The dashboard's tests in CI (`ci/dashboard-tests`, after v1.2.1)** — CI's test jobs
+  install `.[dev,llm,mcp]`, so `tests/test_app.py` skipped itself on every job and the
+  dashboard's 73 test cases ran in the two venvs only (the #27 and #30 bullets above).
+  `ci.yml` now has a `dashboard` job for them, on Python 3.9 and 3.12: it installs
+  `.[dev,llm,app]`, imports `streamlit.testing.v1` in a step of its own (a module that
+  skipped itself is a green job, and the step's log names the Streamlit that ran), and runs
+  `pytest -q tests/test_app.py`. On 3.9 the extra brings Streamlit 1.50.0, the last version
+  Python 3.9 can install, and on 3.12 the newest (1.67.0 on 2026-11-16; the 3.12 venv has
+  1.64.0), so a new Streamlit can now fail CI before the venvs see it, as a new pandas can.
+  The extra stays out of the three test jobs: Streamlit requires pyarrow, and with pyarrow
+  installed pandas 3 keeps text columns in Arrow (without it, in Python objects), so adding
+  it there would end the suite's only run on pandas 3 without pyarrow, which is what an
+  install without the `app` extra has (the 3.12 venv has both). `tests/test_workflows.py`
+  pins the job (its matrix, its 3.9 image, its install line, its test command, the import
+  before the tests) and that the test job's install line has no `app`; the first fails on
+  `c5ec5d3`'s `ci.yml`, and ten mutants of the workflow are each killed by one of the two.
+  Before the push the dashboard's tests passed in both venvs and under what the 3.12 job
+  installs (Streamlit 1.67.0, pandas 3.1.1, numpy 2.5.4 and anthropic 2.8.0 from a
+  `pip --target` folder; neither venv changed). CI's checks go from five to seven. Version
+  unchanged (1.2.1).
+- **Next** — in the order the maintainer set on 2026-11-16. First, in one PR: the dashboard's
+  reads on a store that fails mid-session (still Streamlit's traceback), and the decision
+  form's draft, which a browser on Streamlit 1.50.0 still shows after a decision was recorded
+  (on `main` before the store-writes change too; AppTest sees it cleared, and the double-click
+  guard refuses the same submit). Then a v1.2.2 release; week 8's hardening (a changelog, mypy
+  in CI, `mcp_server.py`'s coverage, a performance pass); week 7 as a separate ledger
+  (`generate --realistic`, from its own streams as the held-out ledger is, so the default
+  ledger, the eval cases and the held-out measurement do not move); and publishing last,
+  under another distribution name (on PyPI, `ledgerlens` has been another project's package
+  since 2026-11-10). Open beyond that, unchanged: re-recording `docs/demo.gif` (its model
+  scores predate v1.0.0's tie fix); week 5's model train/test split (a re-measurement under
+  rule 10); a Benford baseline for a ledger's own size (the bands still depend on n above
+  300); a note's model and time in the workpaper and the MCP entry rows (the explain tool
+  returns both); the prompt a note answered (a review-schema change); and the reported model
+  on new eval rows (a row-shape change).
+- 1365 tests on 3.9 (1 skipped) / 1380 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
