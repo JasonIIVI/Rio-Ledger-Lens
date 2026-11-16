@@ -716,7 +716,8 @@ there.
   `try` is equivalent). Checked in a browser on a read-only file: the message, the form and the
   draft, then the same click recording once the file was writable. Not changed: the page's
   reads (`get_narrative`, `history`, `summary`, `ledgers`) on a store that fails mid-session
-  (until the reads bullet below), and the CLI's `narrate`, which saved only after the whole batch, so a refused save there lost
+  (until the reads bullet below), and the CLI's `narrate`, which saved only after the whole
+  batch, so a refused save there lost
   the notes still waiting (until the narrate bullet below). CI installs no Streamlit, so these
   tests run in the two venvs only (until the dashboard-job bullet below). Version unchanged
   (1.2.0).
@@ -963,7 +964,7 @@ there.
   100 passed on each of the two new legs (2026-11-16). Version unchanged (1.2.1).
 - **The dashboard's reads, the store's open and the decision draft
   (`fix/dashboard-store-reads`, after v1.2.1)** — the two items the store-writes bullet and
-  the last Next left open, and three more found on the way.
+  the last Next left open, and more found on the way and by its review.
   - **Reads.** The page opens the store once a run and then reads it at seven places
     (`other_ledgers`, `ledgers`, `current`, `summary`, `decided_ids`, `get_narrative`,
     `history`), each on a connection of its own, so a file that opened can refuse the next
@@ -980,7 +981,10 @@ there.
     `pandas.errors.DatabaseError`, an `OSError` and not a `sqlite3.Error`, with what SQLite
     raised as its cause: both are caught, and the cause is what is shown. Still a traceback:
     `review.CALLER_FAULTS`, raw or wrapped by pandas, a pandas error with no SQLite refusal
-    behind it, and anything else of ours.
+    behind it, and anything else of ours. Two of the reads (`decided_ids`, `get_narrative`)
+    sit inside the first tab: their refusal is drawn above the tab bar, in a placeholder
+    made before the tabs, because said inside that tab it left the other three blank with
+    no word.
   - **The open** (`review.py`, so every caller has it). A probe of seven kinds of file found
     three faults. A folder that cannot be made (its own parent is a file) escaped as an
     `OSError`, and an empty file that is read-only as `OperationalError` from the schema
@@ -991,39 +995,75 @@ there.
     database", because every `sqlite3.DatabaseError` while the schema was read was; an
     `OperationalError` there now reads "could not be read as a SQLite database", by both
     openers. The dashboard draws the open's message through `md()` too (it names the path as
-    typed).
+    typed). The read-only opener's own check (of the schema and the append-only guard) is
+    put into words the same way, and `adopt-legacy` prints one `error:` line when a file
+    that opened then refuses the copy (read-only with rows to adopt, or locked by another
+    program): it was a traceback.
   - **The draft that stayed.** After a recorded decision the page removed the draft's two
     keys from session state. That resets the value for the script and sends the browser
     nothing: a browser went on showing the choice and the note just recorded and sent them
     back with the next submit, on Streamlit 1.64 as on 1.50 (the last Next said 1.50). The
-    keys are now assigned their defaults, which reaches the browser as the widget's new
-    value (`set_value`).
+    keys are now assigned, which reaches the browser as the widget's new value
+    (`set_value`): the note to empty and the choice to none. The form has no preselected
+    decision any more (`st.radio(index=None)`), and a submit with none chosen records
+    nothing and says so. Cleared back to "accept", as this change first had it, the form
+    recorded an accept with an empty note at a second click, as the entry's latest decision:
+    an escalation became an accept the reviewer never chose. (While a browser still showed
+    the decision just recorded, the fault fixed here, the double-click guard refused that
+    click.) A click that arrives on the run that clears the form carries the decision just
+    recorded and is refused as the duplicate it is.
   - **The draft that was lost.** Found in the browser while checking the above: a run that
     stops before the form (the open's stop, on `main` already, and now a read's) takes the
     form off the page, and when the store answered again the form came back empty, so the
-    decision being recorded was gone (1.50 and 1.64; AppTest shows it too).
-    `app._stop_for_the_store` sets the form's values aside before it stops, and the form
-    takes them back by assignment when it is next drawn, unless that run is the one clearing
-    it after a recorded decision; under its message it says to rerun the page (a reload
-    starts a new session) and that the decision is kept. It also draws a pending
-    "Recorded: ..." above its error: a decision recorded on the run before is still said
-    once, where an error alone, straight after the click, read as if the click had failed.
-  - **Tests.** 73 new cases (68 in `test_app.py`, four in `test_review.py`, one in
+    decision being recorded was gone (1.50 and 1.64). It takes the entry selector and
+    "Outstanding only" off the page too, and a browser starts a control it is shown again
+    from its default. `app._stop_for_the_store` sets aside the form's values and those two
+    controls (where the stopped run had not drawn them), and each takes its value back by
+    assignment when it is next drawn: a form only its own entry's draft, the selector only
+    an entry still in the queue. Given back to the form alone, as this change first had it,
+    the draft returned only for a reviewer on the queue's first entry: on any other the
+    browser's selector was back on the first, and the next click was thrown away. The other
+    filters start over. The caption under the message says so, says to rerun with the menu's
+    Rerun, and says that reloading the tab starts a new session and loses what was being
+    recorded. A pending "Recorded: ..." is drawn above the error: a decision recorded on the
+    run before is still said once, where an error alone, straight after the click, read as
+    if the click had failed.
+  - **Tests.** 85 new cases (78 in `test_app.py`, five in `test_review.py`, two in
     `test_cli.py`): each read refused by each kind of store error, raw and through pandas;
     the two reads behind a condition (the legacy check's, the outstanding filter's); the
     file replaced between the open and a read, and during a request, through SQLite and
-    pandas themselves; the three faults of the open, the lock held by a real second
-    connection; both drafts by what the browser is told (`set_value` on the widget's
-    message, which AppTest exposes). 46 fail on `c5ec5d3` on both Pythons, each for the
-    fault it names; the other 27 pin that a fault of ours is still a traceback. Checked in a
-    browser on Streamlit 1.50 and 1.64, before and after: the form clears after a recorded
-    decision, and a decision being recorded when the file is unreadable comes back and
-    records once.
+    pandas themselves; the faults of the open, the lock held by a real second connection;
+    both drafts by what the browser is told (`set_value` on the widget's message, which
+    AppTest exposes), on an entry that is not the queue's first and with "Outstanding only"
+    ticked; a form with no decision chosen, a second click, and a click that arrives on the
+    clearing run. 57 fail on `c5ec5d3` on both Pythons; the other 28 pin what must not
+    change (a fault of ours is still a traceback; the same decision sent again is refused).
+    AppTest forgets more than a session does after a stopped run (it drops the state of
+    every control it did not send, where a session keeps what the stopped run did not
+    reach), so these tests read what the browser is told, and the flows were checked in a
+    browser on Streamlit 1.50 and 1.64: a decision typed on the queue's third entry with
+    "Outstanding only" ticked, the file made unreadable at the click and readable again,
+    comes back with its entry after a rerun and records once; the form then holds no choice,
+    and a second click records nothing. Mutants, one at a time on a scratch copy, each
+    killed by a named test: 42 of the first two commits and 20 of the third (one of the 20,
+    assigning an entry that has left the queue, only under Streamlit 1.50, where it is an
+    error; 1.64 falls back to the first entry by itself).
+  - **Review.** A correctness review of the first two commits (one reviewer, scratch clone)
+    found two highs, one medium and six lows, all fixed in the third commit. The highs are
+    the two above: the draft given back to the wrong entry, and the accept recorded at a
+    second click. The medium: the draft tests ran on a harness that forgets what a session
+    keeps (said under Tests). The lows: `adopt-legacy`'s traceback and the read-only
+    opener's raw error (both under The open); a caption that told the reviewer to wait where
+    waiting cures nothing and whose "press R" read as a reload; the order of the
+    confirmation and the error, which no test pinned; a refusal inside the first tab that
+    left the other tabs blank; and totals written against an older base.
   - **Not changed.** A draft typed but not yet submitted when another control reruns the
     page into a failed read is still lost: the browser had not sent it. A browser reload
-    starts a new session, so nothing is kept across one (the message says to rerun). The
-    command line's own reads after its open (`narrate`'s ledgers and narrative ids,
-    `report --db` and `summary --db`) are still a traceback if the file fails in between.
+    starts a new session, so nothing is kept across one (the caption says so). After a
+    stopped run the three multiselects, "Minimum amount" and the fiscal year start over. A
+    database path that holds a NUL is still a `ValueError` (a shell cannot pass one). The
+    command line's own reads after its open (`narrate`'s ledgers and narrative ids, `report
+    --db` and `summary --db`) are still a traceback if the file fails in between.
   Version unchanged (1.2.1).
 - **Next** — in the order the maintainer set on 2026-11-16: a v1.2.2 release; week 8's
   hardening (a changelog, mypy in CI, `mcp_server.py`'s coverage, a performance pass, and
@@ -1037,7 +1077,7 @@ there.
   300); a note's model and time in the workpaper and the MCP entry rows (the explain tool
   returns both); the prompt a note answered (a review-schema change); and the reported model
   on new eval rows (a row-shape change).
-- 1443 tests on 3.9 (1 skipped) / 1458 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
+- 1455 tests on 3.9 (1 skipped) / 1470 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth

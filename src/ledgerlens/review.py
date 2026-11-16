@@ -412,7 +412,13 @@ class ReviewStore:
             if not self.path.exists():
                 raise FileNotFoundError(f"no review database at {self.path}")
             with closing(self._open()) as conn:
-                _require_current_schema(conn, self.path)
+                try:
+                    _require_current_schema(conn, self.path)
+                except CALLER_FAULTS:
+                    raise
+                except sqlite3.Error as exc:  # as below: a lock that began once the schema was read
+                    raise RuntimeError(f"{self.path} cannot be read as a review database "
+                                       f"({type(exc).__name__}: {exc})") from exc
             return
         # A path that cannot be used gets a message, as in _open: callers show a
         # RuntimeError from here as one line, and anything else was a traceback.

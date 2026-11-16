@@ -679,6 +679,33 @@ def test_a_refusal_while_the_schema_is_brought_up_to_date_is_a_message_and_a_fau
             ReviewStore(path, LEDGER)
 
 
+def test_the_read_only_opener_puts_a_refusal_into_words_as_well(tmp_path, monkeypatch):
+    """The read-only opener (`report --db`, `summary --db`, the MCP path) checks the schema
+    and the append-only guard without writing. A lock that begins once the file has been
+    read refused that check as a raw OperationalError, where the read-write opener already
+    gave a message. A fault of ours stays one."""
+    path = tmp_path / "review.sqlite"
+    ReviewStore(path, LEDGER)
+
+    def refusing(error):
+        def check(conn, path):
+            raise error
+        return check
+
+    monkeypatch.setattr(review, "_require_current_schema",
+                        refusing(sqlite3.OperationalError("database is locked")))
+    with pytest.raises(RuntimeError) as refused:
+        ReviewStore.read_only(path, LEDGER)
+    assert str(refused.value) == (
+        f"{path} cannot be read as a review database (OperationalError: database is locked)")
+
+    for fault in (sqlite3.ProgrammingError("You can only execute one statement at a time."),
+                  sqlite3.InterfaceError("Error binding parameter 0 - probably unsupported type.")):
+        monkeypatch.setattr(review, "_require_current_schema", refusing(fault))
+        with pytest.raises(type(fault)):
+            ReviewStore.read_only(path, LEDGER)
+
+
 def test_a_writer_that_loses_a_migration_race_carries_on_from_where_the_winner_left_it(
         tmp_path, monkeypatch):
     path = tmp_path / "review.sqlite"

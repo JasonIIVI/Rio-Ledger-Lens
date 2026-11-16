@@ -993,6 +993,44 @@ def test_narrate_files_each_ledger_under_its_own_identity(tmp_path, capsys, monk
     assert len(client.calls) == 8
 
 
+def test_adopt_legacy_says_so_when_the_file_refuses_the_copy(tmp_path, capsys, monkeypatch):
+    """A read-only file that holds rows to adopt opens (the open writes nothing to a current
+    file) and then refuses the copy: an OperationalError, a traceback. One `error:` line,
+    and nothing adopted. A statement of ours the driver would not run is still a fault."""
+    from ledgerlens import cli
+    from ledgerlens.ingest import ledger_identity, load_csv
+    from ledgerlens.review import ReviewStore
+
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("root writes to a read-only file")
+    monkeypatch.chdir(tmp_path)
+    main(["generate", "--start", "2024-01-01", "--end", "2024-03-31", "--out-dir", str(tmp_path)])
+    ledger, db = str(tmp_path / "ledger.csv"), tmp_path / "review.sqlite"
+    identity = ledger_identity(load_csv(ledger), ledger)
+    ReviewStore(db, identity)
+    with sqlite3.connect(str(db)) as raw:  # a note from before ledgers were keyed
+        raw.execute("INSERT INTO narratives (entry_id, summary, generated_at, ledger_id) VALUES "
+                    "('JE-2024-000001', 'old', '2026-09-23T00:00:00+00:00', 'legacy')")
+    raw.close()
+    db.chmod(0o444)
+    capsys.readouterr()
+
+    assert main(["adopt-legacy", ledger, "--db", str(db)]) == 2
+
+    assert capsys.readouterr().out == (
+        f"error: {db} could not be written, so nothing was adopted "
+        "(OperationalError: attempt to write a readonly database)\n")
+    db.chmod(0o644)
+    assert ReviewStore(db, identity).narrative_ids() == set()
+
+    def faulty(self, entry_ids=None):
+        raise sqlite3.ProgrammingError("You can only execute one statement at a time.")
+
+    monkeypatch.setattr(cli.ReviewStore, "adopt_legacy", faulty)
+    with pytest.raises(sqlite3.ProgrammingError):
+        main(["adopt-legacy", ledger, "--db", str(db)])
+
+
 def test_narrate_refuses_to_ignore_legacy_rows_unless_told_to(tmp_path, capsys, monkeypatch, llm):
     """Rows from before ledgers were keyed are adopted or set aside on purpose, never bought again."""
     import sqlite3

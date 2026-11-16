@@ -787,6 +787,14 @@ def cmd_adopt_legacy(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"refused: {exc}")
         return 2
+    except CALLER_FAULTS:
+        raise  # a statement of ours the driver would not run: a fault, not the file's
+    except sqlite3.Error as exc:
+        # The file opened and then refused the copy: read-only with rows to adopt, or
+        # locked by another program. Nothing was adopted (the copy is one transaction).
+        print(f"error: {one_line(str(args.db))} could not be written, so nothing was adopted "
+              f"({type(exc).__name__}: {one_line(str(exc))})")
+        return 2
     if not adopted["narratives"] and not adopted["decisions"]:
         print(f"Nothing to adopt: {args.db} holds no legacy rows")
         return 0

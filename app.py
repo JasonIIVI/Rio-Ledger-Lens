@@ -143,6 +143,34 @@ def _refusal(exc: BaseException) -> sqlite3.Error | None:
 
 #: The decision form's two widgets, keyed per entry: what a reviewer was recording.
 DRAFT_KEYS = ("choice-", "note-")
+#: The two controls that say which entry that was. A run that stops before it draws them
+#: takes them off the page as well, and a browser starts a control it is shown again from
+#: its default: the selector on the queue's first entry, "Outstanding only" unticked.
+KEPT_CONTROLS = ("outstanding_only", "picked")
+#: What is said under every stop. Rerun, not reload: a reload starts a new session, and
+#: what was set aside goes with the old one.
+STOPPED = ("When the file can be used again, or another is named in the sidebar, rerun the page: "
+           "Rerun, in the menu at the top right. Reloading the browser tab starts a new session "
+           "and loses what was being recorded. The entry, \"Outstanding only\" and the decision "
+           "in the form are kept; the other filters start over.")
+_DRAWN: set[str] = set()  # the kept controls this run has drawn (the script runs afresh each time)
+_NOTICE: list = []  # the placeholder above the tab bar, once the run has reached it
+
+
+def _give_back(key: str, allowed=None) -> None:
+    """Before a kept control is drawn: assign what a stopped run set aside for it.
+
+    Assigned, so the browser is told (an assigned key reaches it as the widget's new
+    value): it had dropped the control and would show its default, and send that default
+    with the next click, whatever the script still held. A value that is no longer one of
+    ``allowed`` (an entry that left the queue) is let go.
+    """
+    waiting = st.session_state.get("drafts-kept", {})
+    if key in waiting:
+        st.session_state["drafts-kept"] = {k: v for k, v in waiting.items() if k != key}
+        if allowed is None or waiting[key] in allowed:
+            st.session_state[key] = waiting[key]
+    _DRAWN.add(key)
 
 
 def _stop_for_the_store(message: str) -> None:
@@ -151,21 +179,23 @@ def _stop_for_the_store(message: str) -> None:
     Two things would otherwise be lost with the rest of the page. A write the run before
     did make is said here, once, as it would have been further down (the flash): an error
     alone, straight after a click, reads as if the click had failed. And the decision a
-    reviewer was recording is set aside: a run that stops before the form takes the form
-    off the page, the browser forgets what was in it, and the next run drew it empty. The
-    form takes it back when it is next drawn. ``message`` can quote a path as typed or
-    what SQLite said, so it goes through ``md()``.
+    reviewer was recording is set aside, with the two controls that say which entry it was
+    for: a run that stops before the form takes it all off the page, the browser forgets
+    what was in controls it no longer shows, and the next run drew the form empty, on the
+    queue's first entry. Each takes its value back when it is next drawn. ``message`` can
+    quote a path as typed or what SQLite said, so it goes through ``md()``. Once the tab
+    bar is drawn the message goes above it, where it shows whichever tab is open.
     """
+    place = _NOTICE[0].container() if _NOTICE else st
     flash = st.session_state.pop("flash", None)
     if flash:
-        st.success(flash)
-    st.error(md(message))
-    # Rerun, not reload: a reload starts a new session, and what was set aside goes with the old.
-    st.caption("Rerun the page (press R, or choose Rerun in the menu at the top right) once the "
-               "file can be used again; a decision that was being recorded is kept in the form.")
+        place.success(flash)
+    place.error(md(message))
+    place.caption(STOPPED)
     kept = dict(st.session_state.get("drafts-kept", {}))  # a second failed run adds to the first's
     kept.update({key: value for key, value in st.session_state.items()
-                 if isinstance(key, str) and key.startswith(DRAFT_KEYS)})
+                 if isinstance(key, str) and (
+                     key.startswith(DRAFT_KEYS) or (key in KEPT_CONTROLS and key not in _DRAWN))})
     st.session_state["drafts-kept"] = kept
     st.stop()
 
@@ -346,6 +376,11 @@ if not progress.empty:
         f"{r.decision} {r.entries}" for r in progress.itertuples()
     ))
 
+# Two reads below sit inside the first tab. Their refusal is said here, above the tab
+# bar: said inside that tab, it left the other three blank with no word. A placeholder,
+# not a container: left empty, a container gave Streamlit 1.50's test harness each
+# element below it twice after a rerun.
+_NOTICE.append(st.empty())
 tab_queue, tab_tiers, tab_benford, tab_quality = st.tabs(
     ["Exception queue", "Tier comparison", "Benford", "Detection quality"]
 )
@@ -361,6 +396,7 @@ with tab_queue:
         agreements = sorted(combined["agreement"].unique())
         chosen_agree = st.multiselect("Tier agreement", agreements, default=agreements)
         min_amount = st.number_input("Minimum amount", value=0.0, step=1000.0)
+        _give_back("outstanding_only")
         outstanding_only = st.checkbox("Outstanding only", value=False, key="outstanding_only",
                                        help="Hide entries that already have a decision.")
         chosen_bands = None
@@ -400,6 +436,7 @@ with tab_queue:
 
     if not queue.empty:
         st.divider()
+        _give_back("picked", allowed=queue["entry_id"].tolist())
         picked = st.selectbox("Inspect entry", queue["entry_id"].tolist(), key="picked")
         row = combined[combined["entry_id"] == picked].iloc[0]
 
@@ -504,22 +541,24 @@ with tab_queue:
         # while the reviewer was reading it) must not discard what they typed.
         # The draft is cleared here instead, on the rerun after a decision was
         # recorded, and each entry keeps its own draft in the meantime.
-        kept = st.session_state.pop("drafts-kept", {})
-        if st.session_state.pop("clear-decision", None) == entry_key:
+        clearing = st.session_state.pop("clear-decision", None) == entry_key
+        if clearing:
             # Assigned, never removed. A removed key resets the value for this script and
             # tells the browser nothing: it went on showing the decision just recorded, and
             # sent it back with the next submit. An assigned key reaches the browser as the
-            # widget's new value.
-            st.session_state[choice_key] = DECISIONS[0]
+            # widget's new value. The choice is cleared to none: a form that came back on
+            # "accept" recorded an accept the reviewer never chose at a second click.
+            st.session_state[choice_key] = None
             st.session_state[note_key] = ""
         else:
             # What a reviewer was recording when a run stopped for the store (see
             # _stop_for_the_store), given back the same way, so the browser shows it again.
+            # Only this entry's: another entry's draft waits for its own form.
             for key in (choice_key, note_key):
-                if key in kept:
-                    st.session_state[key] = kept[key]
+                _give_back(key)
         with st.form(key=f"decision-{entry_key}"):
-            choice = st.radio("Decision", DECISIONS, horizontal=True,
+            # No decision is chosen until the reviewer chooses one (rule 8).
+            choice = st.radio("Decision", DECISIONS, index=None, horizontal=True,
                               format_func=str.capitalize, key=choice_key)
             note = st.text_area("Note", placeholder="What you checked, or why this is fine.",
                                 key=note_key)
@@ -542,8 +581,13 @@ with tab_queue:
                 # that stopped the page).
                 st.warning("Enter your name in the sidebar first: nothing was recorded, and "
                            "what you typed is kept.")
-            elif st.session_state.get("last_decision") == signature:
+            elif clearing or st.session_state.get("last_decision") == signature:
+                # A click that arrives on the run that clears the form carries the decision
+                # just recorded: it is the second click, whatever the cleared form now holds.
                 st.warning("That decision was just recorded.")
+            elif choice is None:
+                st.warning("Choose a decision first: nothing was recorded, and what you typed "
+                           "is kept.")
             elif seen_id != latest_id:
                 # The note changed between the render the reviewer read and
                 # this submit. Recording the new id would claim they read it;
