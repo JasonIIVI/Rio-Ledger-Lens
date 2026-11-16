@@ -182,12 +182,19 @@ def _schema_version(conn: sqlite3.Connection, path: Path) -> tuple[int, bool]:
     Files written before the stamp existed are recognised by their shape.
     0 means a fresh file with no tables. A file that is not SQLite, or that
     carries a stamp but none of this module's tables (another program's
-    database, pointed at by mistake), is refused rather than guessed at.
+    database, pointed at by mistake), is refused rather than guessed at. A
+    file SQLite could not read at all is refused as that, and not as a file
+    that is no database.
     """
     try:
         stamped = int(conn.execute("PRAGMA user_version").fetchone()[0])
         decisions = _columns(conn, "decisions")
         narratives = _columns(conn, "narratives")
+    except sqlite3.OperationalError as exc:
+        # Locked past SQLite's wait, an I/O error, a file that went away: none of them
+        # says what the file is. (A review database another program held locked was
+        # reported as "not a SQLite database".)
+        raise RuntimeError(f"{path} could not be read as a SQLite database ({exc})") from exc
     except sqlite3.DatabaseError as exc:
         raise RuntimeError(f"{path} is not a SQLite database ({exc})") from exc
     if stamped:
@@ -407,9 +414,23 @@ class ReviewStore:
             with closing(self._open()) as conn:
                 _require_current_schema(conn, self.path)
             return
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        # A path that cannot be used gets a message, as in _open: callers show a
+        # RuntimeError from here as one line, and anything else was a traceback.
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:  # the folder's own parent is a file, or cannot be written to
+            raise RuntimeError(f"the folder for {self.path} cannot be made ({exc})") from exc
         with closing(self._open()) as conn:
-            _migrate(conn, self.path)
+            try:
+                _migrate(conn, self.path)
+            except CALLER_FAULTS:
+                raise  # a statement of ours the driver would not run: a fault, not the file's
+            except sqlite3.Error as exc:
+                # SQLite refused the schema statements every open runs: an empty file that
+                # is read-only, a lock that outlasted its wait once the file had been read,
+                # a full disk.
+                raise RuntimeError(f"{self.path} cannot be opened as a review database "
+                                   f"({type(exc).__name__}: {exc})") from exc
 
     def _open(self) -> sqlite3.Connection:
         """The first connection: a path that is no database file gets a message, not a traceback."""

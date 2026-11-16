@@ -1,3 +1,4 @@
+import os
 import sqlite3
 from contextlib import closing
 
@@ -595,6 +596,87 @@ def test_a_foreign_or_damaged_file_is_refused_with_a_message(tmp_path):
 
     with pytest.raises(RuntimeError, match="cannot be opened|not a SQLite database"):
         ReviewStore(tmp_path, LEDGER)  # a directory
+
+
+def test_a_folder_that_cannot_be_made_is_refused_with_a_message(tmp_path):
+    """The open makes the folder a new file goes in. Where it cannot (the folder's own
+    parent is a file), the OSError escaped: a traceback in the dashboard and in `narrate`,
+    which show a RuntimeError from the open as one line."""
+    blocker = tmp_path / "a-file"
+    blocker.write_text("x")
+    for path in (blocker / "review.sqlite", blocker / "deeper" / "review.sqlite"):
+        with pytest.raises(RuntimeError, match="the folder for .*review.sqlite cannot be made"):
+            ReviewStore(path, LEDGER)
+    assert blocker.read_text() == "x"
+
+
+def _not_root():
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("root writes to a read-only file")
+
+
+def test_an_empty_file_that_is_read_only_is_refused_with_a_message(tmp_path):
+    """Every open runs the schema's statements. A read-only file that holds the tables takes
+    them without a write; an empty one cannot, and SQLite's refusal escaped the open raw."""
+    _not_root()
+    empty = tmp_path / "empty.sqlite"
+    empty.write_bytes(b"")
+    empty.chmod(0o444)
+    with pytest.raises(RuntimeError, match=r"empty\.sqlite cannot be opened as a review database "
+                                           r"\(OperationalError: attempt to write a readonly database\)"):
+        ReviewStore(empty, LEDGER)
+    assert empty.read_bytes() == b""
+
+    # A read-only file that already holds the tables still opens, and reads.
+    whole = tmp_path / "whole.sqlite"
+    ReviewStore(whole, LEDGER)
+    whole.chmod(0o444)
+    assert ReviewStore(whole, LEDGER).current().empty
+
+
+def test_a_locked_file_is_not_called_no_database(tmp_path, monkeypatch):
+    """Another program holding the file past SQLite's wait (a database browser inside a
+    transaction) was reported as "is not a SQLite database": every sqlite3.DatabaseError
+    while reading the schema was, and "database is locked" is one. Both openers."""
+    path = tmp_path / "review.sqlite"
+    ReviewStore(path, LEDGER)
+    connect = sqlite3.connect
+    # The lock is real; only SQLite's five-second wait for it is shortened.
+    monkeypatch.setattr(sqlite3, "connect", lambda *a, **k: connect(*a, **{"timeout": 0.05, **k}))
+    with closing(sqlite3.connect(str(path), isolation_level=None)) as holder:
+        holder.execute("BEGIN EXCLUSIVE")
+        for opener in (ReviewStore, ReviewStore.read_only):
+            with pytest.raises(RuntimeError) as refused:
+                opener(path, LEDGER)
+            assert str(refused.value) == (
+                f"{path} could not be read as a SQLite database (database is locked)")
+        holder.execute("ROLLBACK")
+    assert ReviewStore(path, LEDGER).current().empty  # the file was a review database all along
+
+
+def test_a_refusal_while_the_schema_is_brought_up_to_date_is_a_message_and_a_fault_is_not(
+        tmp_path, monkeypatch):
+    """A lock that outlasts SQLite's wait after the file was read, or a full disk, refuses
+    the open's schema statements: the store's refusal, said as one. A statement of ours
+    that the driver would not run is a fault of ours (``CALLER_FAULTS``) and stays raw."""
+    path = tmp_path / "review.sqlite"
+
+    def refusing(error):
+        def migrate(conn, path):
+            raise error
+        return migrate
+
+    monkeypatch.setattr(review, "_migrate", refusing(sqlite3.OperationalError("database is locked")))
+    with pytest.raises(RuntimeError) as refused:
+        ReviewStore(path, LEDGER)
+    assert str(refused.value) == (
+        f"{path} cannot be opened as a review database (OperationalError: database is locked)")
+
+    for fault in (sqlite3.ProgrammingError("You can only execute one statement at a time."),
+                  sqlite3.InterfaceError("Error binding parameter 0 - probably unsupported type.")):
+        monkeypatch.setattr(review, "_migrate", refusing(fault))
+        with pytest.raises(type(fault)):
+            ReviewStore(path, LEDGER)
 
 
 def test_a_writer_that_loses_a_migration_race_carries_on_from_where_the_winner_left_it(
