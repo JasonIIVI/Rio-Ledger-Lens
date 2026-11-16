@@ -600,14 +600,30 @@ def test_a_foreign_or_damaged_file_is_refused_with_a_message(tmp_path):
 
 def test_a_folder_that_cannot_be_made_is_refused_with_a_message(tmp_path):
     """The open makes the folder a new file goes in. Where it cannot (the folder's own
-    parent is a file), the OSError escaped: a traceback in the dashboard and in `narrate`,
-    which show a RuntimeError from the open as one line."""
+    parent is a file, or cannot be written to), the OSError escaped: a traceback in the
+    dashboard and in `narrate`, which show a RuntimeError from the open as one line. The
+    message carries what the system said, whichever of its errors that was."""
     blocker = tmp_path / "a-file"
     blocker.write_text("x")
-    for path in (blocker / "review.sqlite", blocker / "deeper" / "review.sqlite"):
-        with pytest.raises(RuntimeError, match="the folder for .*review.sqlite cannot be made"):
-            ReviewStore(path, LEDGER)
-    assert blocker.read_text() == "x"
+    paths = [blocker / "review.sqlite", blocker / "deeper" / "review.sqlite"]
+    closed = tmp_path / "closed"
+    closed.mkdir()
+    if not (hasattr(os, "geteuid") and os.geteuid() == 0):  # root makes a folder anywhere
+        closed.chmod(0o555)
+        paths.append(closed / "inside" / "review.sqlite")
+    try:
+        kinds = set()
+        for path in paths:
+            with pytest.raises(OSError) as system:
+                path.parent.mkdir(parents=True, exist_ok=True)
+            kinds.add(type(system.value))
+            with pytest.raises(RuntimeError) as refused:
+                ReviewStore(path, LEDGER)
+            assert str(refused.value) == f"the folder for {path} cannot be made ({system.value})"
+    finally:
+        closed.chmod(0o755)
+    assert len(kinds) == len(paths)  # a file in the way, twice over, and a folder that is closed
+    assert blocker.read_text() == "x" and not list(closed.iterdir())
 
 
 def _not_root():
@@ -654,6 +670,23 @@ def test_a_locked_file_is_not_called_no_database(tmp_path, monkeypatch):
     assert ReviewStore(path, LEDGER).current().empty  # the file was a review database all along
 
 
+def test_a_file_sqlite_could_not_read_for_another_reason_is_not_called_no_database_either(
+        tmp_path, monkeypatch):
+    """Not the lock alone. An I/O error, or a file that went away while the schema was being
+    read, says as little about what the file is. Both openers."""
+    path = tmp_path / "review.sqlite"
+    ReviewStore(path, LEDGER)
+
+    def unreadable(conn, table):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(review, "_columns", unreadable)
+    for opener in (ReviewStore, ReviewStore.read_only):
+        with pytest.raises(RuntimeError) as refused:
+            opener(path, LEDGER)
+        assert str(refused.value) == f"{path} could not be read as a SQLite database (disk I/O error)"
+
+
 def test_a_refusal_while_the_schema_is_brought_up_to_date_is_a_message_and_a_fault_is_not(
         tmp_path, monkeypatch):
     """A lock that outlasts SQLite's wait after the file was read, or a full disk, refuses
@@ -666,11 +699,13 @@ def test_a_refusal_while_the_schema_is_brought_up_to_date_is_a_message_and_a_fau
             raise error
         return migrate
 
-    monkeypatch.setattr(review, "_migrate", refusing(sqlite3.OperationalError("database is locked")))
-    with pytest.raises(RuntimeError) as refused:
-        ReviewStore(path, LEDGER)
-    assert str(refused.value) == (
-        f"{path} cannot be opened as a review database (OperationalError: database is locked)")
+    for refusal in (sqlite3.OperationalError("database is locked"),
+                    sqlite3.DatabaseError("database disk image is malformed")):  # of any kind
+        monkeypatch.setattr(review, "_migrate", refusing(refusal))
+        with pytest.raises(RuntimeError) as refused:
+            ReviewStore(path, LEDGER)
+        assert str(refused.value) == (
+            f"{path} cannot be opened as a review database ({type(refusal).__name__}: {refusal})")
 
     for fault in (sqlite3.ProgrammingError("You can only execute one statement at a time."),
                   sqlite3.InterfaceError("Error binding parameter 0 - probably unsupported type.")):
@@ -692,12 +727,13 @@ def test_the_read_only_opener_puts_a_refusal_into_words_as_well(tmp_path, monkey
             raise error
         return check
 
-    monkeypatch.setattr(review, "_require_current_schema",
-                        refusing(sqlite3.OperationalError("database is locked")))
-    with pytest.raises(RuntimeError) as refused:
-        ReviewStore.read_only(path, LEDGER)
-    assert str(refused.value) == (
-        f"{path} cannot be read as a review database (OperationalError: database is locked)")
+    for refusal in (sqlite3.OperationalError("database is locked"),
+                    sqlite3.DatabaseError("database disk image is malformed")):  # of any kind
+        monkeypatch.setattr(review, "_require_current_schema", refusing(refusal))
+        with pytest.raises(RuntimeError) as refused:
+            ReviewStore.read_only(path, LEDGER)
+        assert str(refused.value) == (
+            f"{path} cannot be read as a review database ({type(refusal).__name__}: {refusal})")
 
     for fault in (sqlite3.ProgrammingError("You can only execute one statement at a time."),
                   sqlite3.InterfaceError("Error binding parameter 0 - probably unsupported type.")):

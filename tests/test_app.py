@@ -910,9 +910,12 @@ def test_a_decision_recorded_just_before_the_store_fails_is_still_said_once(
     assert ReviewStore(db, identity).history(picked)["decision"].tolist() == ["escalate"]
     assert [s.value for s in at.success] == ["Recorded: escalate by ana."]
     assert [e.value for e in at.error] == [STOPS_HERE + LOCKED + END]
-    # In that order, and last on the page: the confirmation, the error, what to do next.
-    assert [node.type for _, node in sorted(at.main.children.items())][-3:] == [
-        "success", "error", "caption"]
+    # In that order: the confirmation, the error, what to do next. Read around the error,
+    # not as the page's last three: after a rerun inside one run, Streamlit 1.50's harness
+    # can leave elements of the run before behind the new ones.
+    kinds = [node.type for _, node in sorted(at.main.children.items())]
+    at_error = kinds.index("error")
+    assert kinds[at_error - 1:at_error + 2] == ["success", "error", "caption"]
 
     at.run()  # the store answers again
     assert not at.exception, at.exception
@@ -921,9 +924,13 @@ def test_a_decision_recorded_just_before_the_store_fails_is_still_said_once(
     assert at.radio(key=f"choice-{key}").value is None
 
 
-def _recorded_then_the_rerun_stops(data_dir, db, monkeypatch, read="other_ledgers"):
+def _recorded_then_the_rerun_stops(data_dir, db, monkeypatch, read="other_ledgers",
+                                   outstanding=False):
     """A decision is recorded, the rerun after it is refused a read, and the store answers again."""
     at = _run(data_dir, db, reviewer="ana")
+    if outstanding:
+        at.checkbox(key="outstanding_only").check().run()
+        assert not at.exception, at.exception
     picked, key = at.selectbox(key="picked").value, _entry_key(at)
     real, calls = getattr(ReviewStore, read), []
 
@@ -975,18 +982,22 @@ def test_another_decision_for_that_entry_is_recorded_not_thrown_away(
     assert history["note"].tolist()[-1] == "on second thoughts this is routine"
 
 
-def test_a_decision_recorded_just_before_the_note_cannot_be_read_is_said_above_that_error(
-        data_dir, tmp_path, monkeypatch):
-    """The page said "Recorded: ..." before it read the note, inside the first tab, so a run
-    that stopped at that read had its error above the tab bar and the confirmation below
-    it. The confirmation waits for the note; a stop there says it first."""
-    at, _, _ = _recorded_then_the_rerun_stops(data_dir, tmp_path / "review.sqlite", monkeypatch,
-                                              read="get_narrative")
+@pytest.mark.parametrize("read", ["decided_ids", "get_narrative"])
+def test_a_decision_recorded_just_before_a_stop_inside_the_tab_is_said_above_that_error(
+        data_dir, tmp_path, monkeypatch, read):
+    """A stop inside the first tab says its error above the tab bar, and the confirmation of
+    a decision recorded on the run before goes there with it, first: drawn where the run
+    stopped, it would stand below the error and show on one tab only. At the note's read it
+    did: the page said "Recorded: ..." before it read the note, inside the tab. The
+    confirmation waits for the note now."""
+    at, _, _ = _recorded_then_the_rerun_stops(
+        data_dir, tmp_path / "review.sqlite", monkeypatch, read=read,
+        outstanding=read == "decided_ids")  # the read "Outstanding only" asks for
     blocks = [[child.type for _, child in sorted(getattr(node, "children", {}).items())]
               for _, node in sorted(at.main.children.items())]
     said = next(inner for inner in blocks if "error" in inner)  # the block above the tab bar
     assert [kind for kind in said if kind != "tab"] == ["success", "error", "caption"]
-    assert not any(tab.success for tab in at.tabs)
+    assert not any(tab.success or tab.error for tab in at.tabs)
 
 
 def test_a_stopped_run_forgets_the_filters_it_did_not_draw(data_dir, tmp_path, monkeypatch):
@@ -1184,20 +1195,32 @@ def test_a_decision_being_recorded_on_another_entry_comes_back_with_its_entry(
     assert ReviewStore(db, identity).history(first).empty
 
 
-def test_an_entry_that_left_the_queue_meanwhile_is_let_go(data_dir, tmp_path, identity, monkeypatch):
-    """What was set aside is given back only where it still fits. An entry decided elsewhere
-    while the page was stopped is no longer in an "Outstanding only" queue: the selector
-    starts on the queue's first entry, as it would have without the stop."""
-    db = tmp_path / "review.sqlite"
+def _stopped_on_the_third_entry(data_dir, db, monkeypatch):
+    """A decision submitted on the queue's third entry with "Outstanding only" ticked, on a
+    run that stops before it draws either control; then the store answers again."""
     at = _run(data_dir, db, reviewer="ana")
     first, _, third = at.selectbox(key="picked").options[:3]
     at.checkbox(key="outstanding_only").check().run()
     at.selectbox(key="picked").set_value(third).run()
+    assert not at.exception, at.exception
     real = ReviewStore.other_ledgers
     _refusing(monkeypatch, "other_ledgers", sqlite3.OperationalError("database is locked"))
     _submit(at, "Escalate", "checked the purchase order")
     assert [e.value for e in at.error] == [STOPS_HERE + LOCKED + END]
     monkeypatch.setattr(ReviewStore, "other_ledgers", real)
+    return at, first, third
+
+
+def test_an_entry_that_left_the_queue_meanwhile_is_let_go(data_dir, tmp_path, identity, monkeypatch):
+    """What was set aside is given back only where it still fits. An entry decided elsewhere
+    while the page was stopped is no longer in an "Outstanding only" queue: the selector
+    starts on the queue's first entry, as it would have without the stop, and nothing is
+    assigned to it (given a value that is no option, Streamlit 1.64 falls back to the first
+    entry by itself and still tells the browser it was given one; 1.50 takes the value).
+    And it is let go for good: when the entry is in the queue again, the reviewer is not
+    moved to it."""
+    db = tmp_path / "review.sqlite"
+    at, first, third = _stopped_on_the_third_entry(data_dir, db, monkeypatch)
     ReviewStore(db, identity).record(Decision(third, "dismiss", "ben", "seen elsewhere"))
 
     at.run()
@@ -1205,8 +1228,77 @@ def test_an_entry_that_left_the_queue_meanwhile_is_let_go(data_dir, tmp_path, id
     assert not at.exception, at.exception
     entry = at.selectbox(key="picked")
     assert entry.value == first and third not in entry.options
+    assert not entry.proto.set_value
     assert at.checkbox(key="outstanding_only").value is True
     assert ReviewStore(db, identity).history(third)["decision"].tolist() == ["dismiss"]
+
+    at.checkbox(key="outstanding_only").uncheck().run()  # the entry is in the queue again
+
+    assert not at.exception, at.exception
+    entry = at.selectbox(key="picked")
+    assert third in entry.options and entry.value == first and not entry.proto.set_value
+
+
+def test_the_selector_and_the_box_are_the_reviewer_s_again_once_given_back(
+        data_dir, tmp_path, monkeypatch):
+    """Given back once, as the form's two widgets are. Assigned again on a later run, the
+    selector pulled a reviewer who had picked another entry back to the old one, and the
+    box ticked itself again."""
+    at, first, third = _stopped_on_the_third_entry(data_dir, tmp_path / "review.sqlite", monkeypatch)
+    at.run()
+    assert not at.exception, at.exception
+    entry, box = at.selectbox(key="picked"), at.checkbox(key="outstanding_only")
+    assert entry.value == third and entry.proto.set_value
+    assert box.value is True and box.proto.set_value
+
+    at.run()  # a later run tells the browser nothing about either
+
+    assert not at.exception, at.exception
+    assert not at.selectbox(key="picked").proto.set_value
+    assert not at.checkbox(key="outstanding_only").proto.set_value
+    at.selectbox(key="picked").set_value(first).run()
+    assert not at.exception, at.exception
+    assert at.selectbox(key="picked").value == first
+    at.checkbox(key="outstanding_only").uncheck().run()
+    assert not at.exception, at.exception
+    assert at.checkbox(key="outstanding_only").value is False
+    assert at.selectbox(key="picked").value == first
+
+
+def test_a_box_unticked_at_a_stop_that_had_drawn_it_stays_unticked(data_dir, tmp_path, monkeypatch):
+    """Only what the stopped run had not drawn is set aside. "Outstanding only" is drawn
+    before the read it asks for, so at that read's stop it is still on the page, and
+    unticking it is the way out. Set aside all the same, it was ticked again by the next
+    run, which made the refused read again and stopped again."""
+    at = _run(data_dir, tmp_path / "review.sqlite", reviewer="ana")
+    _refusing(monkeypatch, "decided_ids", sqlite3.OperationalError("database is locked"))
+    at.checkbox(key="outstanding_only").check().run()
+    assert [e.value for e in at.error] == [STOPS_HERE + LOCKED + END]
+
+    at.checkbox(key="outstanding_only").uncheck().run()
+
+    assert not at.exception, at.exception
+    box = at.checkbox(key="outstanding_only")
+    assert box.value is False and not box.proto.set_value and not at.error
+
+
+def test_the_next_entry_s_form_is_not_cleared_for_the_one_just_recorded(data_dir, tmp_path):
+    """The clear is for the recorded entry's own form. With "Outstanding only" ticked that
+    entry leaves the queue, and the form drawn on the next run is another entry's: it is
+    left alone. Cleared too, a draft waiting for that entry was held back a run, and a
+    click on that run was refused as a duplicate."""
+    at = _run(data_dir, tmp_path / "review.sqlite", reviewer="ana")
+    at.checkbox(key="outstanding_only").check().run()
+    first, second = at.selectbox(key="picked").options[:2]
+
+    _submit(at, "Escalate", "checked the purchase order")
+
+    assert any(s.value == "Recorded: escalate by ana." for s in at.success)
+    entry = at.selectbox(key="picked")
+    assert first not in entry.options and entry.value == second
+    key = _entry_key(at)
+    assert not at.radio(key=f"choice-{key}").proto.set_value
+    assert not at.text_area(key=f"note-{key}").proto.set_value
 
 
 def test_a_draft_set_aside_waits_for_its_own_entry_s_form(data_dir, tmp_path, identity, monkeypatch):

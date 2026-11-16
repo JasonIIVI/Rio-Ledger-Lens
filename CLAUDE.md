@@ -1041,7 +1041,7 @@ there.
     where an error alone, straight after the click, read as if the click had failed. (The
     page itself says it only once the entry's note has been read: said before that read, a
     stop there left it below the error, inside the tab.)
-  - **Tests.** 91 new cases (84 in `test_app.py`, five in `test_review.py`, two in
+  - **Tests.** 97 new cases (88 in `test_app.py`, six in `test_review.py`, three in
     `test_cli.py`): each read refused by each kind of store error, raw and through pandas;
     the two reads behind a condition (the legacy check's, the outstanding filter's); the
     file replaced between the open and a read, and during a request, through SQLite and
@@ -1050,14 +1050,18 @@ there.
     AppTest exposes), on an entry that is not the queue's first and with "Outstanding only"
     ticked; a form with no decision chosen, a second click, and a click that arrives on the
     clearing run; a decision recorded just before a stop, and the next one for that entry;
-    what a stopped run forgets and what it keeps. 63 fail on `c5ec5d3` on both Pythons; the
-    other 28 pin what must not change (a fault of ours is still a traceback; the same
-    decision sent again is refused). The fourth commit's six also fail on `e5af5de`, two of
-    them (the filters') on reading a key the filters did not have there, so what those two
-    pin is shown by mutants. AppTest forgets more than a session does after a stopped run
-    (it drops the state of every control it did not send, where a session keeps what the
-    stopped run did not reach), so these tests read what the browser is told and what the
-    session holds as the run stops, and the flows were checked in a browser on Streamlit
+    what a stopped run forgets and what it keeps; the selector and the box given back once,
+    and a box the stopped run had drawn left to the reviewer; the open's and
+    `adopt-legacy`'s refusals with more than one kind of error. 68 fail on `c5ec5d3` on
+    both Pythons; the other 29 pin what must not change (a fault of ours is still a
+    traceback; the same decision sent again is refused; the next entry's form is left
+    alone). The fourth commit's six also fail on `e5af5de`, two of them (the filters') on
+    reading a key the filters did not have there, so what those two pin is shown by
+    mutants; the fifth's pass on the fourth, and what they pin is shown by the 14. AppTest
+    forgets more than a session does after a stopped run (it drops the state of every
+    control it did not send, where a session keeps what the stopped run did not reach), so
+    these tests read what the browser is told and what the session holds as the run stops,
+    and the flows were checked in a browser on Streamlit
     1.50 and 1.64. On the third commit: a decision typed on the queue's third entry with
     "Outstanding only" ticked, the file made unreadable at the click and readable again,
     comes back with its entry after a rerun and records once; the form then holds no
@@ -1068,10 +1072,13 @@ there.
     flow under Streamlit 1.50: the rerun drew 13 entries under a filter that showed all
     three severities, and the click went back to the queue's first entry and an empty form
     and recorded nothing. Mutants, one at a time on a scratch copy, each killed by a named
-    test: 42 of the first two commits, 20 of the third and nine of the fourth. One of the
-    20, assigning an entry that has left the queue, is killed only under Streamlit 1.50,
-    where the selector takes the value and the page would inspect an entry that is not in
-    its queue; 1.64 falls back to the first entry by itself.
+    test: 42 of the first two commits, 20 of the third, nine of the fourth, and the 14 of
+    the test-strength review's 18 that had survived (below). One of the nine, a filter's key
+    without its options, is killed only under Streamlit 1.64: 1.50 makes the options part
+    of a keyed control's identity by itself. One of the 20, assigning an entry that has
+    left the queue, was killed only under 1.50 (where the selector takes the value and the
+    page would inspect an entry that is not in its queue; 1.64 falls back to the first
+    entry by itself) until the fifth commit's test read what the browser is told.
   - **Review.** A correctness review of the first two commits (one reviewer, scratch clone)
     found two highs, one medium and six lows, all fixed in the third commit. The highs: the
     draft given back to the wrong entry, and the accept recorded at a second click. The
@@ -1097,7 +1104,17 @@ there.
     as well; a comment on the form's handler). All are fixed in the fourth commit but two
     that sit in commit messages: `ca1e4bf`'s gives the suite as 1438 / 1453 where its own
     CLAUDE.md, after the rebase, says 1443 / 1458, and `e5af5de`'s says Streamlit 1.50
-    refuses a value that is no option.
+    refuses a value that is no option. A test-strength review of the third commit (one
+    agent, scratch clone; 18 mutants of its own, each run alone on both Pythons) found the
+    same regression by itself and no other fault, and 14 of its mutants passed every test.
+    Nothing pinned that the selector and "Outstanding only" are given back once, that a box
+    the stopped run had drawn is not set aside, where the confirmation goes at a stop
+    inside the tab, that the clear is for the recorded entry's own form, or that an entry
+    let go stays let go; one assertion held under Streamlit 1.50 only because two runs
+    drew as many elements; and each handler of the open, and `adopt-legacy`'s line, had
+    been tried with one kind of error and an ordinary path. The fifth commit is those
+    tests (six new cases, six tests extended, no change to the code): all 14 are killed on
+    both Pythons.
   - **Not changed.** A draft typed but not yet submitted when another control reruns the
     page into a failed read is still lost: the browser had not sent it. A browser reload
     starts a new session, so nothing is kept across one (the caption says so). A draft set
@@ -1105,10 +1122,13 @@ there.
     sidebar, the caption's second way out, the entry comes back and the form is empty, and
     the draft returns when the first file is named again. After a run that stopped before
     it drew them, the queue's filters (Severity, Test, Tier agreement, Minimum amount, and
-    Materiality band where a materiality is given) and the fiscal year start over. A
-    database path that holds a NUL is still a `ValueError` (a shell cannot pass one). The
-    command line's own reads after its open (`narrate`'s ledgers and narrative ids, `report
-    --db` and `summary --db`) are still a traceback if the file fails in between.
+    Materiality band where a materiality is given) and the fiscal year start over. The
+    page's three earlier stops (no ledger at the path, a ledger that cannot be loaded, a
+    controls file that cannot be used) come before the store is opened and are as they are
+    on `main`: nothing is set aside or forgotten there. A database path that holds a NUL is
+    still a `ValueError` (a shell cannot pass one). The command line's own reads after its
+    open (`narrate`'s ledgers and narrative ids, `report --db` and `summary --db`) are still
+    a traceback if the file fails in between.
   Version unchanged (1.2.1).
 - **Next** — in the order the maintainer set on 2026-11-16: a v1.2.2 release; week 8's
   hardening (a changelog, mypy in CI, `mcp_server.py`'s coverage, a performance pass, and
@@ -1122,7 +1142,7 @@ there.
   300); a note's model and time in the workpaper and the MCP entry rows (the explain tool
   returns both); the prompt a note answered (a review-schema change); and the reported model
   on new eval rows (a row-shape change).
-- 1461 tests on 3.9 (1 skipped) / 1476 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
+- 1467 tests on 3.9 (1 skipped) / 1482 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
