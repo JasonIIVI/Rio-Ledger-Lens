@@ -792,7 +792,7 @@ def cmd_adopt_legacy(args: argparse.Namespace) -> int:
     except sqlite3.Error as exc:
         # The file opened and then refused the copy: read-only with rows to adopt, or
         # locked by another program. Nothing was adopted (the copy is one transaction).
-        print(f"error: {one_line(str(args.db))} could not be written, so nothing was adopted "
+        print(f"error: {one_line(str(args.db))} refused the copy, so nothing was adopted "
               f"({type(exc).__name__}: {one_line(str(exc))})")
         return 2
     if not adopted["narratives"] and not adopted["decisions"]:

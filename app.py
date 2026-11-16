@@ -143,17 +143,26 @@ def _refusal(exc: BaseException) -> sqlite3.Error | None:
 
 #: The decision form's two widgets, keyed per entry: what a reviewer was recording.
 DRAFT_KEYS = ("choice-", "note-")
-#: The two controls that say which entry that was. A run that stops before it draws them
-#: takes them off the page as well, and a browser starts a control it is shown again from
-#: its default: the selector on the queue's first entry, "Outstanding only" unticked.
+#: The controls that say which entry that was, and whether a decision may be written at
+#: all. A run that stops before it draws them takes them off the page as well, and a browser
+#: starts a control it is shown again from its default: the selector on the queue's first
+#: entry, "Outstanding only" and "Start this ledger's review from scratch" unticked.
 KEPT_CONTROLS = ("outstanding_only", "picked")
+KEPT_PREFIXES = ("start-fresh-",)
+#: The controls such a run forgets instead, so the script starts them from their defaults as
+#: the browser does: the queue's other filters (see _filter) and the fiscal year. Left in
+#: the session, they drew the next run from values the browser no longer showed, and under
+#: Streamlit 1.50 the click after that was thrown away. One the run had drawn before it
+#: stopped is still on the page with its value, and is kept.
+FORGOTTEN_PREFIXES = ("filter-", "materiality_year")
 #: What is said under every stop. Rerun, not reload: a reload starts a new session, and
 #: what was set aside goes with the old one.
 STOPPED = ("When the file can be used again, or another is named in the sidebar, rerun the page: "
            "Rerun, in the menu at the top right. Reloading the browser tab starts a new session "
-           "and loses what was being recorded. The entry, \"Outstanding only\" and the decision "
-           "in the form are kept; the other filters start over.")
-_DRAWN: set[str] = set()  # the kept controls this run has drawn (the script runs afresh each time)
+           "and loses what was being recorded. With this file again, the entry, \"Outstanding "
+           "only\" and the decision you submitted come back; a filter or a fiscal year this "
+           "page no longer shows starts over.")
+_DRAWN: set[str] = set()  # the controls named above that this run has drawn (the script runs afresh each time)
 _NOTICE: list = []  # the placeholder above the tab bar, once the run has reached it
 
 
@@ -173,18 +182,30 @@ def _give_back(key: str, allowed=None) -> None:
     _DRAWN.add(key)
 
 
+def _filter(name: str, options=()) -> str:
+    """The key of one of the queue's filters, marked as drawn. Its options are part of the
+    key, so a filter is the control it was without one: another ledger's options make it
+    another filter, and a choice is never carried to a queue that could not hold it."""
+    key = f"filter-{name}|" + "|".join(map(str, options))
+    _DRAWN.add(key)
+    return key
+
+
 def _stop_for_the_store(message: str) -> None:
     """Say that the review database failed, and end this run there.
 
     Two things would otherwise be lost with the rest of the page. A write the run before
     did make is said here, once, as it would have been further down (the flash): an error
     alone, straight after a click, reads as if the click had failed. And the decision a
-    reviewer was recording is set aside, with the two controls that say which entry it was
-    for: a run that stops before the form takes it all off the page, the browser forgets
-    what was in controls it no longer shows, and the next run drew the form empty, on the
-    queue's first entry. Each takes its value back when it is next drawn. ``message`` can
-    quote a path as typed or what SQLite said, so it goes through ``md()``. Once the tab
-    bar is drawn the message goes above it, where it shows whichever tab is open.
+    reviewer was recording is set aside, with the controls that say which entry it was for
+    and whether it may be written: a run that stops before the form takes it all off the
+    page, the browser forgets what was in controls it no longer shows, and the next run
+    drew the form empty, on the queue's first entry. Each takes its value back when it is
+    next drawn. The filters and the fiscal year this run did not draw are forgotten here
+    as the browser forgets them, so the next run and the browser start from the same
+    queue. ``message`` can quote a path as typed or what SQLite said, so it goes through
+    ``md()``. Once the tab bar is drawn the message goes above it, where it shows whichever
+    tab is open.
     """
     place = _NOTICE[0].container() if _NOTICE else st
     flash = st.session_state.pop("flash", None)
@@ -192,11 +213,19 @@ def _stop_for_the_store(message: str) -> None:
         place.success(flash)
     place.error(md(message))
     place.caption(STOPPED)
+    # A decision recorded on the run before is no draft: its form is waiting to be cleared.
+    recorded = st.session_state.get("clear-decision")
+    done = {f"{prefix}{recorded}" for prefix in DRAFT_KEYS} if recorded else set()
     kept = dict(st.session_state.get("drafts-kept", {}))  # a second failed run adds to the first's
     kept.update({key: value for key, value in st.session_state.items()
-                 if isinstance(key, str) and (
-                     key.startswith(DRAFT_KEYS) or (key in KEPT_CONTROLS and key not in _DRAWN))})
+                 if isinstance(key, str) and key not in done and (
+                     key.startswith(DRAFT_KEYS)
+                     or ((key in KEPT_CONTROLS or key.startswith(KEPT_PREFIXES))
+                         and key not in _DRAWN))})
     st.session_state["drafts-kept"] = kept
+    for key in [key for key in st.session_state
+                if isinstance(key, str) and key.startswith(FORGOTTEN_PREFIXES) and key not in _DRAWN]:
+        del st.session_state[key]
     st.stop()
 
 
@@ -334,6 +363,7 @@ if (LEGACY_LEDGER_ID in set(others["ledger_id"])
         f"{ledger_path} --db {db_path}` (no API calls). A note or a decision recorded here first "
         "would make adopting them impossible, and narrating would buy every note again."
     )
+    _give_back(f"start-fresh-{db_path}|{ledger_id}")
     writes_blocked = not st.sidebar.checkbox(
         "Start this ledger's review from scratch", key=f"start-fresh-{db_path}|{ledger_id}",
         help="The dashboard's --ignore-legacy: the legacy rows stay where they are, unadopted.",
@@ -354,6 +384,7 @@ if materiality_text:
         years = sorted({int(year) for year in combined["fiscal_year"]})
         if len(years) > 1:  # the figures are set for one year's statements, as the sample's are
             # the latest year first: the one usually under audit
+            _DRAWN.add("materiality_year")
             materiality_year = st.sidebar.selectbox("Fiscal year for materiality", years,
                                                     index=len(years) - 1, key="materiality_year")
         else:
@@ -390,23 +421,28 @@ with tab_queue:
     left, right = st.columns([1, 3])
     with left:
         severities = sorted(flags["severity"].unique()) if not flags.empty else []
-        chosen_sev = st.multiselect("Severity", severities, default=severities)
+        chosen_sev = st.multiselect("Severity", severities, default=severities,
+                                    key=_filter("severity", severities))
         test_ids = sorted(flags["test_id"].unique()) if not flags.empty else []
-        chosen_tests = st.multiselect("Test", test_ids, default=test_ids)
+        chosen_tests = st.multiselect("Test", test_ids, default=test_ids,
+                                      key=_filter("test", test_ids))
         agreements = sorted(combined["agreement"].unique())
-        chosen_agree = st.multiselect("Tier agreement", agreements, default=agreements)
-        min_amount = st.number_input("Minimum amount", value=0.0, step=1000.0)
+        chosen_agree = st.multiselect("Tier agreement", agreements, default=agreements,
+                                      key=_filter("agreement", agreements))
+        min_amount = st.number_input("Minimum amount", value=0.0, step=1000.0,
+                                     key=_filter("amount"))
         _give_back("outstanding_only")
         outstanding_only = st.checkbox("Outstanding only", value=False, key="outstanding_only",
                                        help="Hide entries that already have a decision.")
         chosen_bands = None
         if materiality is not None:
-            # a filter the reviewer chooses, as the amount is, in the bands' own order. Not
-            # keyed, like the other filters: a choice kept across a change of ledger would
-            # empty the queue of a ledger that holds none of the band chosen.
+            # a filter the reviewer chooses, as the amount is, in the bands' own order. Keyed
+            # by its options, like the other filters: a choice kept across a change of ledger
+            # would empty the queue of a ledger that holds none of the band chosen.
             seen = set(combined["materiality_band"])
             present = [b for b in (*BANDS, OTHER_YEAR) if b in seen]
-            chosen_bands = st.multiselect("Materiality band", present, default=present)
+            chosen_bands = st.multiselect("Materiality band", present, default=present,
+                                          key=_filter("band", present))
 
     matching = flags[
         flags["severity"].isin(chosen_sev) & flags["test_id"].isin(chosen_tests)
@@ -440,9 +476,9 @@ with tab_queue:
         picked = st.selectbox("Inspect entry", queue["entry_id"].tolist(), key="picked")
         row = combined[combined["entry_id"] == picked].iloc[0]
 
-        flash = st.session_state.pop("flash", None)
-        if flash:
-            st.success(flash)
+        # Where "Recorded: ..." is said, once the note below has been read: a run that stops
+        # at that read says it above its own error instead (see _stop_for_the_store).
+        said = st.empty()
 
         a, b, c, *rest = st.columns(4 if materiality is not None else 3)
         a.metric("Rule score", "{:.1f}".format(row["risk_score"]))
@@ -469,6 +505,9 @@ with tab_queue:
         # ---- narrative: advisory text, never a decision ----
         st.markdown("**Reviewer note** (written by Claude, advisory only)")
         narrative = _read(store.get_narrative, picked)
+        flash = st.session_state.pop("flash", None)
+        if flash:
+            said.success(flash)
         # The note the reviewer actually read is the one rendered on the
         # *previous* run of this script: a submit reruns everything, and a
         # version written in between (a rewrite, another reviewer) would
@@ -615,8 +654,9 @@ with tab_queue:
                     # Nothing was written (an uncommitted insert is rolled back), so
                     # nothing that marks it done is set either: the draft stays, and the
                     # same submit is not refused as a duplicate when it is retried.
-                    # record()'s own ValueErrors stay tracebacks: the radio gives a known
-                    # decision, the queue an entry, and a missing name is refused above.
+                    # record()'s own ValueErrors stay tracebacks: the decision is one of the
+                    # radio's (none chosen is refused above), the queue gives an entry, and
+                    # a missing name is refused above.
                     st.error(md(f"The decision was not recorded ({type(exc).__name__}: {exc}). "
                                 "What you typed is kept: record it again."))
                 else:

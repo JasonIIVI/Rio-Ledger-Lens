@@ -1015,20 +1015,33 @@ there.
   - **The draft that was lost.** Found in the browser while checking the above: a run that
     stops before the form (the open's stop, on `main` already, and now a read's) takes the
     form off the page, and when the store answered again the form came back empty, so the
-    decision being recorded was gone (1.50 and 1.64). It takes the entry selector and
-    "Outstanding only" off the page too, and a browser starts a control it is shown again
-    from its default. `app._stop_for_the_store` sets aside the form's values and those two
-    controls (where the stopped run had not drawn them), and each takes its value back by
-    assignment when it is next drawn: a form only its own entry's draft, the selector only
-    an entry still in the queue. Given back to the form alone, as this change first had it,
-    the draft returned only for a reviewer on the queue's first entry: on any other the
-    browser's selector was back on the first, and the next click was thrown away. The other
-    filters start over. The caption under the message says so, says to rerun with the menu's
-    Rerun, and says that reloading the tab starts a new session and loses what was being
-    recorded. A pending "Recorded: ..." is drawn above the error: a decision recorded on the
-    run before is still said once, where an error alone, straight after the click, read as
-    if the click had failed.
-  - **Tests.** 85 new cases (78 in `test_app.py`, five in `test_review.py`, two in
+    decision being recorded was gone (1.50 and 1.64). It takes every control below the stop
+    off the page as well, and a browser starts a control it is shown again from its default.
+    So `app._stop_for_the_store` does two things with what the stopped run had not drawn.
+    It sets aside the form's values and the controls that say which entry they were for and
+    whether a decision may be written (the entry selector, "Outstanding only", "Start this
+    ledger's review from scratch"), and each takes its value back by assignment when it is
+    next drawn: a form only its own entry's draft, the selector only an entry still in the
+    queue. And it forgets the queue's other filters and the fiscal year, so the script
+    starts them from their defaults as the browser does (the filters are keyed for that,
+    each key holding its options). A filter the run had drawn is still on the page and is
+    kept. Three ways this change first had it, each found by review. Given back to the form
+    alone, the draft returned only for a reviewer on the queue's first entry: on any other
+    the browser's selector was back on the first, and the next click was thrown away. With
+    the filters left in the session, the next run drew the queue from filters the browser
+    no longer showed, and under Streamlit 1.50, where the entry selector is another control
+    once its options change, the click after that went back to the queue's first entry and
+    an empty form, and recorded nothing. And a decision recorded on the run before, whose
+    form is waiting to be cleared, was set aside as a draft too: it came back into the form
+    later, the next decision submitted for that entry was refused as "just recorded", and
+    it could be recorded a second time. The caption under the message says what comes back
+    and what starts over, says to rerun with the menu's Rerun, and says that reloading the
+    tab starts a new session and loses what was being recorded. A pending "Recorded: ..."
+    is drawn above the error: a decision recorded on the run before is still said once,
+    where an error alone, straight after the click, read as if the click had failed. (The
+    page itself says it only once the entry's note has been read: said before that read, a
+    stop there left it below the error, inside the tab.)
+  - **Tests.** 91 new cases (84 in `test_app.py`, five in `test_review.py`, two in
     `test_cli.py`): each read refused by each kind of store error, raw and through pandas;
     the two reads behind a condition (the legacy check's, the outstanding filter's); the
     file replaced between the open and a read, and during a request, through SQLite and
@@ -1036,31 +1049,63 @@ there.
     both drafts by what the browser is told (`set_value` on the widget's message, which
     AppTest exposes), on an entry that is not the queue's first and with "Outstanding only"
     ticked; a form with no decision chosen, a second click, and a click that arrives on the
-    clearing run. 57 fail on `c5ec5d3` on both Pythons; the other 28 pin what must not
-    change (a fault of ours is still a traceback; the same decision sent again is refused).
-    AppTest forgets more than a session does after a stopped run (it drops the state of
-    every control it did not send, where a session keeps what the stopped run did not
-    reach), so these tests read what the browser is told, and the flows were checked in a
-    browser on Streamlit 1.50 and 1.64: a decision typed on the queue's third entry with
+    clearing run; a decision recorded just before a stop, and the next one for that entry;
+    what a stopped run forgets and what it keeps. 63 fail on `c5ec5d3` on both Pythons; the
+    other 28 pin what must not change (a fault of ours is still a traceback; the same
+    decision sent again is refused). The fourth commit's six also fail on `e5af5de`, two of
+    them (the filters') on reading a key the filters did not have there, so what those two
+    pin is shown by mutants. AppTest forgets more than a session does after a stopped run
+    (it drops the state of every control it did not send, where a session keeps what the
+    stopped run did not reach), so these tests read what the browser is told and what the
+    session holds as the run stops, and the flows were checked in a browser on Streamlit
+    1.50 and 1.64. On the third commit: a decision typed on the queue's third entry with
     "Outstanding only" ticked, the file made unreadable at the click and readable again,
-    comes back with its entry after a rerun and records once; the form then holds no choice,
-    and a second click records nothing. Mutants, one at a time on a scratch copy, each
-    killed by a named test: 42 of the first two commits and 20 of the third (one of the 20,
-    assigning an entry that has left the queue, only under Streamlit 1.50, where it is an
-    error; 1.64 falls back to the first entry by itself).
+    comes back with its entry after a rerun and records once; the form then holds no
+    choice, and a second click records nothing. On the fourth: the same with the Severity
+    filter narrowed instead (13 of the preview ledger's 16 entries) and an entry further
+    down picked: after the rerun the filter and the queue are back at their defaults, the
+    entry and the draft are back, and the click records once. The third commit in that
+    flow under Streamlit 1.50: the rerun drew 13 entries under a filter that showed all
+    three severities, and the click went back to the queue's first entry and an empty form
+    and recorded nothing. Mutants, one at a time on a scratch copy, each killed by a named
+    test: 42 of the first two commits, 20 of the third and nine of the fourth. One of the
+    20, assigning an entry that has left the queue, is killed only under Streamlit 1.50,
+    where the selector takes the value and the page would inspect an entry that is not in
+    its queue; 1.64 falls back to the first entry by itself.
   - **Review.** A correctness review of the first two commits (one reviewer, scratch clone)
-    found two highs, one medium and six lows, all fixed in the third commit. The highs are
-    the two above: the draft given back to the wrong entry, and the accept recorded at a
-    second click. The medium: the draft tests ran on a harness that forgets what a session
-    keeps (said under Tests). The lows: `adopt-legacy`'s traceback and the read-only
-    opener's raw error (both under The open); a caption that told the reviewer to wait where
-    waiting cures nothing and whose "press R" read as a reload; the order of the
-    confirmation and the error, which no test pinned; a refusal inside the first tab that
-    left the other tabs blank; and totals written against an older base.
+    found two highs, one medium and six lows, all fixed in the third commit. The highs: the
+    draft given back to the wrong entry, and the accept recorded at a second click. The
+    medium: the draft tests ran on a harness that forgets what a session keeps (said under
+    Tests). The lows: `adopt-legacy`'s traceback and the read-only opener's raw error (both
+    under The open); a caption that told the reviewer to wait where waiting cures nothing
+    and whose "press R" read as a reload; the order of the confirmation and the error, which
+    no test pinned; a refusal inside the first tab that left the other tabs blank; and
+    totals written against an older base. A verification of the third commit with a claims
+    audit (one agent, scratch clone) found those closed for what they named, and two more
+    highs, both said above: the recorded decision set aside as a draft (a regression of the
+    third commit), and the filters under Streamlit 1.50 (found in a model of a session and
+    a browser, AppTest with the page hash carried across runs and each newly drawn control
+    given the value a browser would hold, then reproduced in a browser: under Tests). And
+    five lows: the first rerun drew the queue from filters the browser no longer showed
+    (gone with the filters' fix); the start-from-scratch tick was not kept, so after a stop
+    the box showed unticked while the script held it ticked, and the next click was thrown
+    away; the confirmation stood below the error when the run stopped at the note's read;
+    "where it is an error" for a value that is no option, which Streamlit 1.50 takes; and
+    wording (the caption promised back a decision that had only been typed, and one that
+    another file, its second way out, does not show; "three multiselects" where a
+    materiality adds a fourth; `adopt-legacy` said "could not be written" of a refused read
+    as well; a comment on the form's handler). All are fixed in the fourth commit but two
+    that sit in commit messages: `ca1e4bf`'s gives the suite as 1438 / 1453 where its own
+    CLAUDE.md, after the rebase, says 1443 / 1458, and `e5af5de`'s says Streamlit 1.50
+    refuses a value that is no option.
   - **Not changed.** A draft typed but not yet submitted when another control reruns the
     page into a failed read is still lost: the browser had not sent it. A browser reload
-    starts a new session, so nothing is kept across one (the caption says so). After a
-    stopped run the three multiselects, "Minimum amount" and the fiscal year start over. A
+    starts a new session, so nothing is kept across one (the caption says so). A draft set
+    aside comes back with the file it was submitted for: with another database named in the
+    sidebar, the caption's second way out, the entry comes back and the form is empty, and
+    the draft returns when the first file is named again. After a run that stopped before
+    it drew them, the queue's filters (Severity, Test, Tier agreement, Minimum amount, and
+    Materiality band where a materiality is given) and the fiscal year start over. A
     database path that holds a NUL is still a `ValueError` (a shell cannot pass one). The
     command line's own reads after its open (`narrate`'s ledgers and narrative ids, `report
     --db` and `summary --db`) are still a traceback if the file fails in between.
@@ -1077,7 +1122,7 @@ there.
   300); a note's model and time in the workpaper and the MCP entry rows (the explain tool
   returns both); the prompt a note answered (a review-schema change); and the reported model
   on new eval rows (a row-shape change).
-- 1455 tests on 3.9 (1 skipped) / 1470 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
+- 1461 tests on 3.9 (1 skipped) / 1476 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth

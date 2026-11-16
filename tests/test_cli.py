@@ -1018,7 +1018,7 @@ def test_adopt_legacy_says_so_when_the_file_refuses_the_copy(tmp_path, capsys, m
     assert main(["adopt-legacy", ledger, "--db", str(db)]) == 2
 
     assert capsys.readouterr().out == (
-        f"error: {db} could not be written, so nothing was adopted "
+        f"error: {db} refused the copy, so nothing was adopted "
         "(OperationalError: attempt to write a readonly database)\n")
     db.chmod(0o644)
     assert ReviewStore(db, identity).narrative_ids() == set()
