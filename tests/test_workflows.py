@@ -321,15 +321,19 @@ def test_the_workflows_keep_to_what_the_extractor_can_read():
 def test_ci_runs_3_9_on_an_image_that_still_has_it():
     """ubuntu-latest became Ubuntu 26.04 in November 2026, and setup-python has no 3.9 for it:
     the 3.9 job stopped before any test ran. 3.9 runs on 24.04, the others on the latest."""
-    test_job = re.search(r"(?ms)^  test:\n(.*?)^  \S", read("ci.yml")).group(1)
+    test_job = job(read("ci.yml"), "test")
     assert re.search(r'(?m)^ +python-version: \["3\.9", "3\.11", "3\.12"\]$', test_job)
     assert re.search(r"(?m)^    runs-on: (.+)$", test_job).group(1) == (
         "${{ matrix.python-version == '3.9' && 'ubuntu-24.04' || 'ubuntu-latest' }}")
 
 
 def job(ci, name):
-    """One job's lines in ci.yml: from its key to the next line at the jobs' own indent."""
-    match = re.search(rf"(?ms)^  {name}:\n(.*?)(?=^  \S|\Z)", ci)
+    """One job's lines in ci.yml, from its key to the next job's key, comment lines taken out
+    first. A comment has no indent of its own in YAML, so a line written below the comment
+    block that sits above the next job still belongs to this one: read to the first line at
+    the jobs' indent of the raw text, a job ended at that comment, and a key added below it
+    (a `continue-on-error`, an `if`, an `env`) was in no job's lines."""
+    match = re.search(rf"(?ms)^  {name}:\n(.*?)(?=^  \S|\Z)", uncommented(ci))
     assert match, f"ci.yml has no {name} job"
     return match.group(1)
 
@@ -339,10 +343,22 @@ def as_run(job_text):
     return [line for line in uncommented(job_text).splitlines() if line.strip()]
 
 
+def step_script(workflow, name):
+    """The script of the step called ``name``, as the runner's shell is handed it."""
+    block = workflow.split(f"      - name: {name}\n", 1)[1].split("        run: |\n", 1)[1]
+    lines = []
+    for line in block.splitlines():
+        if line.strip() and not line.startswith(" " * 10):
+            break
+        lines.append(line[10:])
+    return "\n".join(lines) + "\n"
+
+
 RUNS_ON = "${{ matrix.python-version == '3.9' && 'ubuntu-24.04' || 'ubuntu-latest' }}"
 
 #: The Python of the two steps that guard what a job has installed, as ci.yml gives it to
-#: `python -c`. Pinned as text below, and run by the two tests after that.
+#: `python -c`: the text the two pins below hold the workflow to. What the steps do is
+#: tested after them, by running the workflow's own lines and not these.
 NO_PYARROW = ("import importlib.util, sys; "
               "sys.exit('pyarrow is installed in this job' if importlib.util.find_spec('pyarrow') else 0)")
 IMPORTS = ("import anthropic, pyarrow, streamlit; from streamlit.testing.v1 import AppTest; "
@@ -411,38 +427,88 @@ def test_the_dashboard_job_is_these_lines_under_both_streamlits():
     ]
 
 
-def run_step(script, where, *installed, harness=True):
-    """A step's Python, run where only ``installed`` can be imported: stand-ins on the path
-    and no site-packages (-S), so the result does not depend on what this interpreter has."""
-    where.mkdir(parents=True)
-    for name in installed:
-        (where / name).mkdir()
-        (where / name / "__init__.py").write_text('__version__ = "0.0"\n')
-    if "streamlit" in installed and harness:
-        (where / "streamlit" / "testing").mkdir()
-        (where / "streamlit" / "testing" / "__init__.py").write_text("")
-        (where / "streamlit" / "testing" / "v1.py").write_text("AppTest = object\n")
-    return subprocess.run([sys.executable, "-S", "-c", script], capture_output=True, text=True,
-                          env={"PYTHONPATH": str(where)})
+PYTHON_STUB = r"""#!/bin/bash
+# Stands in for the job's python: records what it was handed (the argument count, then every
+# argument, each ended by a NUL) and then runs it with this suite's interpreter and no
+# site-packages (-S), so that only the stand-in packages on PYTHONPATH can be imported.
+printf '%s\0' "$#" "$@" >> "$PYTHON_LOG"
+exec "$PYTHON_REAL" -S "$@"
+"""
+
+
+def python_calls(log_path):
+    """The calls the stand-in python recorded, each an argv list."""
+    if not log_path.exists():
+        return []
+    fields = log_path.read_text().split("\0")[:-1]  # every field ends with a NUL
+    calls, i = [], 0
+    while i < len(fields):
+        count = int(fields[i])
+        calls.append(fields[i + 1:i + 1 + count])
+        i += 1 + count
+    return calls
+
+
+def run_step(name, where, *installed, harness="AppTest = object\n"):
+    """The step called ``name``, run as the runner runs it: its script as ci.yml has it,
+    through `bash -e` in an empty folder, where the only `python` is a stand-in that records
+    what it is handed and runs it with nothing importable but ``installed`` (stand-in
+    packages). Run, not read, and read from the workflow rather than from the text pinned
+    above: a step weakened in the workflow and in that text at once still fails here. The
+    result depends neither on what this interpreter has installed nor on where pytest was
+    started. ``harness`` is what streamlit/testing/v1.py holds, or None for a Streamlit
+    with no testing package at all."""
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("needs bash, as the runner has")
+    packages, stub, checkout = where / "packages", where / "bin", where / "checkout"
+    for folder in (packages, stub, checkout):
+        folder.mkdir(parents=True)
+    for package in installed:
+        (packages / package).mkdir()
+        (packages / package / "__init__.py").write_text('__version__ = "0.0"\n')
+    if "streamlit" in installed and harness is not None:
+        (packages / "streamlit" / "testing").mkdir()
+        (packages / "streamlit" / "testing" / "__init__.py").write_text("")
+        if harness:
+            (packages / "streamlit" / "testing" / "v1.py").write_text(harness)
+    (stub / "python").write_text(PYTHON_STUB)
+    (stub / "python").chmod(0o755)
+    env = {"PATH": str(stub),  # the stand-in is the only python there is
+           "PYTHONPATH": str(packages), "PYTHON_REAL": sys.executable,
+           "PYTHON_LOG": str(where / "python.log")}
+    if "LD_LIBRARY_PATH" in os.environ:  # setup-python sets it, for its interpreter's own library
+        env["LD_LIBRARY_PATH"] = os.environ["LD_LIBRARY_PATH"]
+    run = subprocess.run([bash, "-e", "-c", step_script(read("ci.yml"), name)], cwd=checkout,
+                         capture_output=True, text=True, env=env)
+    # One call, and nothing between `python` and its `-c`: under `python -S` the job's own
+    # interpreter would not look in site-packages, where what a job installs is.
+    assert [call[:-1] for call in python_calls(where / "python.log")] == [["-c"]], run.stderr
+    return run
 
 
 def test_the_no_pyarrow_step_fails_where_pyarrow_can_be_imported(tmp_path):
-    without = run_step(NO_PYARROW, tmp_path / "without")
+    step = "No pyarrow in this job"
+    without = run_step(step, tmp_path / "without")
     assert (without.returncode, without.stdout, without.stderr) == (0, "", "")
-    having = run_step(NO_PYARROW, tmp_path / "with", "pyarrow")
+    having = run_step(step, tmp_path / "with", "pyarrow")
     assert (having.returncode, having.stderr) == (1, "pyarrow is installed in this job\n")
 
 
 def test_the_import_step_fails_without_any_one_of_what_the_tests_would_skip_for(tmp_path):
-    every = ("anthropic", "pyarrow", "streamlit")
-    whole = run_step(IMPORTS, tmp_path / "all", *every)
+    step, every = "Import what the tests below would skip without", ("anthropic", "pyarrow", "streamlit")
+    whole = run_step(step, tmp_path / "all", *every)
     assert (whole.returncode, whole.stdout) == (0, "streamlit 0.0 pyarrow 0.0 anthropic 0.0\n")
     for missing in every:
-        short = run_step(IMPORTS, tmp_path / f"no-{missing}", *(n for n in every if n != missing))
+        short = run_step(step, tmp_path / f"no-{missing}", *(n for n in every if n != missing))
         assert short.returncode == 1 and f"No module named '{missing}'" in short.stderr, missing
-    # Streamlit without its test harness is what tests/test_app.py skips itself for.
-    bare = run_step(IMPORTS, tmp_path / "no-harness", *every, harness=False)
-    assert bare.returncode == 1 and "No module named 'streamlit.testing'" in bare.stderr
+    # Streamlit without its test harness is what tests/test_app.py skips itself for: no
+    # testing package, one with no v1 module, a v1 with no AppTest in it.
+    for name, harness, said in (("no-testing", None, "No module named 'streamlit.testing'"),
+                                ("no-v1", "", "No module named 'streamlit.testing.v1'"),
+                                ("no-apptest", "OTHER = 1\n", "cannot import name 'AppTest'")):
+        bare = run_step(step, tmp_path / name, *every, harness=harness)
+        assert bare.returncode == 1 and said in bare.stderr, (name, bare.stderr)
 
 
 def test_ci_runs_for_a_pull_request_a_push_to_main_and_by_hand():
@@ -452,11 +518,28 @@ def test_ci_runs_for_a_pull_request_a_push_to_main_and_by_hand():
         "  workflow_dispatch:"]
 
 
-def test_ci_has_these_four_jobs():
-    """Seven checks: the suite on three Pythons, the dashboard job on two, and the two gates."""
-    jobs = read("ci.yml").split("\njobs:\n", 1)[1]
-    assert re.findall(r"(?m)^  ([A-Za-z0-9_-]+):$", jobs) == [
-        "test", "dashboard", "rule-1", "detection-quality"]
+def test_ci_has_these_four_jobs_and_nothing_set_for_all_of_them():
+    """Seven checks: the suite on three Pythons, the dashboard job on two, and the two gates.
+    And no key at the top but the name, the triggers and the jobs: an `env`, a `defaults` or
+    a `permissions` there changes every job without touching a line the pins above read (a
+    PYTEST_ADDOPTS for the whole workflow, say). Whole lines, so a key that is quoted or
+    carries a comment is read as well."""
+    ci = uncommented(read("ci.yml"))
+    assert re.findall(r"(?m)^(\S.*)$", ci) == ["name: CI", "on:", "jobs:"]
+    # Every line at the jobs' indent, whole: a fifth job's key may carry a comment, be
+    # quoted, or hold the job in flow style on its own line.
+    assert re.findall(r"(?m)^  (\S.*)$", ci.split("\njobs:\n", 1)[1]) == [
+        "test:", "dashboard:", "rule-1:", "detection-quality:"]
+
+
+def test_no_job_or_step_in_ci_is_conditional_or_allowed_to_fail():
+    """The two gates (rule-1 and detection-quality) are not pinned line for line as the two
+    jobs above are: tests further down read rule 1's pattern and run the detection gate's
+    script. This is what keeps either from being switched off beside its script: an `if` or
+    a `continue-on-error` key anywhere in the workflow, quoted or not, on a line of its own
+    or inside braces."""
+    assert not re.findall(r"""(?<![\w-])(?:if|continue-on-error)["']?[ \t]*:""",
+                          uncommented(read("ci.yml")))
 
 
 def test_ci_still_has_its_rule_1_job_and_claude_yml_its_mention_gate():
@@ -542,13 +625,7 @@ esac
 
 def issue_step(weekly):
     """The script of the "Open the Issue" step, as bash would be handed it."""
-    block = weekly.split("      - name: Open the Issue\n", 1)[1].split("        run: |\n", 1)[1]
-    lines = []
-    for line in block.splitlines():
-        if line.strip() and not line.startswith(" " * 10):
-            break
-        lines.append(line[10:])
-    return "\n".join(lines) + "\n"
+    return step_script(weekly, "Open the Issue")
 
 
 def run_issue_step(weekly, tmp_path, previous="11 12", fail_create=False, fail_label=False,
