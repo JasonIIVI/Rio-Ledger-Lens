@@ -876,21 +876,20 @@ there.
   did `test_an_arrow_text_column_is_fitted_too` in `tests/test_report.py`, which skips
   itself without pyarrow. `ci.yml` now has a `dashboard` job for the two files, on Python
   3.9 and 3.12: it installs `.[dev,llm,app]`, imports what the tests would skip without
-  (Streamlit's test harness, pyarrow, anthropic) in a step of its own, and runs
-  `pytest -q tests/test_app.py tests/test_report.py`. The import step is what turns a
-  missing package red: with two files collected, a file that skipped itself is a green job
-  (collected alone it is not: pytest exits 5), and the step's log names the versions that
-  ran. On 3.9 the extra brings Streamlit 1.50.0, the last version Python 3.9 can install,
-  and on 3.12 the newest (1.67.0 on 2026-11-16; the 3.12 venv has 1.64.0), so a new
-  Streamlit can now fail CI before the venvs see it, as a new pandas can. The extra stays
-  out of the test jobs: Streamlit requires pyarrow, and with pyarrow installed pandas 3
-  keeps text columns in Arrow (without it, in Python objects), so adding it there would end
-  the suite's only runs on pandas 3 without pyarrow (the 3.11 and 3.12 legs; 3.9 runs
-  pandas 2.3), which is what an install without the `app` extra has. A step in the test job
-  now fails if pyarrow can be imported there. Not changed: the rest of the suite is not run
-  in CI with pyarrow installed (the 3.12 venv runs it so, on the pandas it has); one test
-  still runs in no CI job, by its own condition
-  (`test_a_differently_cased_spelling_of_the_checkout_is_still_refused` in
+  (Streamlit's test harness, pyarrow, anthropic) in a step of its own, and runs `pytest -q
+  tests/test_app.py tests/test_report.py`. The import step is what turns a missing package
+  red: with two files collected, a file that skipped itself is a green job (collected alone
+  it is not: pytest exits 5), and the step's log names the versions that ran. On 3.9 the
+  extra brings Streamlit 1.50.0, the last version Python 3.9 can install, and on 3.12 the
+  newest (1.67.0 on 2026-11-16; the 3.12 venv has 1.64.0), so a new Streamlit can now fail
+  CI before the venvs see it, as a new pandas can. The extra stays out of the test jobs:
+  Streamlit requires pyarrow, and with pyarrow installed pandas 3 keeps text columns in
+  Arrow (without it, in Python objects), so adding it there would end the suite's only runs
+  on pandas 3 without pyarrow (the 3.11 and 3.12 legs; 3.9 runs pandas 2.3), which is what
+  an install without the `app` extra has. A step in the test job now fails if pyarrow can be
+  imported there. Not changed: the rest of the suite is not run in CI with pyarrow installed
+  (the 3.12 venv runs it so, on the pandas it has); one test still runs in no CI job, by its
+  own condition (`test_a_differently_cased_spelling_of_the_checkout_is_still_refused` in
   `tests/test_tokens.py` skips on a case-sensitive filesystem, which every runner has); and
   the jobs on one Python share a pip cache key, and an entry that was hit is not saved
   again, so each job downloads on every run what the job that wrote the entry did not
@@ -900,15 +899,16 @@ there.
   `continue-on-error`, an `env`, a second install); runs the two guard steps as the runner
   would (each step's script as `ci.yml` has it, through `bash -e`, where `python` is a
   stand-in that records what it is handed and runs it with only stand-in packages
-  importable); and pins the workflow's triggers, its three top-level keys, the names of its
-  four jobs, and that no `if` or `continue-on-error` is anywhere in it. The two gates
-  (`rule-1` and `detection-quality`) are not pinned line for line: as before, one test reads
-  rule 1's pattern and another runs the detection gate's script. A review of the first
-  commit (one reviewer, scratch clone) found no fault in the job as written and three
-  mediums in what was tested and said: 28 of its 40 mutants of the workflow passed the two
-  tests that commit had, which matched six lines; the reason given for the import step was
-  false for a job that collected one file; and the pyarrow test above still ran nowhere in
-  CI. Those and its wording lows (which legs run pandas 3, what the two venvs cover, what
+  importable); pins the workflow's triggers, its three top-level keys and the names of its
+  four jobs; pins every line of the two gates (`rule-1` and `detection-quality`) outside
+  their scripts; and holds the three workflow files to printable ASCII and line feeds. The
+  gates' scripts are not pinned: as before, one test reads rule 1's pattern and another runs
+  the detection gate's script, which must now be its one command and here-document. A review
+  of the first commit (one reviewer, scratch clone) found no fault in the job as written and
+  three mediums in what was tested and said: 28 of its 40 mutants of the workflow passed the
+  two tests that commit had, which matched six lines; the reason given for the import step
+  was false for a job that collected one file; and the pyarrow test above still ran nowhere
+  in CI. Those and its wording lows (which legs run pandas 3, what the two venvs cover, what
   the check before the push ran under) are fixed. A fix-verification (one agent, scratch
   clone) found no fault in either job as written, one medium in the tests and seven lows.
   The medium: a job's lines were read up to the first line at the jobs' indent, and the
@@ -917,30 +917,50 @@ there.
   an `if`, an `env`, a `shell`, a `working-directory`). A job is now read with the comment
   lines taken out first. The lows: a fifth job passed the four-jobs pin if its key line was
   quoted, carried a comment or held the job in braces (every line at the jobs' indent is
-  compared now); the two gates could be switched off beside their scripts (the no-`if` pin
-  above); the two guard tests ran the test's own copy of each step's Python, so they
-  depended on the folder pytest was started in and passed two weakenings made in the
-  workflow and in that copy at once (an import of `streamlit.testing` alone; `python -S`,
-  under which a job's interpreter does not look in site-packages), which is why they now
-  run the workflow's own lines; and wording (which releases CI installs that the venvs
-  lack, which job downloads wheels, the test that runs in no CI job, two paragraphs left
-  unwrapped). A claims audit of the same commit (one agent) found the same hole, by nine
-  mutants of its own, and more wording: the first commit's two tests matched six lines,
-  not five; the two venvs do not "run every code path" (CI's coverage is 97% and 98%: they
-  run the suite under both SDKs, and the MCP tests); 26 of the workpaper's 27 tests need
-  neither package and already ran on Linux; the squash body had dropped "over the venv's
-  other packages". Mutants, one at a time on a scratch copy: 138, of which 137 are each
-  killed by a named test (the review's 40 and 18 more of that kind, 37 of the
-  verification's 38 and its 9 made in both places, the audit's 9, and 24 more: 14 of the
-  workflow, 10 in both places). The other one adds only a comment as a job's first line,
-  which changes nothing the runner reads; the earlier tests failed on it, because they
-  ended a job's text at a comment. The two job pins and the two guard tests fail on
-  `f7f4b21`'s `ci.yml`, and they and the four-jobs pin on `c5ec5d3`'s. Before the push the
-  job's two commands passed in the 3.9 venv, whose Streamlit, pandas, numpy, pyarrow,
-  anthropic and pytest are the ones the 3.9 leg resolves to, and on 3.12 under the ones the
-  3.12 leg resolved to that day (1.67.0, 3.1.1, 2.5.5, 26.0.1, 2.8.0 and 9.2.0, from a
-  `pip --target` folder over the venv's other packages; neither venv changed). CI's checks
-  go from five to seven. Version unchanged (1.2.1).
+  compared now); the two gates could be switched off beside their scripts (first a pin that
+  no `if` or `continue-on-error` is anywhere in the workflow, then the pin of the gates' own
+  lines); the two guard tests ran the test's own copy of each step's Python, in the folder
+  pytest was started in: started where the real packages were they failed, and two
+  weakenings made in the workflow and in that copy at once passed (an import of
+  `streamlit.testing` alone; `python -S`, under which a job's interpreter does not look in
+  site-packages), which is why they now run the workflow's own lines; and wording (which
+  releases CI installs that the venvs lack, which job downloads wheels, the test that runs
+  in no CI job, two paragraphs left unwrapped). A claims audit of the same commit (one
+  agent) found the same hole, by nine mutants of its own, and more wording: the first
+  commit's two tests matched six lines, not five; the two venvs do not "run every code path"
+  (CI's coverage is 97% and 98%: they run the suite under both SDKs, and the MCP tests); 26
+  of the workpaper's 27 tests need neither package and already ran on Linux; the squash body
+  had dropped "over the venv's other packages". A last check of the two fix commits (one
+  agent; each finding was reproduced before it was fixed) found one medium and six lows. The
+  medium: these tests end a line, and so a comment, at a line feed, and a YAML parser also
+  ends one at U+0085, U+2028 and U+2029, so a key written after a comment and one of those
+  characters was a key to the runner and a comment to every pin (eight mutants of `ci.yml`,
+  one of `weekly.yml`). The three workflow files are now held to printable ASCII and line
+  feeds. The lows: the no-`if` pin did not keep a gate from being switched off by a `shell`
+  key, a `defaults` or an unusual spelling of `if`, and a line of shell before the detection
+  gate's command passed (hence the pin of the gates' lines, which replaces it, and the
+  script that must be its one command); the guard tests ran a step's script and read none of
+  its other keys, so a `shell` added in the workflow and in the pinned lines at once passed
+  (the step must now be its name and its script); the mutant count said 138 where seven
+  repeated an earlier one; a comment called a `v1` with no `AppTest` a skip in
+  `tests/test_app.py`, where it is a collection error; a temporary folder whose path holds a
+  colon split `PATH`, which failed the guard tests and let the older Issue-step tests find
+  the real `gh` before their stand-in (it was handed the tests' own token and refused, so
+  nothing was created; both now skip there); and the cause given for the old guard tests'
+  dependence on the folder. Mutants against the final tests, one at a time on a scratch
+  copy: 170 runs of 160 different mutants, of which 156 are each killed by a named test. The
+  other four: one adds only a comment as a job's first line, which changes nothing the
+  runner reads (the earlier tests failed on it, because they ended a job's text at a
+  comment), and three are guard scripts written, in the workflow and in the pinned text at
+  once, to tell the tests' harness from a runner (an empty folder, a stripped environment,
+  `-S`), which takes intent. The two job pins and the two guard tests fail on `f7f4b21`'s
+  `ci.yml`, and they and the four-jobs pin on `c5ec5d3`'s. Before the push the job's two
+  commands passed in the 3.9 venv, whose Streamlit, pandas, numpy, pyarrow, anthropic and
+  pytest are the ones the 3.9 leg resolves to, and on 3.12 under the ones the 3.12 leg
+  resolved to that day (1.67.0, 3.1.1, 2.5.5, 26.0.1, 2.8.0 and 9.2.0, from a `pip --target`
+  folder over the venv's other packages; neither venv changed). CI's checks go from five to
+  seven, and the pull request's own run was the first on Linux for the dashboard's tests:
+  100 passed on each of the two new legs (2026-11-16). Version unchanged (1.2.1).
 - **Next** — in the order the maintainer set on 2026-11-16. First, in one PR: the dashboard's
   reads on a store that fails mid-session (still Streamlit's traceback), and the decision
   form's draft, which a browser on Streamlit 1.50.0 still shows after a decision was recorded
