@@ -334,35 +334,129 @@ def job(ci, name):
     return match.group(1)
 
 
-def installs(job_text):
-    """The ``pip install -e`` lines a job runs."""
-    return re.findall(r"(?m)^ +(pip install -e .+)$", uncommented(job_text))
+def as_run(job_text):
+    """A job as the runner reads it: its lines without the comment lines and the blank ones."""
+    return [line for line in uncommented(job_text).splitlines() if line.strip()]
 
 
-def test_the_dashboard_s_tests_run_in_ci_under_both_streamlits():
-    """CI installed no Streamlit, so tests/test_app.py skipped itself on every job and the
-    dashboard was tested on the maintainer's machine only. Its own job installs the app extra:
-    on 3.9 that brings Streamlit 1.50, the last one 3.9 can install, and on 3.12 the newest;
-    3.9 runs on the image that still has it, as in the test job."""
-    dashboard = job(read("ci.yml"), "dashboard")
-    assert re.search(r'(?m)^ +python-version: \["3\.9", "3\.12"\]$', dashboard)
-    assert re.search(r"(?m)^    runs-on: (.+)$", dashboard).group(1) == (
-        "${{ matrix.python-version == '3.9' && 'ubuntu-24.04' || 'ubuntu-latest' }}")
-    assert installs(dashboard) == ['pip install -e ".[dev,llm,app]"']
-    assert re.search(r"(?m)^ +run: pytest -q tests/test_app\.py$", dashboard)
-    # A module that skipped itself is a green job, so the harness is imported in a step of
-    # its own before the tests: without Streamlit that step fails.
-    steps = uncommented(dashboard)
-    harness, tests = (steps.find(text) for text in
-                      ("from streamlit.testing.v1 import AppTest", "pytest -q tests/test_app.py"))
-    assert 0 <= harness < tests
+RUNS_ON = "${{ matrix.python-version == '3.9' && 'ubuntu-24.04' || 'ubuntu-latest' }}"
+
+#: The Python of the two steps that guard what a job has installed, as ci.yml gives it to
+#: `python -c`. Pinned as text below, and run by the two tests after that.
+NO_PYARROW = ("import importlib.util, sys; "
+              "sys.exit('pyarrow is installed in this job' if importlib.util.find_spec('pyarrow') else 0)")
+IMPORTS = ("import anthropic, pyarrow, streamlit; from streamlit.testing.v1 import AppTest; "
+           "print('streamlit', streamlit.__version__, 'pyarrow', pyarrow.__version__, "
+           "'anthropic', anthropic.__version__)")
 
 
-def test_the_test_job_installs_no_streamlit():
-    """Streamlit installs pyarrow, and with pyarrow pandas 3 keeps text columns in Arrow. The
-    test job is the suite's only run on pandas 3 without it (the maintainer's 3.12 venv has
-    both), so the app extra stays out of that job."""
-    assert installs(job(read("ci.yml"), "test")) == ['pip install -e ".[dev,llm,mcp]"']
+def up_to_install(*versions):
+    """What both jobs start with: the image, the Pythons, the checkout, the interpreter, pip."""
+    pythons = ", ".join(f'"{version}"' for version in versions)
+    return [
+        f"    runs-on: {RUNS_ON}",
+        "    strategy:",
+        "      fail-fast: false",
+        "      matrix:",
+        f"        python-version: [{pythons}]",
+        "    steps:",
+        "      - uses: actions/checkout@v7",
+        "      - name: Set up Python ${{ matrix.python-version }}",
+        "        uses: actions/setup-python@v7",
+        "        with:",
+        "          python-version: ${{ matrix.python-version }}",
+        "          cache: pip",
+        "      - name: Install",
+        "        run: |",
+        "          python -m pip install --upgrade pip",
+    ]
+
+
+def test_the_test_job_is_these_lines_and_installs_no_streamlit():
+    """Streamlit requires pyarrow, and with pyarrow pandas 3 keeps text columns in Arrow. The
+    test job's 3.11 and 3.12 legs are the suite's only runs on pandas 3 without it (the
+    maintainer's 3.12 venv has both), so the app extra stays out of this job, and a step
+    fails if pyarrow arrives some other way. Every line is pinned, not the install line
+    alone, because a line beside these changes what they do: a second install, an `if`, a
+    `continue-on-error`, an `env`."""
+    assert as_run(job(read("ci.yml"), "test")) == [
+        *up_to_install("3.9", "3.11", "3.12"),
+        '          pip install -e ".[dev,llm,mcp]"',
+        "      - name: No pyarrow in this job",
+        "        run: |",
+        f'          python -c "{NO_PYARROW}"',
+        "      - name: Lint",
+        "        run: ruff check src tests app.py",
+        "      - name: Test",
+        "        run: pytest -q --cov=ledgerlens --cov-report=term-missing",
+    ]
+
+
+def test_the_dashboard_job_is_these_lines_under_both_streamlits():
+    """CI installed no Streamlit, so tests/test_app.py skipped itself on every job, and one
+    test in tests/test_report.py skips itself without pyarrow: both ran on the maintainer's
+    machine only. This job installs the app extra and runs the two files, on 3.9 under
+    Streamlit 1.50 (the last one 3.9 can install) and on 3.12 under the newest; 3.9 on the
+    image that still has it, as in the test job. With two files collected, a file that
+    skipped itself would still be a green job, so what the tests would skip without is
+    imported first, in a step of its own. Every line is pinned, as for the test job."""
+    assert as_run(job(read("ci.yml"), "dashboard")) == [
+        *up_to_install("3.9", "3.12"),
+        '          pip install -e ".[dev,llm,app]"',
+        "      - name: Import what the tests below would skip without",
+        "        run: |",
+        f'          python -c "{IMPORTS}"',
+        "      - name: Test the dashboard and the workpaper",
+        "        run: pytest -q tests/test_app.py tests/test_report.py",
+    ]
+
+
+def run_step(script, where, *installed, harness=True):
+    """A step's Python, run where only ``installed`` can be imported: stand-ins on the path
+    and no site-packages (-S), so the result does not depend on what this interpreter has."""
+    where.mkdir(parents=True)
+    for name in installed:
+        (where / name).mkdir()
+        (where / name / "__init__.py").write_text('__version__ = "0.0"\n')
+    if "streamlit" in installed and harness:
+        (where / "streamlit" / "testing").mkdir()
+        (where / "streamlit" / "testing" / "__init__.py").write_text("")
+        (where / "streamlit" / "testing" / "v1.py").write_text("AppTest = object\n")
+    return subprocess.run([sys.executable, "-S", "-c", script], capture_output=True, text=True,
+                          env={"PYTHONPATH": str(where)})
+
+
+def test_the_no_pyarrow_step_fails_where_pyarrow_can_be_imported(tmp_path):
+    without = run_step(NO_PYARROW, tmp_path / "without")
+    assert (without.returncode, without.stdout, without.stderr) == (0, "", "")
+    having = run_step(NO_PYARROW, tmp_path / "with", "pyarrow")
+    assert (having.returncode, having.stderr) == (1, "pyarrow is installed in this job\n")
+
+
+def test_the_import_step_fails_without_any_one_of_what_the_tests_would_skip_for(tmp_path):
+    every = ("anthropic", "pyarrow", "streamlit")
+    whole = run_step(IMPORTS, tmp_path / "all", *every)
+    assert (whole.returncode, whole.stdout) == (0, "streamlit 0.0 pyarrow 0.0 anthropic 0.0\n")
+    for missing in every:
+        short = run_step(IMPORTS, tmp_path / f"no-{missing}", *(n for n in every if n != missing))
+        assert short.returncode == 1 and f"No module named '{missing}'" in short.stderr, missing
+    # Streamlit without its test harness is what tests/test_app.py skips itself for.
+    bare = run_step(IMPORTS, tmp_path / "no-harness", *every, harness=False)
+    assert bare.returncode == 1 and "No module named 'streamlit.testing'" in bare.stderr
+
+
+def test_ci_runs_for_a_pull_request_a_push_to_main_and_by_hand():
+    """A change to ci.yml is first run by the pull request that makes it."""
+    assert block(uncommented(read("ci.yml")), "on") == [
+        "  push:", "    branches: [main]", "  pull_request:", "    branches: [main]",
+        "  workflow_dispatch:"]
+
+
+def test_ci_has_these_four_jobs():
+    """Seven checks: the suite on three Pythons, the dashboard job on two, and the two gates."""
+    jobs = read("ci.yml").split("\njobs:\n", 1)[1]
+    assert re.findall(r"(?m)^  ([A-Za-z0-9_-]+):$", jobs) == [
+        "test", "dashboard", "rule-1", "detection-quality"]
 
 
 def test_ci_still_has_its_rule_1_job_and_claude_yml_its_mention_gate():
