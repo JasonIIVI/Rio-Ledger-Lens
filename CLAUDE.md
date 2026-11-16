@@ -21,11 +21,13 @@ source ~/.venvs/ledgerlens312/bin/activate && pytest -q      # also runs the MCP
 ```
 
 Run both before every commit. The 3.9 venv has anthropic 0.x; the 3.12 venv has anthropic 1.x
-and the MCP SDK, so the two together run every code path. They do not run every version CI
-does: every CI job installs releases the venvs do not have, mostly newer (on 2026-11-15:
-ruff and python-dateutil on every job; pandas, anthropic and pytest on 3.11 and 3.12; numpy
-newer on 3.12 and older on 3.11; Streamlit and pyarrow on the dashboard job's 3.12 leg), so
-green here is not yet green there.
+and the MCP SDK, so between them the suite runs under both SDKs and the MCP tests run. They
+do not run every version CI does: each CI job installs the newest release its Python allows,
+so every job differs from the venvs (the three test jobs on 2026-11-15, among others: ruff
+and python-dateutil newer on each; pandas, anthropic, pytest and mcp newer on 3.11 and 3.12;
+numpy newer on 3.12; numpy and scipy on 3.11 older than the 3.12 venv's). The dashboard
+job's 3.12 leg resolves to a newer Streamlit and pyarrow too. Green here is not yet green
+there.
 
 ## Current state
 
@@ -890,10 +892,11 @@ green here is not yet green there.
   still runs in no CI job, by its own condition
   (`test_a_differently_cased_spelling_of_the_checkout_is_still_refused` in
   `tests/test_tokens.py` skips on a case-sensitive filesystem, which every runner has); and
-  the two jobs share a pip cache key, so the job that saved the entry decides which of them
-  downloads its own extra's wheels on each run (today the dashboard job downloads
-  Streamlit's). `tests/test_workflows.py` pins both jobs line for line, comment and blank
-  lines aside, because a line beside the ones that matter changes what they do (an `if`, a
+  the jobs on one Python share a pip cache key, and an entry that was hit is not saved
+  again, so each job downloads on every run what the job that wrote the entry did not
+  install (with today's entries, the dashboard job downloads Streamlit's wheels).
+  `tests/test_workflows.py` pins both jobs line for line, comment and blank lines aside,
+  because a line beside the ones that matter changes what they do (an `if`, a
   `continue-on-error`, an `env`, a second install); runs the two guard steps as the runner
   would (each step's script as `ci.yml` has it, through `bash -e`, where `python` is a
   stand-in that records what it is handed and runs it with only stand-in packages
@@ -903,7 +906,7 @@ green here is not yet green there.
   rule 1's pattern and another runs the detection gate's script. A review of the first
   commit (one reviewer, scratch clone) found no fault in the job as written and three
   mediums in what was tested and said: 28 of its 40 mutants of the workflow passed the two
-  tests that commit had, which matched five lines; the reason given for the import step was
+  tests that commit had, which matched six lines; the reason given for the import step was
   false for a job that collected one file; and the pyarrow test above still ran nowhere in
   CI. Those and its wording lows (which legs run pandas 3, what the two venvs cover, what
   the check before the push ran under) are fixed. A fix-verification (one agent, scratch
@@ -921,18 +924,23 @@ green here is not yet green there.
   under which a job's interpreter does not look in site-packages), which is why they now
   run the workflow's own lines; and wording (which releases CI installs that the venvs
   lack, which job downloads wheels, the test that runs in no CI job, two paragraphs left
-  unwrapped). Mutants, one at a time on a scratch copy: 129, of which 128 are each killed
-  by a named test (the review's 40 and 18 more of that kind, 37 of the verification's 38
-  and its 9 made in both places, and 24 more: 14 of the workflow, 10 in both places). The
-  other one adds only a comment as a job's first line, which changes nothing the runner
-  reads; the earlier tests failed on it, because they ended a job's text at a comment. The
-  two job pins and the two guard tests fail on `f7f4b21`'s `ci.yml`, and they and the
-  four-jobs pin on `c5ec5d3`'s. Before the push the job's two commands passed in the 3.9
-  venv, whose Streamlit, pandas, numpy, pyarrow, anthropic and pytest are the ones the 3.9
-  leg resolves to, and on 3.12 under the ones the 3.12 leg resolved to that day (1.67.0,
-  3.1.1, 2.5.5, 26.0.1, 2.8.0 and 9.2.0, from a `pip --target` folder over the venv's other
-  packages; neither venv changed). CI's checks go from five to seven. Version unchanged
-  (1.2.1).
+  unwrapped). A claims audit of the same commit (one agent) found the same hole, by nine
+  mutants of its own, and more wording: the first commit's two tests matched six lines,
+  not five; the two venvs do not "run every code path" (CI's coverage is 97% and 98%: they
+  run the suite under both SDKs, and the MCP tests); 26 of the workpaper's 27 tests need
+  neither package and already ran on Linux; the squash body had dropped "over the venv's
+  other packages". Mutants, one at a time on a scratch copy: 138, of which 137 are each
+  killed by a named test (the review's 40 and 18 more of that kind, 37 of the
+  verification's 38 and its 9 made in both places, the audit's 9, and 24 more: 14 of the
+  workflow, 10 in both places). The other one adds only a comment as a job's first line,
+  which changes nothing the runner reads; the earlier tests failed on it, because they
+  ended a job's text at a comment. The two job pins and the two guard tests fail on
+  `f7f4b21`'s `ci.yml`, and they and the four-jobs pin on `c5ec5d3`'s. Before the push the
+  job's two commands passed in the 3.9 venv, whose Streamlit, pandas, numpy, pyarrow,
+  anthropic and pytest are the ones the 3.9 leg resolves to, and on 3.12 under the ones the
+  3.12 leg resolved to that day (1.67.0, 3.1.1, 2.5.5, 26.0.1, 2.8.0 and 9.2.0, from a
+  `pip --target` folder over the venv's other packages; neither venv changed). CI's checks
+  go from five to seven. Version unchanged (1.2.1).
 - **Next** — in the order the maintainer set on 2026-11-16. First, in one PR: the dashboard's
   reads on a store that fails mid-session (still Streamlit's traceback), and the decision
   form's draft, which a browser on Streamlit 1.50.0 still shows after a decision was recorded

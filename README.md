@@ -770,8 +770,8 @@ ruff check src tests app.py  # lint
 CI runs the suite on Python 3.9, 3.11 and 3.12 plus a detection-quality gate. The suite's
 jobs install no Streamlit on purpose: it requires pyarrow, and with pyarrow pandas 3 keeps
 text columns in Arrow, so the 3.11 and 3.12 jobs are where the suite runs on pandas 3
-without it. The tests that need those packages (the dashboard's, and the workpaper's, one of
-which needs pyarrow) run in a job of their own with the `app` extra installed, under
+without it. The dashboard's tests need Streamlit and one of the workpaper's needs pyarrow,
+so those two test files also run in a job of their own with the `app` extra installed, under
 Streamlit 1.50 (the last version Python 3.9 can install) and under the newest. The rest of
 the suite is not run in CI with pyarrow installed. Nothing in `narrate.py` or the eval needs
 a key to be tested: the API is replaced by a fake that returns responses shaped like the
