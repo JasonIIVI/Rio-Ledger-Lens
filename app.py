@@ -127,6 +127,76 @@ def _sdk_errors() -> tuple:
     return (APIError,)
 
 
+def _refusal(exc: BaseException) -> sqlite3.Error | None:
+    """What the review database itself said behind a failed read, or None if the fault is ours.
+
+    Five of the page's seven reads go through pandas, which raises its own DatabaseError
+    (an OSError, not a sqlite3.Error) and keeps what SQLite raised as the cause. The
+    driver's errors for a value it cannot bind are sqlite3.Errors too, and they are ours
+    (``CALLER_FAULTS``), wrapped or not.
+    """
+    cause = exc.__cause__ if isinstance(exc, pd.errors.DatabaseError) else exc
+    if isinstance(cause, sqlite3.Error) and not isinstance(cause, CALLER_FAULTS):
+        return cause
+    return None
+
+
+#: The decision form's two widgets, keyed per entry: what a reviewer was recording.
+DRAFT_KEYS = ("choice-", "note-")
+
+
+def _stop_for_the_store(message: str) -> None:
+    """Say that the review database failed, and end this run there.
+
+    Two things would otherwise be lost with the rest of the page. A write the run before
+    did make is said here, once, as it would have been further down (the flash): an error
+    alone, straight after a click, reads as if the click had failed. And the decision a
+    reviewer was recording is set aside: a run that stops before the form takes the form
+    off the page, the browser forgets what was in it, and the next run drew it empty. The
+    form takes it back when it is next drawn. ``message`` can quote a path as typed or
+    what SQLite said, so it goes through ``md()``.
+    """
+    flash = st.session_state.pop("flash", None)
+    if flash:
+        st.success(flash)
+    st.error(md(message))
+    # Rerun, not reload: a reload starts a new session, and what was set aside goes with the old.
+    st.caption("Rerun the page (press R, or choose Rerun in the menu at the top right) once the "
+               "file can be used again; a decision that was being recorded is kept in the form.")
+    kept = dict(st.session_state.get("drafts-kept", {}))  # a second failed run adds to the first's
+    kept.update({key: value for key, value in st.session_state.items()
+                 if isinstance(key, str) and key.startswith(DRAFT_KEYS)})
+    st.session_state["drafts-kept"] = kept
+    st.stop()
+
+
+def _read(read, *args, otherwise: str | None = None):
+    """A read of the review database: what it returned, or a message where the store refuses.
+
+    The reads are never cached (a decision recorded a second ago has to show), so each one
+    opens the file again, and a file that was fine when the page opened it can refuse the
+    next read: locked past SQLite's wait, removed or replaced while a note was being
+    requested, a disk or iCloud error. Uncaught, that was Streamlit's traceback. The run
+    ends at the message, because what the page draws next is built on what could not be
+    read (the legacy check that gates writes, the queue's decisions, the note a decision
+    must point at), and no write may follow a read that failed. A read nothing else needs
+    passes ``otherwise``, the sentence shown in its place: the page goes on and the read
+    returns None. Only the store's refusals: a fault of our own stays a traceback.
+    """
+    try:
+        return read(*args)
+    except (sqlite3.Error, pd.errors.DatabaseError) as exc:
+        refusal = _refusal(exc)
+        if refusal is None:
+            raise
+        said = f"{type(refusal).__name__}: {refusal}"
+        if otherwise is not None:
+            st.error(md(f"{otherwise} ({said})."))
+            return None
+        _stop_for_the_store(
+            f"The review database could not be read, so the page stops here ({said}).")
+
+
 def _ratio(value: float, defined: bool) -> str:
     """A ratio over nothing is not a figure, as ``summary`` says too."""
     return f"{value:.3f}" if defined else "undefined"
@@ -200,9 +270,10 @@ if labels_problem:
 # bound to this ledger's identity, so another ledger's notes never show here.
 try:
     store = ReviewStore(db_path, ledger_id)
-except RuntimeError as exc:  # a file from a newer version, or not a review database at all
-    st.error(str(exc))
-    st.stop()
+except RuntimeError as exc:
+    # In the store's own words: a file from a newer version, one that is no review database,
+    # one SQLite cannot read or prepare, a folder that cannot be made.
+    _stop_for_the_store(str(exc))
 st.sidebar.caption(f"Review rows keyed by `{ledger_id}`")
 # What JET-12 and JET-06 were run against. Names from a file are drawn as code spans, as
 # a flag's reason is, and the limit's "$" escaped so no pair of them starts maths.
@@ -211,7 +282,7 @@ st.sidebar.caption("Controls: approvers {} (JET-12) · approval limit {} (JET-06
     md(format_limit(controls.approval_limit)),
     "from " + code_span(controls.source) if controls.source is not None
     else "the synthetic company's (no controls file beside the ledger)"))
-others = store.other_ledgers()
+others = _read(store.other_ledgers)
 if not others.empty:
     # Surfaced, never shown as this ledger's: a file can hold several ledgers' review.
     st.sidebar.caption(f"This database also holds rows for {len(others)} other ledger(s): " + ", ".join(
@@ -225,7 +296,8 @@ if not others.empty:
 # choice is made for one file: keyed like every per-entry widget, it is asked
 # again when the sidebar points at another database.
 writes_blocked = False
-if LEGACY_LEDGER_ID in set(others["ledger_id"]) and ledger_id not in set(store.ledgers()["ledger_id"]):
+if (LEGACY_LEDGER_ID in set(others["ledger_id"])
+        and ledger_id not in set(_read(store.ledgers)["ledger_id"])):
     st.sidebar.warning(
         "Rows from before review data was keyed by ledger sit under 'legacy', and this ledger "
         "has none yet. If they were written for it, adopt them first: `ledgerlens adopt-legacy "
@@ -236,7 +308,7 @@ if LEGACY_LEDGER_ID in set(others["ledger_id"]) and ledger_id not in set(store.l
         "Start this ledger's review from scratch", key=f"start-fresh-{db_path}|{ledger_id}",
         help="The dashboard's --ignore-legacy: the legacy rows stay where they are, unadopted.",
     )
-current = store.current()
+current = _read(store.current)
 
 # ---- materiality: a band beside each entry's scores, never in them (rule 3) ----
 # Nothing below is cached: the band is one pass over the loaded frame, and the figures are
@@ -268,7 +340,7 @@ c2.metric("Flagged", int((combined["risk_score"] > 0).sum()))
 c3.metric("Flags raised", len(flags))
 c4.metric("Flag rate", "{:.2%}".format((combined["risk_score"] > 0).mean()))
 c5.metric("Decided", len(current))
-progress = store.summary()
+progress = _read(store.summary)
 if not progress.empty:
     st.caption("Review progress: " + ", ".join(
         f"{r.decision} {r.entries}" for r in progress.itertuples()
@@ -313,7 +385,7 @@ with tab_queue:
     if chosen_bands is not None:
         queue = queue[queue["materiality_band"].isin(chosen_bands)]
     if outstanding_only:
-        queue = queue[~queue["entry_id"].isin(store.decided_ids())]
+        queue = queue[~queue["entry_id"].isin(_read(store.decided_ids))]
     queue = queue.merge(current[["entry_id", "decision", "reviewer"]], on="entry_id", how="left")
 
     with right:
@@ -359,7 +431,7 @@ with tab_queue:
 
         # ---- narrative: advisory text, never a decision ----
         st.markdown("**Reviewer note** (written by Claude, advisory only)")
-        narrative = store.get_narrative(picked)
+        narrative = _read(store.get_narrative, picked)
         # The note the reviewer actually read is the one rendered on the
         # *previous* run of this script: a submit reruns everything, and a
         # version written in between (a rewrite, another reviewer) would
@@ -427,14 +499,25 @@ with tab_queue:
 
         # ---- decision: a named human, append-only ----
         st.markdown("**Record a decision**")
-        choice_key, note_key = f"choice-{entry_key}", f"note-{entry_key}"
+        choice_key, note_key = (f"{prefix}{entry_key}" for prefix in DRAFT_KEYS)
         # The form is not cleared on submit: a refused submit (the note changed
         # while the reviewer was reading it) must not discard what they typed.
         # The draft is cleared here instead, on the rerun after a decision was
         # recorded, and each entry keeps its own draft in the meantime.
+        kept = st.session_state.pop("drafts-kept", {})
         if st.session_state.pop("clear-decision", None) == entry_key:
+            # Assigned, never removed. A removed key resets the value for this script and
+            # tells the browser nothing: it went on showing the decision just recorded, and
+            # sent it back with the next submit. An assigned key reaches the browser as the
+            # widget's new value.
+            st.session_state[choice_key] = DECISIONS[0]
+            st.session_state[note_key] = ""
+        else:
+            # What a reviewer was recording when a run stopped for the store (see
+            # _stop_for_the_store), given back the same way, so the browser shows it again.
             for key in (choice_key, note_key):
-                st.session_state.pop(key, None)
+                if key in kept:
+                    st.session_state[key] = kept[key]
         with st.form(key=f"decision-{entry_key}"):
             choice = st.radio("Decision", DECISIONS, horizontal=True,
                               format_func=str.capitalize, key=choice_key)
@@ -498,8 +581,12 @@ with tab_queue:
                     st.session_state["clear-decision"] = entry_key
                     st.rerun()
 
-        history = store.history(picked)
-        if not history.empty:
+        # The last thing the queue draws, and nothing else is built on it: where the store
+        # refuses this read (a file replaced while a note was being requested fails the save
+        # above and then this), the message stands in its place and the other tabs are drawn.
+        history = _read(store.history, picked,
+                        otherwise="The decision history could not be read, so it is not shown")
+        if history is not None and not history.empty:
             st.markdown("**Decision history** (append-only)")
             st.dataframe(history[["decided_at", "decision", "reviewer", "note", "narrative_id"]],
                          width="stretch", hide_index=True)

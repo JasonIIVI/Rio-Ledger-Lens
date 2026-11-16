@@ -700,7 +700,7 @@ there.
   nothing that marks it done is set (the double-click guard, the flash, the draft's clearing),
   so the same submit records it on a retry. Both messages quote the error, so they go through
   `md()`, and the page goes on past them, unless its next read fails too (a file removed or
-  replaced during the request: the reads are in Next). A fault in our own code stays
+  replaced during the request: until the reads bullet below). A fault in our own code stays
   Streamlit's traceback, and so do `record`'s own `ValueError`s, with one exception found on
   the way: on Streamlit 1.50 a click lands when the reviewer's name is cleared and the button
   clicked before the rerun that disables it, and `record` refused the nameless decision as a
@@ -715,8 +715,8 @@ there.
   guard's only under Streamlit 1.50, where the click lands; building the `Decision` inside the
   `try` is equivalent). Checked in a browser on a read-only file: the message, the form and the
   draft, then the same click recording once the file was writable. Not changed: the page's
-  reads (`get_narrative`, `history`, `summary`, `ledgers`) on a store that fails mid-session,
-  and the CLI's `narrate`, which saved only after the whole batch, so a refused save there lost
+  reads (`get_narrative`, `history`, `summary`, `ledgers`) on a store that fails mid-session
+  (until the reads bullet below), and the CLI's `narrate`, which saved only after the whole batch, so a refused save there lost
   the notes still waiting (until the narrate bullet below). CI installs no Streamlit, so these
   tests run in the two venvs only (until the dashboard-job bullet below). Version unchanged
   (1.2.0).
@@ -961,13 +961,73 @@ there.
   folder over the venv's other packages; neither venv changed). CI's checks go from five to
   seven, and the pull request's own run was the first on Linux for the dashboard's tests:
   100 passed on each of the two new legs (2026-11-16). Version unchanged (1.2.1).
-- **Next** — in the order the maintainer set on 2026-11-16. First, in one PR: the dashboard's
-  reads on a store that fails mid-session (still Streamlit's traceback), and the decision
-  form's draft, which a browser on Streamlit 1.50.0 still shows after a decision was recorded
-  (on `main` before the store-writes change too; AppTest sees it cleared, and the double-click
-  guard refuses the same submit). Then a v1.2.2 release; week 8's hardening (a changelog, mypy
-  in CI, `mcp_server.py`'s coverage, a performance pass, and the whole suite in CI with the
-  `app` extra installed); week 7 as a separate ledger
+- **The dashboard's reads, the store's open and the decision draft
+  (`fix/dashboard-store-reads`, after v1.2.1)** — the two items the store-writes bullet and
+  the last Next left open, and three more found on the way.
+  - **Reads.** The page opens the store once a run and then reads it at seven places
+    (`other_ledgers`, `ledgers`, `current`, `summary`, `decided_ids`, `get_narrative`,
+    `history`), each on a connection of its own, so a file that opened can refuse the next
+    read: locked past SQLite's five-second wait, removed or replaced while a note was being
+    requested, a disk or iCloud error. That was Streamlit's traceback. `app._read` wraps each
+    one: the store's refusal is a message through `md()`, with SQLite's own type and text, and
+    the run ends there (`st.stop()`), because what the page draws next is built on what could
+    not be read (the legacy check that gates writes, the queue's decisions, the note a
+    decision must point at) and no write may follow a read that failed. `history` is the
+    exception: it is the last thing the queue draws and nothing is built on it, so the
+    message stands in its place and the other tabs are drawn (the case the store-writes
+    bullet named: a file replaced during a request refuses the save and then this read).
+    Five of the seven go through `pd.read_sql_query`, which raises
+    `pandas.errors.DatabaseError`, an `OSError` and not a `sqlite3.Error`, with what SQLite
+    raised as its cause: both are caught, and the cause is what is shown. Still a traceback:
+    `review.CALLER_FAULTS`, raw or wrapped by pandas, a pandas error with no SQLite refusal
+    behind it, and anything else of ours.
+  - **The open** (`review.py`, so every caller has it). A probe of seven kinds of file found
+    three faults. A folder that cannot be made (its own parent is a file) escaped as an
+    `OSError`, and an empty file that is read-only as `OperationalError` from the schema
+    statements every open runs: a traceback in the dashboard and in `narrate` (and, for the
+    second, `adopt-legacy`), which show a `RuntimeError` from the open as one line. Both are
+    `RuntimeError`s now (`CALLER_FAULTS` in the schema statements are re-raised as they are).
+    And a file another program held locked past the wait was reported as "is not a SQLite
+    database", because every `sqlite3.DatabaseError` while the schema was read was; an
+    `OperationalError` there now reads "could not be read as a SQLite database", by both
+    openers. The dashboard draws the open's message through `md()` too (it names the path as
+    typed).
+  - **The draft that stayed.** After a recorded decision the page removed the draft's two
+    keys from session state. That resets the value for the script and sends the browser
+    nothing: a browser went on showing the choice and the note just recorded and sent them
+    back with the next submit, on Streamlit 1.64 as on 1.50 (the last Next said 1.50). The
+    keys are now assigned their defaults, which reaches the browser as the widget's new
+    value (`set_value`).
+  - **The draft that was lost.** Found in the browser while checking the above: a run that
+    stops before the form (the open's stop, on `main` already, and now a read's) takes the
+    form off the page, and when the store answered again the form came back empty, so the
+    decision being recorded was gone (1.50 and 1.64; AppTest shows it too).
+    `app._stop_for_the_store` sets the form's values aside before it stops, and the form
+    takes them back by assignment when it is next drawn, unless that run is the one clearing
+    it after a recorded decision; under its message it says to rerun the page (a reload
+    starts a new session) and that the decision is kept. It also draws a pending
+    "Recorded: ..." above its error: a decision recorded on the run before is still said
+    once, where an error alone, straight after the click, read as if the click had failed.
+  - **Tests.** 73 new cases (68 in `test_app.py`, four in `test_review.py`, one in
+    `test_cli.py`): each read refused by each kind of store error, raw and through pandas;
+    the two reads behind a condition (the legacy check's, the outstanding filter's); the
+    file replaced between the open and a read, and during a request, through SQLite and
+    pandas themselves; the three faults of the open, the lock held by a real second
+    connection; both drafts by what the browser is told (`set_value` on the widget's
+    message, which AppTest exposes). 46 fail on `c5ec5d3` on both Pythons, each for the
+    fault it names; the other 27 pin that a fault of ours is still a traceback. Checked in a
+    browser on Streamlit 1.50 and 1.64, before and after: the form clears after a recorded
+    decision, and a decision being recorded when the file is unreadable comes back and
+    records once.
+  - **Not changed.** A draft typed but not yet submitted when another control reruns the
+    page into a failed read is still lost: the browser had not sent it. A browser reload
+    starts a new session, so nothing is kept across one (the message says to rerun). The
+    command line's own reads after its open (`narrate`'s ledgers and narrative ids,
+    `report --db` and `summary --db`) are still a traceback if the file fails in between.
+  Version unchanged (1.2.1).
+- **Next** — in the order the maintainer set on 2026-11-16: a v1.2.2 release; week 8's
+  hardening (a changelog, mypy in CI, `mcp_server.py`'s coverage, a performance pass, and
+  the whole suite in CI with the `app` extra installed); week 7 as a separate ledger
   (`generate --realistic`, from its own streams as the held-out ledger is, so the default
   ledger, the eval cases and the held-out measurement do not move); and publishing last,
   under another distribution name (on PyPI, `ledgerlens` has been another project's package
@@ -977,7 +1037,7 @@ there.
   300); a note's model and time in the workpaper and the MCP entry rows (the explain tool
   returns both); the prompt a note answered (a review-schema change); and the reported model
   on new eval rows (a row-shape change).
-- 1370 tests on 3.9 (1 skipped) / 1385 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
+- 1443 tests on 3.9 (1 skipped) / 1458 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
