@@ -13,6 +13,7 @@ import string
 import sys
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from ledgerlens.cli import main
@@ -140,7 +141,7 @@ def test_a_refusal_keeps_the_draft_and_the_next_click_records_it(data_dir, tmp_p
     assert history["note"].tolist() == ["checked the purchase order"]
     assert history["narrative_id"].tolist() == [written]
     assert at.text_area(key=f"note-{_entry_key(at)}").value == ""
-    assert at.radio(key=f"choice-{_entry_key(at)}").value == "accept"
+    assert at.radio(key=f"choice-{_entry_key(at)}").value is None
 
 
 def test_a_decision_with_no_note_on_screen_records_none(data_dir, tmp_path, identity):
@@ -548,6 +549,7 @@ def test_a_fault_in_recording_that_is_not_the_store_s_is_still_a_traceback(
     picked = at.selectbox(key="picked").value
     _refusing(monkeypatch, "record", error)
     key = _entry_key(at)
+    at.radio(key=f"choice-{key}").set_value("Accept")
     at.text_area(key=f"note-{key}").set_value("fine")
     _record_button(at).click()
     at.run()
@@ -649,6 +651,914 @@ def test_the_dashboard_refuses_a_database_it_cannot_read_without_a_traceback(dat
     assert not any("Record decision" in b.label for b in at.button)  # stopped before the form
 
 
+def test_a_path_the_store_cannot_use_is_a_message_with_its_markdown_escaped(data_dir, tmp_path):
+    """Two paths the store's open let through as raw errors, a traceback here: a folder that
+    cannot be made, and an empty file that is read-only. And the open's message names the
+    path as typed, which st.error would draw as markdown: through md(), like the rest."""
+    blocker = tmp_path / "a-file"
+    blocker.write_text("x")
+    at = _run(data_dir, blocker / "review.sqlite", reviewer="ana")  # asserts nothing was raised
+    assert len(at.error) == 1 and "cannot be made" in at.error[0].value
+    assert any(c.value == KEPT for c in at.caption)
+    assert not at.metric and not any("Record decision" in b.label for b in at.button)
+
+    if not (hasattr(os, "geteuid") and os.geteuid() == 0):  # root writes to a read-only file
+        empty = tmp_path / "empty.sqlite"
+        empty.write_bytes(b"")
+        empty.chmod(0o444)
+        at = _run(data_dir, empty, reviewer="ana")
+        assert len(at.error) == 1
+        assert "cannot be opened as a review database" in at.error[0].value
+        assert "attempt to write a readonly database" in at.error[0].value
+
+    image = tmp_path / "![x](x.png).sqlite"
+    image.write_text("not a database\n")
+    at = _run(data_dir, image, reviewer="ana")
+    assert len(at.error) == 1 and "is not a SQLite database" in at.error[0].value
+    assert "\\!\\[x\\]\\(x\\.png\\)\\.sqlite" in at.error[0].value
+    assert "![x](" not in at.error[0].value
+
+
+# --- the store's reads -----------------------------------------------------------------------
+
+# As md() shows them: it escapes every ASCII punctuation character.
+STOPS_HERE = "The review database could not be read\\, so the page stops here \\("
+END = "\\)\\."
+KEPT = ("When the file can be used again, or another is named in the sidebar, rerun the page: "
+        "Rerun, in the menu at the top right. Reloading the browser tab starts a new session and "
+        "loses what was being recorded. With this file again, the entry, \"Outstanding only\" and "
+        "the decision you submitted come back; a filter or a fiscal year this page no longer "
+        "shows starts over.")
+NO_HISTORY = "The decision history could not be read\\, so it is not shown \\("
+LOCKED = "OperationalError\\: database is locked"
+
+
+def _through_pandas(cause):
+    """What ``pd.read_sql_query`` raises when SQLite refuses: pandas' own DatabaseError (an
+    OSError, not a sqlite3.Error), with what SQLite raised as its cause."""
+    wrapped = pd.errors.DatabaseError(f"Execution failed on sql 'SELECT 1': {cause}")
+    wrapped.__cause__ = cause
+    return wrapped
+
+
+def _locked():
+    """A lock that outlasted SQLite's wait, as the page's pandas reads meet it."""
+    return _through_pandas(sqlite3.OperationalError("database is locked"))
+
+
+# What a read can meet, raw (decided_ids, get_narrative) or through pandas (the other five),
+# and what the message shows of it: the type and text SQLite gave, never pandas' wrapping.
+READ_REFUSALS = [
+    *STORE_REFUSALS,
+    pytest.param(_through_pandas(sqlite3.OperationalError("no such table: decisions")),
+                 "OperationalError\\: no such table\\: decisions", id="pandas-no-table"),
+    pytest.param(_through_pandas(sqlite3.DatabaseError("file is not a database")),
+                 "DatabaseError\\: file is not a database", id="pandas-not-a-database"),
+]
+
+# Where each read stops the page: what was drawn above it, by the last thing drawn there.
+DRAWN_BEFORE = {
+    "other_ledgers": lambda at: not at.metric,
+    "current": lambda at: not at.metric,
+    "summary": lambda at: any(m.label == "Decided" for m in at.metric) and not at.tabs,
+    "get_narrative": lambda at: any("Journal entry lines" in m.value for m in at.markdown),
+}
+
+
+@pytest.mark.parametrize("read", sorted(DRAWN_BEFORE))
+@pytest.mark.parametrize("error, shown", READ_REFUSALS)
+def test_a_read_the_store_refuses_is_a_message_and_the_run_stops_there(
+        data_dir, tmp_path, identity, monkeypatch, read, error, shown):
+    """The store is opened once a run and then read at up to seven places, each on a
+    connection of its own, so a file that opened can refuse the next read: locked past
+    SQLite's wait, removed or replaced while a note was being requested, a disk error.
+    Uncaught, that was Streamlit's traceback. Nothing below the message is drawn: it would
+    be built on what could not be read."""
+    db = tmp_path / "review.sqlite"
+    at = _run(data_dir, db, reviewer="ana")
+    _refusing(monkeypatch, read, error)
+
+    at.run()
+
+    assert not at.exception, at.exception
+    assert [e.value for e in at.error] == [STOPS_HERE + shown + END]
+    assert not any("![x](" in e.value for e in at.error)
+    assert any(c.value == KEPT for c in at.caption)
+    assert DRAWN_BEFORE[read](at)
+    assert not any("Record decision" in b.label for b in at.button)
+    assert not any(PAGE_WENT_ON in m.value for m in at.markdown)
+
+
+def test_the_read_that_gates_writes_is_guarded_too(data_dir, tmp_path, identity, monkeypatch):
+    """Writes wait for `adopt-legacy` on the strength of a second read of the store's
+    ledgers. Refused, it ends the run: a page that went on could not say whether to wait."""
+    db = tmp_path / "review.sqlite"
+    _legacy_note_on_screen(data_dir, db, identity)
+    at = _run(data_dir, db, reviewer="ana")
+    real, calls = ReviewStore.ledgers, []
+
+    def refused_the_second_time(self):
+        calls.append(1)
+        if len(calls) == 2:  # the first is other_ledgers' own
+            raise _locked()
+        return real(self)
+
+    monkeypatch.setattr(ReviewStore, "ledgers", refused_the_second_time)
+    at.run()
+
+    assert len(calls) == 2
+    assert not at.exception, at.exception
+    assert [e.value for e in at.error] == [STOPS_HERE + LOCKED + END]
+    assert not at.metric and not any("Record decision" in b.label for b in at.button)
+
+
+def test_the_outstanding_filter_s_read_is_guarded_too(data_dir, tmp_path, monkeypatch):
+    db = tmp_path / "review.sqlite"
+    at = _run(data_dir, db, reviewer="ana")
+    _refusing(monkeypatch, "decided_ids", sqlite3.OperationalError("database is locked"))
+
+    at.checkbox(key="outstanding_only").check().run()
+
+    assert not at.exception, at.exception
+    assert [e.value for e in at.error] == [STOPS_HERE + LOCKED + END]
+    assert not any("Record decision" in b.label for b in at.button)
+
+
+@pytest.mark.parametrize("error, shown", READ_REFUSALS)
+def test_a_history_the_store_refuses_is_a_message_in_its_place_and_the_page_goes_on(
+        data_dir, tmp_path, identity, monkeypatch, error, shown):
+    """The history is the last thing the queue draws and nothing is built on it, so the
+    message stands where it would have been and the other tabs are still drawn."""
+    db = tmp_path / "review.sqlite"
+    at = _run(data_dir, db, reviewer="ana")
+    picked = at.selectbox(key="picked").value
+    ReviewStore(db, identity).record(Decision(picked, "accept", "ana", "fine"))
+    at.run()
+    assert any("Decision history" in m.value for m in at.markdown)
+    _refusing(monkeypatch, "history", error)
+
+    at.run()
+
+    assert not at.exception, at.exception
+    assert [e.value for e in at.error] == [NO_HISTORY + shown + END]
+    assert not any("![x](" in e.value for e in at.error)
+    assert not any(c.value == KEPT for c in at.caption)  # the run did not stop
+    assert not any("Decision history" in m.value for m in at.markdown)
+    assert any(PAGE_WENT_ON in m.value for m in at.markdown)
+    assert not _record_button(at).disabled
+
+
+@pytest.mark.parametrize("read", ["other_ledgers", "get_narrative"])
+def test_a_file_that_is_no_database_any_more_is_said_in_sqlite_s_words(
+        data_dir, tmp_path, monkeypatch, read):
+    """Through SQLite itself, and through pandas for the read that goes that way: the file is
+    replaced between the open and the read. pandas reports "Execution failed on sql ..."
+    around what SQLite said; the page shows what SQLite said."""
+    db = tmp_path / "review.sqlite"
+    at = _run(data_dir, db, reviewer="ana")
+    real = getattr(ReviewStore, read)
+
+    def after_the_file_was_replaced(self, *args):
+        db.write_bytes(b"not a database any more\n" * 64)
+        return real(self, *args)
+
+    monkeypatch.setattr(ReviewStore, read, after_the_file_was_replaced)
+    at.run()
+
+    assert not at.exception, at.exception
+    assert [e.value for e in at.error] == [
+        STOPS_HERE + "DatabaseError\\: file is not a database" + END]
+
+
+def test_a_file_replaced_while_a_note_is_requested_is_two_messages_and_no_traceback(
+        data_dir, tmp_path, monkeypatch, llm):
+    """The case the store-writes change left open: the save is refused (a message since
+    then), the page goes on, and its next read, the history, met the same file."""
+    client = _narrating_with(monkeypatch, [llm.response()], llm)
+    db = tmp_path / "review.sqlite"
+    at = _run(data_dir, db, reviewer="ana")
+    answer = client.messages.create
+
+    def while_the_file_is_replaced(**kwargs):
+        db.write_bytes(b"not a database any more\n" * 64)
+        return answer(**kwargs)
+
+    client.messages.create = while_the_file_is_replaced
+    _click_write(at)  # asserts the script raised nothing
+
+    assert len(client.calls) == 1
+    errors = [e.value for e in at.error]
+    assert len(errors) == 2, errors
+    assert errors[0].startswith(NOT_STORED + "DatabaseError\\: file is not a database")
+    assert errors[1] == NO_HISTORY + "DatabaseError\\: file is not a database" + END
+    assert any(PAGE_WENT_ON in m.value for m in at.markdown)
+    assert not at.success
+
+
+# Not the store's, raw or wrapped by pandas: our own code, the driver's faults for a value it
+# cannot bind, and a pandas error with no SQLite refusal behind it. pandas' DatabaseError is
+# an OSError, so a plain OSError must not pass for one either.
+NOT_THE_STORES_READS = [
+    *NOT_THE_STORES,
+    pytest.param(_through_pandas(
+        sqlite3.ProgrammingError("Error binding parameter 2: type 'dict' is not supported")),
+        id="pandas-ProgrammingError"),
+    pytest.param(_through_pandas(
+        sqlite3.InterfaceError("Error binding parameter 1 - probably unsupported type.")),
+        id="pandas-InterfaceError"),
+    pytest.param(pd.errors.DatabaseError("Execution failed on sql 'SELECT 1': nothing behind it"),
+                 id="pandas-no-cause"),
+    pytest.param(_through_pandas(ValueError("not SQLite's")), id="pandas-not-sqlite"),
+    pytest.param(OSError("a disk error in our own code"), id="OSError"),
+]
+
+
+@pytest.mark.parametrize("read", ["current", "get_narrative", "history"])
+@pytest.mark.parametrize("error", NOT_THE_STORES_READS)
+def test_a_fault_in_reading_that_is_not_the_store_s_is_still_a_traceback(
+        data_dir, tmp_path, monkeypatch, read, error):
+    """A traceback, as a bug should be, and never worded as the store refusing a read."""
+    at = _run(data_dir, tmp_path / "review.sqlite", reviewer="ana")
+    _refusing(monkeypatch, read, error)
+    at.run()
+
+    assert at.exception and str(error) in at.exception[0].message
+    assert not any("could not be read" in e.value for e in at.error)
+
+
+def test_a_decision_recorded_just_before_the_store_fails_is_still_said_once(
+        data_dir, tmp_path, identity, monkeypatch):
+    """A recorded decision reruns the page, and the rerun says so. If that rerun's first read
+    is refused, an error alone, straight after the click, reads as if the click had failed:
+    the confirmation is drawn above it. And when the form comes back the recorded draft is
+    cleared, not given back as a decision still being recorded."""
+    db = tmp_path / "review.sqlite"
+    at = _run(data_dir, db, reviewer="ana")
+    picked = at.selectbox(key="picked").value
+    key = _entry_key(at)
+    real, calls = ReviewStore.other_ledgers, []
+
+    def refused_on_the_rerun(self):
+        calls.append(1)
+        if len(calls) == 2:
+            raise _locked()
+        return real(self)
+
+    monkeypatch.setattr(ReviewStore, "other_ledgers", refused_on_the_rerun)
+    _submit(at, "Escalate", "checked the purchase order")  # asserts the script raised nothing
+
+    assert ReviewStore(db, identity).history(picked)["decision"].tolist() == ["escalate"]
+    assert [s.value for s in at.success] == ["Recorded: escalate by ana."]
+    assert [e.value for e in at.error] == [STOPS_HERE + LOCKED + END]
+    # In that order: the confirmation, the error, what to do next. Read around the error,
+    # not as the page's last three: after a rerun inside one run, Streamlit 1.50's harness
+    # can leave elements of the run before behind the new ones.
+    kinds = [node.type for _, node in sorted(at.main.children.items())]
+    at_error = kinds.index("error")
+    assert kinds[at_error - 1:at_error + 2] == ["success", "error", "caption"]
+
+    at.run()  # the store answers again
+    assert not at.exception, at.exception
+    assert not at.success and not at.error  # said once
+    assert at.text_area(key=f"note-{key}").value == ""
+    assert at.radio(key=f"choice-{key}").value is None
+
+
+def _recorded_then_the_rerun_stops(data_dir, db, monkeypatch, read="other_ledgers",
+                                   outstanding=False):
+    """A decision is recorded, the rerun after it is refused a read, and the store answers again."""
+    at = _run(data_dir, db, reviewer="ana")
+    if outstanding:
+        at.checkbox(key="outstanding_only").check().run()
+        assert not at.exception, at.exception
+    picked, key = at.selectbox(key="picked").value, _entry_key(at)
+    real, calls = getattr(ReviewStore, read), []
+
+    def refused_on_the_rerun(self, *args):
+        calls.append(1)
+        if len(calls) == 2:
+            raise _locked()
+        return real(self, *args)
+
+    monkeypatch.setattr(ReviewStore, read, refused_on_the_rerun)
+    _submit(at, "Escalate", "checked the purchase order")
+    assert [s.value for s in at.success] == ["Recorded: escalate by ana."]
+    assert [e.value for e in at.error] == [STOPS_HERE + LOCKED + END]
+    return at, picked, key
+
+
+def test_a_recorded_decision_is_not_given_back_as_a_draft_later(data_dir, tmp_path, monkeypatch):
+    """When the rerun after a recorded decision stopped, the decision just recorded was still
+    in the form's keys and was set aside with the drafts. The run that cleared the form left
+    it waiting, and one run later it was back in the form as if it were still being
+    recorded. It is no draft: its form is waiting to be cleared."""
+    at, _, key = _recorded_then_the_rerun_stops(data_dir, tmp_path / "review.sqlite", monkeypatch)
+    at.run()  # the store answers again: the form is cleared
+    assert not at.exception, at.exception
+    assert at.radio(key=f"choice-{key}").value is None
+
+    at.run()  # any later run of the page
+
+    assert not at.exception, at.exception
+    note, choice = at.text_area(key=f"note-{key}"), at.radio(key=f"choice-{key}")
+    assert (note.value, choice.value) == ("", None)
+    assert not note.proto.set_value and not choice.proto.set_value
+
+
+def test_another_decision_for_that_entry_is_recorded_not_thrown_away(
+        data_dir, tmp_path, identity, monkeypatch):
+    """The same fault from the reviewer's side: the next decision submitted for that entry was
+    overwritten by the one that had come back, refused as "just recorded", and lost."""
+    db = tmp_path / "review.sqlite"
+    at, picked, _ = _recorded_then_the_rerun_stops(data_dir, db, monkeypatch)
+    at.run()
+    assert not at.exception, at.exception
+
+    _submit(at, "Dismiss", "on second thoughts this is routine")
+
+    assert "That decision was just recorded." not in [w.value for w in at.warning]
+    history = ReviewStore(db, identity).history(picked)
+    assert history["decision"].tolist() == ["escalate", "dismiss"]
+    assert history["note"].tolist()[-1] == "on second thoughts this is routine"
+
+
+@pytest.mark.parametrize("read", ["decided_ids", "get_narrative"])
+def test_a_decision_recorded_before_a_stop_inside_the_tab_is_no_draft_either(
+        data_dir, tmp_path, identity, monkeypatch, read):
+    """The same at the two stops inside the first tab, whose message goes above the tab bar:
+    what is left out is left out wherever the run stops. At the outstanding filter's read
+    the recorded entry has left the queue, so it is brought back to look at its form."""
+    db = tmp_path / "review.sqlite"
+    at, picked, key = _recorded_then_the_rerun_stops(
+        data_dir, db, monkeypatch, read=read, outstanding=read == "decided_ids")
+    at.run()  # the store answers again
+    assert not at.exception, at.exception
+    if read == "decided_ids":
+        at.checkbox(key="outstanding_only").uncheck().run()
+        at.selectbox(key="picked").set_value(picked).run()
+    else:
+        at.run()  # any later run of the page
+    assert not at.exception, at.exception
+    note, choice = at.text_area(key=f"note-{key}"), at.radio(key=f"choice-{key}")
+    assert (note.value, choice.value) == ("", None)
+    assert not note.proto.set_value and not choice.proto.set_value
+
+    _submit(at, "Dismiss", "on second thoughts this is routine")
+
+    assert "That decision was just recorded." not in [w.value for w in at.warning]
+    assert ReviewStore(db, identity).history(picked)["decision"].tolist() == ["escalate", "dismiss"]
+
+
+def test_a_new_decision_for_an_entry_already_decided_is_a_draft_like_any_other(
+        data_dir, tmp_path, identity, monkeypatch):
+    """What is left out at a stop is the entry whose form is waiting to be cleared, not the
+    entry last decided. Once that form has been cleared, a new decision for the same entry
+    is a draft like any other: set aside when its run stops, given back, and recorded."""
+    db = tmp_path / "review.sqlite"
+    at = _run(data_dir, db, reviewer="ana")
+    picked, key = at.selectbox(key="picked").value, _entry_key(at)
+    _submit(at, "Escalate", "checked the purchase order")  # recorded, and the form cleared
+    assert at.radio(key=f"choice-{key}").value is None
+    real = ReviewStore.other_ledgers
+    _refusing(monkeypatch, "other_ledgers", _locked())
+
+    _submit(at, "Dismiss", "on second thoughts this is routine")
+
+    assert [e.value for e in at.error] == [STOPS_HERE + LOCKED + END]
+    monkeypatch.setattr(ReviewStore, "other_ledgers", real)
+    at.run()
+    assert not at.exception, at.exception
+    note, choice = at.text_area(key=f"note-{key}"), at.radio(key=f"choice-{key}")
+    assert (note.value, choice.value) == ("on second thoughts this is routine", "dismiss")
+    assert note.proto.set_value and choice.proto.set_value
+    _click_record(at)
+    assert ReviewStore(db, identity).history(picked)["decision"].tolist() == ["escalate", "dismiss"]
+
+
+def _kinds(block):
+    """The kinds of everything under ``block``, in page order."""
+    kinds = []
+    for _, node in sorted(block.children.items()):
+        kinds.append(node.type)
+        if getattr(node, "children", None):
+            kinds.extend(_kinds(node))
+    return kinds
+
+
+def test_the_confirmation_of_a_recorded_decision_stands_under_the_selector(data_dir, tmp_path):
+    """It is said once the entry's note has been read, one time, and where it was said
+    before that read was guarded: directly under the entry selector, above the entry's
+    scores. Drawn where the note is read, it stood below the entry's lines."""
+    at = _run(data_dir, tmp_path / "review.sqlite", reviewer="ana")
+
+    _submit(at, "Escalate", "checked the purchase order")
+
+    assert [s.value for s in at.success] == ["Recorded: escalate by ana."]
+    kinds = _kinds(at.tabs[0])
+    at_selector = kinds.index("selectbox")
+    assert kinds.count("success") == 1 and kinds[at_selector + 1] == "success"
+    assert "metric" in kinds[at_selector + 2:]
+
+
+@pytest.mark.parametrize("read", ["decided_ids", "get_narrative"])
+def test_a_decision_recorded_just_before_a_stop_inside_the_tab_is_said_above_that_error(
+        data_dir, tmp_path, monkeypatch, read):
+    """A stop inside the first tab says its error above the tab bar, and the confirmation of
+    a decision recorded on the run before goes there with it, first: drawn where the run
+    stopped, it would stand below the error and show on one tab only. At the note's read it
+    did: the page said "Recorded: ..." before it read the note, inside the tab. The
+    confirmation waits for the note now."""
+    at, _, _ = _recorded_then_the_rerun_stops(
+        data_dir, tmp_path / "review.sqlite", monkeypatch, read=read,
+        outstanding=read == "decided_ids")  # the read "Outstanding only" asks for
+    blocks = [[child.type for _, child in sorted(getattr(node, "children", {}).items())]
+              for _, node in sorted(at.main.children.items())]
+    said = next(inner for inner in blocks if "error" in inner)  # the block above the tab bar
+    assert [kind for kind in said if kind != "tab"] == ["success", "error", "caption"]
+    assert not any(tab.success or tab.error for tab in at.tabs)
+
+
+def test_a_stopped_run_forgets_the_filters_it_did_not_draw(data_dir, tmp_path, monkeypatch):
+    """A session keeps the value of a control a stopped run did not reach; the browser has
+    dropped the control and starts it again from its default. So the next run drew the queue
+    from filters the browser no longer showed, and under Streamlit 1.50 (where the selector
+    is another control once its options change) the click after that was thrown away. The
+    run forgets them when it stops, and both start from the defaults: each of the four the
+    queue always has (the fifth, the band, is in the next test). Seen from here only as the
+    keys leaving the session: up to Streamlit 1.65 AppTest drops them by itself one run
+    later, and from 1.66 it keeps them, as a session does."""
+    at = _run(data_dir, tmp_path / "review.sqlite", reviewer="ana")
+    severity, tests, agreement = (next(w for w in at.multiselect if w.label == label)
+                                  for label in ("Severity", "Test", "Tier agreement"))
+    amount = next(w for w in at.number_input if w.label == "Minimum amount")
+    assert severity.key.startswith("filter-severity|") and len(severity.options) > 1
+    severity.set_value(severity.options[:1])
+    tests.set_value(tests.options[:-1])
+    agreement.set_value(agreement.options[:-1])
+    amount.set_value(5000.0)
+    at.run()
+    assert not at.exception, at.exception
+    narrowed = (severity.key, tests.key, agreement.key, amount.key)
+    assert len(set(narrowed)) == 4 and all(key in at.session_state for key in narrowed)
+    _refusing(monkeypatch, "current", sqlite3.OperationalError("database is locked"))
+
+    at.run()
+
+    assert [e.value for e in at.error] == [STOPS_HERE + LOCKED + END]
+    assert not any(key in at.session_state for key in narrowed)
+
+
+def test_a_stopped_run_keeps_what_it_had_drawn_and_forgets_a_fiscal_year_it_had_not(
+        tmp_path, monkeypatch):
+    """The other half, and the fiscal year. A filter the run drew before it stopped is still
+    on the page with its value, so the session keeps it: forgotten, the next run drew the
+    queue from the defaults under a filter the browser still showed narrowed. The fiscal
+    year, in the sidebar, goes by the same rule, and so does the fifth filter, the band a
+    materiality adds."""
+    folder = tmp_path / "two-years"
+    main(["generate", "--start", "2024-12-01", "--end", "2025-01-31", "--out-dir", str(folder)])
+    at = _run_with(folder, tmp_path / "review.sqlite", materiality="50000")
+    everything = _queue_frame(at)["entry_id"].tolist()
+    severity = next(w for w in at.multiselect if w.label == "Severity")
+    severity.set_value(severity.options[:1])
+    at.selectbox(key="materiality_year").set_value(2024)  # the latest year, 2025, is the default
+    at.run()
+    assert not at.exception, at.exception
+    narrowed = _queue_frame(at)["entry_id"].tolist()
+    assert 0 < len(narrowed) < len(everything)
+    band = next(w for w in at.multiselect if w.label == "Materiality band")
+    assert band.key.startswith("filter-band|")
+    real = ReviewStore.get_narrative
+    _refusing(monkeypatch, "get_narrative", sqlite3.OperationalError("database is locked"))
+
+    at.run()  # stops inside the first tab, below the filters and the year
+
+    assert [e.value for e in at.error] == [STOPS_HERE + LOCKED + END]
+    assert at.session_state[severity.key] == severity.options[:1]
+    assert at.session_state["materiality_year"] == 2024
+    assert band.key in at.session_state
+    monkeypatch.setattr(ReviewStore, "get_narrative", real)
+    at.run()
+    assert not at.exception and not at.error
+    assert _queue_frame(at)["entry_id"].tolist() == narrowed  # the queue the filter still shows
+    assert at.selectbox(key="materiality_year").value == 2024
+    _refusing(monkeypatch, "other_ledgers", sqlite3.OperationalError("database is locked"))
+
+    at.run()  # stops in the sidebar, above all three
+
+    assert [e.value for e in at.error] == [STOPS_HERE + LOCKED + END]
+    assert not any(key in at.session_state for key in (severity.key, band.key, "materiality_year"))
+
+
+def _assert_given_back_and_recorded_once(at, db, identity, picked, key):
+    """The form shows what was being recorded, the browser is told so (an assigned key sets
+    ``set_value``; a value the script merely still holds does not), once, and it records.
+    The radio's own value travels in a field Streamlit renamed between 1.50 and 1.64, so
+    for the radio only the flag is read."""
+    note, choice = at.text_area(key=f"note-{key}"), at.radio(key=f"choice-{key}")
+    assert (note.value, choice.value) == ("checked the purchase order", "escalate")
+    assert note.proto.set_value and note.proto.value == "checked the purchase order"
+    assert choice.proto.set_value
+    at.run()
+    assert not at.exception, at.exception
+    assert not at.text_area(key=f"note-{key}").proto.set_value  # then the form is the reviewer's
+    assert not at.radio(key=f"choice-{key}").proto.set_value
+    _click_record(at)
+    history = ReviewStore(db, identity).history(picked)
+    assert history["decision"].tolist() == ["escalate"]
+    assert history["note"].tolist() == ["checked the purchase order"]
+
+
+@pytest.mark.parametrize("read", ["other_ledgers", "get_narrative"])
+def test_a_decision_being_recorded_when_a_read_fails_is_given_back_to_the_form(
+        data_dir, tmp_path, identity, monkeypatch, read):
+    """A run that stops before the form takes the form off the page, and a browser forgets
+    what was in a form it no longer shows: once the store answered again the form came back
+    empty (seen in a browser on Streamlit 1.50 and 1.64, on the open's own stop). What was
+    being recorded is set aside when the run stops and assigned back to the form."""
+    db = tmp_path / "review.sqlite"
+    at = _run(data_dir, db, reviewer="ana")
+    picked = at.selectbox(key="picked").value
+    key = _entry_key(at)
+    real = getattr(ReviewStore, read)
+    _refusing(monkeypatch, read, sqlite3.OperationalError("database is locked"))
+
+    _submit(at, "Escalate", "checked the purchase order")  # asserts the script raised nothing
+
+    assert [e.value for e in at.error] == [STOPS_HERE + LOCKED + END]
+    assert not any("Record decision" in b.label for b in at.button)
+    # Still refused. Up to Streamlit 1.65 the harness has forgotten the form by this run, so
+    # only what the first stop set aside brings it back; from 1.66 the session still holds
+    # it, and the second-stop test further down is what reads that a second stop adds.
+    at.run()
+    assert not at.exception, at.exception
+    assert [e.value for e in at.error] == [STOPS_HERE + LOCKED + END]
+    monkeypatch.setattr(ReviewStore, read, real)
+    assert ReviewStore(db, identity).history(picked).empty  # no write followed the failed read
+
+    at.run()
+    assert not at.exception, at.exception
+    _assert_given_back_and_recorded_once(at, db, identity, picked, key)
+
+
+def test_a_decision_being_recorded_when_the_file_cannot_be_opened_is_given_back_too(
+        data_dir, tmp_path, identity):
+    """The same through SQLite itself, and for the open's stop, which was there before: the
+    file is unreadable at the click and readable again afterwards."""
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("root reads a file with no permissions")
+    db = tmp_path / "review.sqlite"
+    at = _run(data_dir, db, reviewer="ana")
+    picked = at.selectbox(key="picked").value
+    key = _entry_key(at)
+    db.chmod(0o000)
+
+    _submit(at, "Escalate", "checked the purchase order")  # asserts the script raised nothing
+
+    assert len(at.error) == 1 and "cannot be opened as a SQLite database" in at.error[0].value
+    assert not any("Record decision" in b.label for b in at.button)
+    db.chmod(0o644)
+    assert ReviewStore(db, identity).history(picked).empty
+
+    at.run()
+    assert not at.exception, at.exception
+    _assert_given_back_and_recorded_once(at, db, identity, picked, key)
+
+
+def test_a_recorded_decision_s_draft_is_cleared_for_the_browser_too(data_dir, tmp_path):
+    """The page removed the draft's keys once a decision was recorded. That resets the value
+    for the script and tells the browser nothing: on Streamlit 1.50 and 1.64 a browser went
+    on showing the choice and the note just recorded, and sent them back with the next
+    submit. AppTest has no browser, so its values read as cleared either way; what a browser
+    is told is ``set_value`` on the widget, and only an assigned key sets it."""
+    at = _run(data_dir, tmp_path / "review.sqlite", reviewer="ana")
+    key = _entry_key(at)
+
+    _submit(at, "Escalate", "checked the purchase order")
+
+    assert any(s.value == "Recorded: escalate by ana." for s in at.success)
+    note, choice = at.text_area(key=f"note-{key}"), at.radio(key=f"choice-{key}")
+    assert (note.value, choice.value) == ("", None)
+    assert note.proto.set_value and note.proto.value == ""
+    assert choice.proto.set_value
+    at.run()  # on that run only: the form is not reset under a reviewer who is typing
+    assert not at.exception, at.exception
+    assert not at.text_area(key=f"note-{key}").proto.set_value
+    assert not at.radio(key=f"choice-{key}").proto.set_value
+
+
+@pytest.mark.parametrize("outstanding", [False, True])
+def test_a_decision_being_recorded_on_another_entry_comes_back_with_its_entry(
+        data_dir, tmp_path, identity, monkeypatch, outstanding):
+    """A run that stops before the queue takes the entry selector and "Outstanding only" off
+    the page with the form, and a browser starts a control it is shown again from its
+    default: the selector on the queue's first entry, the box unticked. Given back to the
+    form alone, the decision came back only for a reviewer who was on the first entry. On
+    any other the page returned to the first with an empty form, or (the session still
+    holding the entry the browser had let go) drew the right form and threw the next click
+    away. The two controls are set aside with the draft and assigned back, so the browser is
+    told which entry it is. Up to Streamlit 1.65 AppTest forgets more than a session does
+    after a stopped run (it drops what it did not send, where a session keeps it, and
+    AppTest from 1.66), so what is read here is what the browser is told: the value and
+    ``set_value``. Checked in a browser as well."""
+    db = tmp_path / "review.sqlite"
+    at = _run(data_dir, db, reviewer="ana")
+    first, _, third = at.selectbox(key="picked").options[:3]
+    if outstanding:
+        at.checkbox(key="outstanding_only").check().run()
+    at.selectbox(key="picked").set_value(third).run()
+    assert not at.exception, at.exception
+    key = _entry_key(at)
+    real = ReviewStore.other_ledgers
+    _refusing(monkeypatch, "other_ledgers", sqlite3.OperationalError("database is locked"))
+
+    _submit(at, "Escalate", "checked the purchase order")  # asserts the script raised nothing
+
+    assert [e.value for e in at.error] == [STOPS_HERE + LOCKED + END]
+    assert not at.selectbox and not at.checkbox  # off the page with the form
+    monkeypatch.setattr(ReviewStore, "other_ledgers", real)
+    at.run()
+    assert not at.exception, at.exception
+    entry, box = at.selectbox(key="picked"), at.checkbox(key="outstanding_only")
+    assert entry.value == third and entry.proto.set_value
+    assert box.value is outstanding and box.proto.set_value
+    assert _entry_key(at) == key
+    _assert_given_back_and_recorded_once(at, db, identity, third, key)
+    assert ReviewStore(db, identity).history(first).empty
+
+
+def _stopped_on_the_third_entry(data_dir, db, monkeypatch):
+    """A decision submitted on the queue's third entry with "Outstanding only" ticked, on a
+    run that stops before it draws either control; then the store answers again."""
+    at = _run(data_dir, db, reviewer="ana")
+    first, _, third = at.selectbox(key="picked").options[:3]
+    at.checkbox(key="outstanding_only").check().run()
+    at.selectbox(key="picked").set_value(third).run()
+    assert not at.exception, at.exception
+    real = ReviewStore.other_ledgers
+    _refusing(monkeypatch, "other_ledgers", sqlite3.OperationalError("database is locked"))
+    _submit(at, "Escalate", "checked the purchase order")
+    assert [e.value for e in at.error] == [STOPS_HERE + LOCKED + END]
+    monkeypatch.setattr(ReviewStore, "other_ledgers", real)
+    return at, first, third
+
+
+def test_an_entry_that_left_the_queue_meanwhile_is_let_go(data_dir, tmp_path, identity, monkeypatch):
+    """What was set aside is given back only where it still fits. An entry decided elsewhere
+    while the page was stopped is no longer in an "Outstanding only" queue: the selector
+    starts on the queue's first entry, as it would have without the stop. Assigned all the
+    same, Streamlit 1.50 takes a value that is no option, and the page inspected an entry
+    outside its queue. From 1.64 Streamlit falls back to the first entry by itself, and
+    tells the browser so whether the page assigned the value or the session only still held
+    it, as a session does after a stopped run (and AppTest from 1.66): so what the browser
+    is told on this run says nothing about the page, and is not read. And the entry is let
+    go for good: when it is in the queue again, the reviewer is not moved to it."""
+    db = tmp_path / "review.sqlite"
+    at, first, third = _stopped_on_the_third_entry(data_dir, db, monkeypatch)
+    ReviewStore(db, identity).record(Decision(third, "dismiss", "ben", "seen elsewhere"))
+
+    at.run()
+
+    assert not at.exception, at.exception
+    entry = at.selectbox(key="picked")
+    assert entry.value == first and third not in entry.options
+    assert at.checkbox(key="outstanding_only").value is True
+    assert ReviewStore(db, identity).history(third)["decision"].tolist() == ["dismiss"]
+
+    at.checkbox(key="outstanding_only").uncheck().run()  # the entry is in the queue again
+
+    assert not at.exception, at.exception
+    entry = at.selectbox(key="picked")
+    assert third in entry.options and entry.value == first and not entry.proto.set_value
+
+
+def test_the_selector_and_the_box_are_the_reviewer_s_again_once_given_back(
+        data_dir, tmp_path, monkeypatch):
+    """Given back once, as the form's two widgets are. Assigned again on a later run, the
+    selector pulled a reviewer who had picked another entry back to the old one, and the
+    box ticked itself again."""
+    at, first, third = _stopped_on_the_third_entry(data_dir, tmp_path / "review.sqlite", monkeypatch)
+    at.run()
+    assert not at.exception, at.exception
+    entry, box = at.selectbox(key="picked"), at.checkbox(key="outstanding_only")
+    assert entry.value == third and entry.proto.set_value
+    assert box.value is True and box.proto.set_value
+
+    at.run()  # a later run tells the browser nothing about either
+
+    assert not at.exception, at.exception
+    assert not at.selectbox(key="picked").proto.set_value
+    assert not at.checkbox(key="outstanding_only").proto.set_value
+    at.selectbox(key="picked").set_value(first).run()
+    assert not at.exception, at.exception
+    assert at.selectbox(key="picked").value == first
+    at.checkbox(key="outstanding_only").uncheck().run()
+    assert not at.exception, at.exception
+    assert at.checkbox(key="outstanding_only").value is False
+    assert at.selectbox(key="picked").value == first
+
+
+def test_a_box_unticked_at_a_stop_that_had_drawn_it_stays_unticked(data_dir, tmp_path, monkeypatch):
+    """Only what the stopped run had not drawn is set aside. "Outstanding only" is drawn
+    before the read it asks for, so at that read's stop it is still on the page, and
+    unticking it is the way out. Set aside all the same, it was ticked again by the next
+    run, which made the refused read again and stopped again."""
+    at = _run(data_dir, tmp_path / "review.sqlite", reviewer="ana")
+    _refusing(monkeypatch, "decided_ids", sqlite3.OperationalError("database is locked"))
+    at.checkbox(key="outstanding_only").check().run()
+    assert [e.value for e in at.error] == [STOPS_HERE + LOCKED + END]
+
+    at.checkbox(key="outstanding_only").uncheck().run()
+
+    assert not at.exception, at.exception
+    box = at.checkbox(key="outstanding_only")
+    assert box.value is False and not box.proto.set_value and not at.error
+
+
+def test_the_next_entry_s_form_is_not_cleared_for_the_one_just_recorded(data_dir, tmp_path):
+    """The clear is for the recorded entry's own form. With "Outstanding only" ticked that
+    entry leaves the queue, and the form drawn on the next run is another entry's: it is
+    left alone. Cleared too, a draft waiting for that entry was held back a run, and a
+    click on that run was refused as a duplicate."""
+    at = _run(data_dir, tmp_path / "review.sqlite", reviewer="ana")
+    at.checkbox(key="outstanding_only").check().run()
+    first, second = at.selectbox(key="picked").options[:2]
+
+    _submit(at, "Escalate", "checked the purchase order")
+
+    assert any(s.value == "Recorded: escalate by ana." for s in at.success)
+    entry = at.selectbox(key="picked")
+    assert first not in entry.options and entry.value == second
+    key = _entry_key(at)
+    assert not at.radio(key=f"choice-{key}").proto.set_value
+    assert not at.text_area(key=f"note-{key}").proto.set_value
+
+
+def test_a_draft_set_aside_waits_for_its_own_entry_s_form(data_dir, tmp_path, identity, monkeypatch):
+    """Whichever form was drawn next took everything that had been set aside, so a look at
+    another entry on the way back threw the waiting draft away."""
+    db = tmp_path / "review.sqlite"
+    at = _run(data_dir, db, reviewer="ana")
+    other, mine = at.selectbox(key="picked").options[:2]
+    at.selectbox(key="picked").set_value(mine).run()
+    key = _entry_key(at)
+    real = ReviewStore.get_narrative
+    _refusing(monkeypatch, "get_narrative", sqlite3.OperationalError("database is locked"))
+    _submit(at, "Escalate", "checked the purchase order")
+    assert [e.value for e in at.error] == [STOPS_HERE + LOCKED + END]
+    monkeypatch.setattr(ReviewStore, "get_narrative", real)
+
+    at.selectbox(key="picked").set_value(other).run()  # the selector was drawn before that stop
+    assert not at.exception, at.exception
+    other_key = _entry_key(at)
+    assert other_key != key
+    assert at.radio(key=f"choice-{other_key}").value is None
+    assert not at.text_area(key=f"note-{other_key}").value
+
+    at.selectbox(key="picked").set_value(mine).run()
+    assert not at.exception, at.exception
+    _assert_given_back_and_recorded_once(at, db, identity, mine, key)
+    assert ReviewStore(db, identity).history(other).empty
+
+
+def test_a_draft_that_waits_survives_a_second_stop_with_another_entry_on_the_page(
+        data_dir, tmp_path, identity, monkeypatch):
+    """A second stopped run adds to what the first set aside; it does not start from
+    nothing. Here the draft waits while another entry is on the page: its own form is not
+    drawn, the session no longer holds its values, and what waits is the only copy. (A
+    second stop straight after the first shows this only up to Streamlit 1.65: from 1.66
+    AppTest, like a session, still holds the form's values there and sets them aside again.)"""
+    db = tmp_path / "review.sqlite"
+    at = _run(data_dir, db, reviewer="ana")
+    other, mine = at.selectbox(key="picked").options[:2]
+    at.selectbox(key="picked").set_value(mine).run()
+    key = _entry_key(at)
+    real = ReviewStore.get_narrative
+    _refusing(monkeypatch, "get_narrative", sqlite3.OperationalError("database is locked"))
+    _submit(at, "Escalate", "checked the purchase order")  # the first stop: the draft is set aside
+    assert [e.value for e in at.error] == [STOPS_HERE + LOCKED + END]
+    monkeypatch.setattr(ReviewStore, "get_narrative", real)
+    at.selectbox(key="picked").set_value(other).run()  # a look at another entry: a whole run
+    assert not at.exception, at.exception
+    assert _entry_key(at) != key
+    real = ReviewStore.other_ledgers
+    _refusing(monkeypatch, "other_ledgers", sqlite3.OperationalError("database is locked"))
+
+    at.run()  # the second stop, with the draft's form off the page
+
+    assert [e.value for e in at.error] == [STOPS_HERE + LOCKED + END]
+    monkeypatch.setattr(ReviewStore, "other_ledgers", real)
+    at.run()
+    assert not at.exception, at.exception
+    at.selectbox(key="picked").set_value(mine).run()
+    assert not at.exception, at.exception
+    _assert_given_back_and_recorded_once(at, db, identity, mine, key)
+    assert ReviewStore(db, identity).history(other).empty
+
+
+NO_CHOICE = "Choose a decision first: nothing was recorded, and what you typed is kept."
+
+
+def test_a_form_with_no_decision_chosen_records_nothing(data_dir, tmp_path, identity):
+    """The form opened on "accept", so a click on a form nobody had filled in recorded an
+    accept. No decision is chosen until the reviewer chooses one."""
+    db = tmp_path / "review.sqlite"
+    at = _run(data_dir, db, reviewer="ana")
+    picked = at.selectbox(key="picked").value
+    key = _entry_key(at)
+    assert at.radio(key=f"choice-{key}").value is None
+    at.text_area(key=f"note-{key}").set_value("checked the purchase order")
+
+    _click_record(at)
+
+    said = [w.value for w in at.warning]
+    assert NO_CHOICE in said and "That decision was just recorded." not in said
+    assert ReviewStore(db, identity).history(picked).empty and not at.success
+    assert at.text_area(key=f"note-{key}").value == "checked the purchase order"
+
+
+def test_a_second_click_after_a_decision_was_recorded_records_nothing(data_dir, tmp_path, identity):
+    """Once the cleared form reached the browser as "accept" with an empty note, a second
+    click on Record decision recorded exactly that, as the entry's latest decision: an
+    escalation became an accept the reviewer never chose. (While the browser still showed
+    the decision just recorded, the fault this change fixes, the second click sent the same
+    values and the double-click guard refused it.)"""
+    db = tmp_path / "review.sqlite"
+    at = _run(data_dir, db, reviewer="ana")
+    picked = at.selectbox(key="picked").value
+    _submit(at, "Escalate", "checked the purchase order")
+    assert any(s.value == "Recorded: escalate by ana." for s in at.success)
+
+    _click_record(at)  # the form as it now stands: no choice, no note
+
+    said = [w.value for w in at.warning]
+    assert NO_CHOICE in said and "That decision was just recorded." not in said
+    history = ReviewStore(db, identity).history(picked)
+    assert history["decision"].tolist() == ["escalate"] and not at.success
+
+
+def test_a_click_that_arrives_while_the_form_is_being_cleared_records_nothing(
+        data_dir, tmp_path, identity):
+    """A second click can reach the script before the rerun that clears the form has drawn
+    it: it carries the decision just recorded, and the run it starts is the one that
+    clears. The cleared values were read as a new decision ("accept", no note) and recorded.
+    That click is the duplicate, whatever the form holds by then."""
+    db = tmp_path / "review.sqlite"
+    at = _run(data_dir, db, reviewer="ana")
+    picked = at.selectbox(key="picked").value
+    key = _entry_key(at)
+    _submit(at, "Escalate", "checked the purchase order")
+    # The second click: the browser's own values, on a run that still has the clear to do.
+    at.session_state["clear-decision"] = key
+    at.radio(key=f"choice-{key}").set_value("Escalate")
+    at.text_area(key=f"note-{key}").set_value("checked the purchase order")
+
+    _click_record(at)
+
+    said = [w.value for w in at.warning]
+    assert "That decision was just recorded." in said and NO_CHOICE not in said
+    history = ReviewStore(db, identity).history(picked)
+    assert history["decision"].tolist() == ["escalate"] and not at.success
+    assert at.radio(key=f"choice-{key}").value is None  # and the form is cleared
+
+
+def test_the_same_decision_sent_again_is_refused_as_just_recorded(data_dir, tmp_path, identity):
+    """The guard's other half: the same choice and note for the same entry, on a run that is
+    not the clearing one. A rerun cut short before it redrew the form leaves the browser
+    holding the decision just recorded, and a click then sends exactly that."""
+    db = tmp_path / "review.sqlite"
+    at = _run(data_dir, db, reviewer="ana")
+    picked = at.selectbox(key="picked").value
+    _submit(at, "Escalate", "checked the purchase order")
+
+    _submit(at, "Escalate", "checked the purchase order")
+
+    said = [w.value for w in at.warning]
+    assert "That decision was just recorded." in said and NO_CHOICE not in said
+    history = ReviewStore(db, identity).history(picked)
+    assert history["decision"].tolist() == ["escalate"] and not at.success
+
+
+@pytest.mark.parametrize("read", ["decided_ids", "get_narrative"])
+def test_a_refusal_inside_the_queue_tab_is_said_above_the_tab_bar(
+        data_dir, tmp_path, monkeypatch, read):
+    """Two of the reads that end the run sit inside the first tab. Said there, their refusal
+    left the other three tabs blank with no word for a reviewer who had one of them open."""
+    at = _run(data_dir, tmp_path / "review.sqlite", reviewer="ana")
+    _refusing(monkeypatch, read, sqlite3.OperationalError("database is locked"))
+
+    at.checkbox(key="outstanding_only").check().run()  # decided_ids is read only then
+
+    assert not at.exception, at.exception
+    assert [e.value for e in at.error] == [STOPS_HERE + LOCKED + END]
+    assert at.tabs and not any(tab.error or tab.caption for tab in at.tabs)
+    # Above it: the block that holds the message is drawn before the one that holds the tabs.
+    blocks = [[child.type for _, child in sorted(getattr(node, "children", {}).items())]
+              for _, node in sorted(at.main.children.items())]
+    assert next(i for i, inner in enumerate(blocks) if "error" in inner) < next(
+        i for i, inner in enumerate(blocks) if "tab" in inner)
+
+
 def _legacy_note_on_screen(data_dir, db, identity):
     """A file holding one note from before ledgers were keyed, for the entry the dashboard shows."""
     picked = _run(data_dir, db, reviewer="ana").selectbox(key="picked").value
@@ -734,12 +1644,110 @@ def test_starting_from_scratch_is_an_explicit_choice(data_dir, tmp_path, identit
     assert not any("adopt-legacy" in w.value for w in at.sidebar.warning)  # the choice is made
 
 
-def test_the_same_decision_on_a_shared_entry_id_in_another_ledger_is_recorded(
-        data_dir, tmp_path, identity):
-    """The double-click guard, the draft and the remembered note id belong to one
-    ledger's entry: a second ledger's entry with the same id is a different entry."""
-    import pandas as pd
+def test_starting_from_scratch_is_still_the_choice_after_a_stopped_run(
+        data_dir, tmp_path, identity, monkeypatch):
+    """The box is drawn after the first reads, so a run that stops before it takes it off
+    the page and the browser shows it unticked again, while the script still held the tick:
+    the next click was thrown away with the button disabled. The tick is given back, once,
+    as the selector and "Outstanding only" are: given back again on a later run, the box
+    ticked itself after the reviewer had unticked it."""
+    db = tmp_path / "review.sqlite"
+    _legacy_note_on_screen(data_dir, db, identity)
+    at = _run(data_dir, db, reviewer="ana")
+    _start_fresh_box(at).check()
+    at.run()
+    assert not _record_button(at).disabled
+    real = ReviewStore.other_ledgers
+    _refusing(monkeypatch, "other_ledgers", sqlite3.OperationalError("database is locked"))
+    at.run()
+    assert [e.value for e in at.error] == [STOPS_HERE + LOCKED + END]
+    monkeypatch.setattr(ReviewStore, "other_ledgers", real)
 
+    at.run()
+
+    assert not at.exception, at.exception
+    box = _start_fresh_box(at)
+    assert box.value is True and box.proto.set_value
+    assert not _record_button(at).disabled
+
+    at.run()  # a later run tells the browser nothing about it
+
+    assert not _start_fresh_box(at).proto.set_value
+    _start_fresh_box(at).uncheck()
+    at.run()
+    assert not at.exception, at.exception
+    assert _start_fresh_box(at).value is False and _record_button(at).disabled
+
+
+def test_a_start_from_scratch_box_unticked_at_a_stop_that_had_drawn_it_stays_unticked(
+        data_dir, tmp_path, identity, monkeypatch):
+    """Only a box the stopped run had not drawn is set aside. At a stop further down (the
+    read of the decisions, below the box) the box is still on the page, and an untick there
+    is the reviewer's. Set aside all the same, the next run ticked it again and enabled
+    Record decision, on a file whose legacy rows a write shuts out."""
+    db = tmp_path / "review.sqlite"
+    _legacy_note_on_screen(data_dir, db, identity)
+    at = _run(data_dir, db, reviewer="ana")
+    _start_fresh_box(at).check()
+    at.run()
+    assert not _record_button(at).disabled
+    real = ReviewStore.current
+    _refusing(monkeypatch, "current", sqlite3.OperationalError("database is locked"))
+    at.run()
+    assert [e.value for e in at.error] == [STOPS_HERE + LOCKED + END]
+    assert _start_fresh_box(at).value is True  # still on the page
+    monkeypatch.setattr(ReviewStore, "current", real)
+
+    _start_fresh_box(at).uncheck()
+    at.run()
+
+    assert not at.exception, at.exception
+    box = _start_fresh_box(at)
+    assert box.value is False and not box.proto.set_value
+    assert _record_button(at).disabled
+
+
+def test_a_tick_set_aside_at_a_stop_is_given_back_to_its_own_file_only(
+        data_dir, tmp_path, identity, monkeypatch):
+    """The tick waits under its own key, which names the file and the ledger. Another file
+    that also holds unadopted legacy rows asks again, unticked, after a stop as without one:
+    a tick carried over would let one click there shut its legacy rows out. And the first
+    file, named again, has its tick back, as a draft set aside comes back with its file
+    (without a stop a visit to another file asks again: Streamlit forgets a box it no
+    longer draws)."""
+    db, other = tmp_path / "review.sqlite", tmp_path / "other.sqlite"
+    _legacy_note_on_screen(data_dir, db, identity)
+    _legacy_note_on_screen(data_dir, other, identity)
+    at = _run(data_dir, db, reviewer="ana")
+    _start_fresh_box(at).check()
+    at.run()
+    assert not _record_button(at).disabled
+    real = ReviewStore.other_ledgers
+    _refusing(monkeypatch, "other_ledgers", sqlite3.OperationalError("database is locked"))
+    at.run()
+    assert [e.value for e in at.error] == [STOPS_HERE + LOCKED + END]
+    monkeypatch.setattr(ReviewStore, "other_ledgers", real)
+
+    at.text_input(key="db_path").set_value(str(other))
+    at.run()
+
+    assert not at.exception, at.exception
+    box = _start_fresh_box(at)
+    assert box.value is False and not box.proto.set_value
+    assert _record_button(at).disabled
+    assert ReviewStore(other, identity).adopt_legacy()["narratives"] == 1  # still adoptable
+
+    at.text_input(key="db_path").set_value(str(db))
+    at.run()
+
+    assert not at.exception, at.exception
+    box = _start_fresh_box(at)
+    assert box.value is True and box.proto.set_value
+    assert not _record_button(at).disabled
+
+
+def _the_same_entries_in_another_ledger(data_dir, tmp_path, identity):
+    """A second ledger with the same entry ids and flags and another digest: its folder and id."""
     from ledgerlens import jets
     from ledgerlens.ingest import ledger_identity, load_csv
 
@@ -752,7 +1760,36 @@ def test_the_same_decision_on_a_shared_entry_id_in_another_ledger_is_recorded(
     lines.to_csv(other / "ledger.csv", index=False)
     other_id = ledger_identity(load_csv(other / "ledger.csv"), other / "ledger.csv")
     assert other_id != identity
+    return other, other_id
 
+
+def test_a_tick_for_one_ledger_is_not_another_ledger_s_on_the_same_file(data_dir, tmp_path, identity):
+    """The other half of the box's key. Two ledgers can be reviewed against one database,
+    and its legacy rows can be adopted into either: a tick made for the first must not open
+    writes for the second, whose box asks again."""
+    other, other_id = _the_same_entries_in_another_ledger(data_dir, tmp_path, identity)
+    db = tmp_path / "review.sqlite"
+    _legacy_note_on_screen(data_dir, db, identity)
+    at = _run(data_dir, db, reviewer="ana")
+    _start_fresh_box(at).check()
+    at.run()
+    assert not _record_button(at).disabled
+
+    at.text_input(key="ledger_path").set_value(str(other / "ledger.csv"))
+    at.run()
+
+    assert not at.exception, at.exception
+    assert any("adopt-legacy" in w.value for w in at.sidebar.warning)
+    assert not _start_fresh_box(at).value
+    assert _record_button(at).disabled
+    assert other_id not in set(ReviewStore(db, other_id).ledgers()["ledger_id"])  # nothing written
+
+
+def test_the_same_decision_on_a_shared_entry_id_in_another_ledger_is_recorded(
+        data_dir, tmp_path, identity):
+    """The double-click guard, the draft and the remembered note id belong to one
+    ledger's entry: a second ledger's entry with the same id is a different entry."""
+    other, other_id = _the_same_entries_in_another_ledger(data_dir, tmp_path, identity)
     db = tmp_path / "review.sqlite"
     at = _run(data_dir, db, reviewer="ana")
     picked = at.selectbox(key="picked").value
@@ -768,7 +1805,7 @@ def test_the_same_decision_on_a_shared_entry_id_in_another_ledger_is_recorded(
     at.run()
     assert at.selectbox(key="picked").value == picked
     other_key = _entry_key(at)
-    assert at.radio(key=f"choice-{other_key}").value == "accept"  # the form starts over
+    assert at.radio(key=f"choice-{other_key}").value is None  # the form starts over
     assert not at.text_area(key=f"note-{other_key}").value
     assert other_key != key
     _submit(at, "Accept", "")

@@ -127,6 +127,136 @@ def _sdk_errors() -> tuple:
     return (APIError,)
 
 
+def _refusal(exc: BaseException) -> sqlite3.Error | None:
+    """What the review database itself said behind a failed read, or None if the fault is ours.
+
+    Five of the page's seven reads go through pandas, which raises its own DatabaseError
+    (an OSError, not a sqlite3.Error) and keeps what SQLite raised as the cause. The
+    driver's errors for a value it cannot bind are sqlite3.Errors too, and they are ours
+    (``CALLER_FAULTS``), wrapped or not.
+    """
+    cause = exc.__cause__ if isinstance(exc, pd.errors.DatabaseError) else exc
+    if isinstance(cause, sqlite3.Error) and not isinstance(cause, CALLER_FAULTS):
+        return cause
+    return None
+
+
+#: The decision form's two widgets, keyed per entry: what a reviewer was recording.
+DRAFT_KEYS = ("choice-", "note-")
+#: The controls that say which entry that was, and whether a decision may be written at
+#: all. A run that stops before it draws them takes them off the page as well, and a browser
+#: starts a control it is shown again from its default: the selector on the queue's first
+#: entry, "Outstanding only" and "Start this ledger's review from scratch" unticked.
+KEPT_CONTROLS = ("outstanding_only", "picked")
+KEPT_PREFIXES = ("start-fresh-",)
+#: The controls such a run forgets instead, so the script starts them from their defaults as
+#: the browser does: the queue's other filters (see _filter) and the fiscal year. Left in
+#: the session, they drew the next run from values the browser no longer showed, and under
+#: Streamlit 1.50 the click after that was thrown away. One the run had drawn before it
+#: stopped is still on the page with its value, and is kept.
+FORGOTTEN_PREFIXES = ("filter-", "materiality_year")
+#: What is said under every stop. Rerun, not reload: a reload starts a new session, and
+#: what was set aside goes with the old one.
+STOPPED = ("When the file can be used again, or another is named in the sidebar, rerun the page: "
+           "Rerun, in the menu at the top right. Reloading the browser tab starts a new session "
+           "and loses what was being recorded. With this file again, the entry, \"Outstanding "
+           "only\" and the decision you submitted come back; a filter or a fiscal year this "
+           "page no longer shows starts over.")
+_DRAWN: set[str] = set()  # the controls named above that this run has drawn (the script runs afresh each time)
+_NOTICE: list = []  # the placeholder above the tab bar, once the run has reached it
+
+
+def _give_back(key: str, allowed=None) -> None:
+    """Before a kept control is drawn: assign what a stopped run set aside for it.
+
+    Assigned, so the browser is told (an assigned key reaches it as the widget's new
+    value): it had dropped the control and would show its default, and send that default
+    with the next click, whatever the script still held. A value that is no longer one of
+    ``allowed`` (an entry that left the queue) is let go.
+    """
+    waiting = st.session_state.get("drafts-kept", {})
+    if key in waiting:
+        st.session_state["drafts-kept"] = {k: v for k, v in waiting.items() if k != key}
+        if allowed is None or waiting[key] in allowed:
+            st.session_state[key] = waiting[key]
+    _DRAWN.add(key)
+
+
+def _filter(name: str, options=()) -> str:
+    """The key of one of the queue's filters, marked as drawn. Its options are part of the
+    key (the amount has none), so a filter is the control it was without one: another
+    ledger's options make it another filter, and a choice is never carried to a queue that
+    could not hold it."""
+    key = f"filter-{name}|" + "|".join(map(str, options))
+    _DRAWN.add(key)
+    return key
+
+
+def _stop_for_the_store(message: str) -> None:
+    """Say that the review database failed, and end this run there.
+
+    Two things would otherwise be lost with the rest of the page. A write the run before
+    did make is said here, once, as it would have been further down (the flash): an error
+    alone, straight after a click, reads as if the click had failed. And the decision a
+    reviewer was recording is set aside, with the controls that say which entry it was for
+    and whether it may be written: a run that stops before the form takes it all off the
+    page, the browser forgets what was in controls it no longer shows, and the next run
+    drew the form empty, on the queue's first entry. Each takes its value back when it is
+    next drawn. The filters and the fiscal year this run did not draw are forgotten here
+    as the browser forgets them, so the next run and the browser start from the same
+    queue. ``message`` can quote a path as typed or what SQLite said, so it goes through
+    ``md()``. Once the tab bar is drawn the message goes above it, where it shows whichever
+    tab is open.
+    """
+    place = _NOTICE[0].container() if _NOTICE else st
+    flash = st.session_state.pop("flash", None)
+    if flash:
+        place.success(flash)
+    place.error(md(message))
+    place.caption(STOPPED)
+    # A decision recorded on the run before is no draft: its form is waiting to be cleared.
+    recorded = st.session_state.get("clear-decision")
+    done = {f"{prefix}{recorded}" for prefix in DRAFT_KEYS} if recorded else set()
+    kept = dict(st.session_state.get("drafts-kept", {}))  # a second failed run adds to the first's
+    kept.update({key: value for key, value in st.session_state.items()
+                 if isinstance(key, str) and key not in done and (
+                     key.startswith(DRAFT_KEYS)
+                     or ((key in KEPT_CONTROLS or key.startswith(KEPT_PREFIXES))
+                         and key not in _DRAWN))})
+    st.session_state["drafts-kept"] = kept
+    for key in [key for key in st.session_state
+                if isinstance(key, str) and key.startswith(FORGOTTEN_PREFIXES) and key not in _DRAWN]:
+        del st.session_state[key]
+    st.stop()
+
+
+def _read(read, *args, otherwise: str | None = None):
+    """A read of the review database: what it returned, or a message where the store refuses.
+
+    The reads are never cached (a decision recorded a second ago has to show), so each one
+    opens the file again, and a file that was fine when the page opened it can refuse the
+    next read: locked past SQLite's wait, removed or replaced while a note was being
+    requested, a disk or iCloud error. Uncaught, that was Streamlit's traceback. The run
+    ends at the message, because what the page draws next is built on what could not be
+    read (the legacy check that gates writes, the queue's decisions, the note a decision
+    must point at), and no write may follow a read that failed. A read nothing else needs
+    passes ``otherwise``, the sentence shown in its place: the page goes on and the read
+    returns None. Only the store's refusals: a fault of our own stays a traceback.
+    """
+    try:
+        return read(*args)
+    except (sqlite3.Error, pd.errors.DatabaseError) as exc:
+        refusal = _refusal(exc)
+        if refusal is None:
+            raise
+        said = f"{type(refusal).__name__}: {refusal}"
+        if otherwise is not None:
+            st.error(md(f"{otherwise} ({said})."))
+            return None
+        _stop_for_the_store(
+            f"The review database could not be read, so the page stops here ({said}).")
+
+
 def _ratio(value: float, defined: bool) -> str:
     """A ratio over nothing is not a figure, as ``summary`` says too."""
     return f"{value:.3f}" if defined else "undefined"
@@ -200,9 +330,10 @@ if labels_problem:
 # bound to this ledger's identity, so another ledger's notes never show here.
 try:
     store = ReviewStore(db_path, ledger_id)
-except RuntimeError as exc:  # a file from a newer version, or not a review database at all
-    st.error(str(exc))
-    st.stop()
+except RuntimeError as exc:
+    # In the store's own words: a file from a newer version, one that is no review database,
+    # one SQLite cannot read or prepare, a folder that cannot be made.
+    _stop_for_the_store(str(exc))
 st.sidebar.caption(f"Review rows keyed by `{ledger_id}`")
 # What JET-12 and JET-06 were run against. Names from a file are drawn as code spans, as
 # a flag's reason is, and the limit's "$" escaped so no pair of them starts maths.
@@ -211,7 +342,7 @@ st.sidebar.caption("Controls: approvers {} (JET-12) · approval limit {} (JET-06
     md(format_limit(controls.approval_limit)),
     "from " + code_span(controls.source) if controls.source is not None
     else "the synthetic company's (no controls file beside the ledger)"))
-others = store.other_ledgers()
+others = _read(store.other_ledgers)
 if not others.empty:
     # Surfaced, never shown as this ledger's: a file can hold several ledgers' review.
     st.sidebar.caption(f"This database also holds rows for {len(others)} other ledger(s): " + ", ".join(
@@ -223,20 +354,25 @@ if not others.empty:
 # every note again. Writes therefore wait for a choice, as narrate's refusal
 # does: adopt the rows from the command line, or start this ledger over. The
 # choice is made for one file: keyed like every per-entry widget, it is asked
-# again when the sidebar points at another database.
+# again when the sidebar points at another database. A tick a stopped run set
+# aside waits under that key, so it comes back to this file's box and no other,
+# also after a visit to another file, as a draft does (without a stop such a
+# visit asks again here too: Streamlit forgets a box it no longer draws).
 writes_blocked = False
-if LEGACY_LEDGER_ID in set(others["ledger_id"]) and ledger_id not in set(store.ledgers()["ledger_id"]):
+if (LEGACY_LEDGER_ID in set(others["ledger_id"])
+        and ledger_id not in set(_read(store.ledgers)["ledger_id"])):
     st.sidebar.warning(
         "Rows from before review data was keyed by ledger sit under 'legacy', and this ledger "
         "has none yet. If they were written for it, adopt them first: `ledgerlens adopt-legacy "
         f"{ledger_path} --db {db_path}` (no API calls). A note or a decision recorded here first "
         "would make adopting them impossible, and narrating would buy every note again."
     )
+    _give_back(f"start-fresh-{db_path}|{ledger_id}")
     writes_blocked = not st.sidebar.checkbox(
         "Start this ledger's review from scratch", key=f"start-fresh-{db_path}|{ledger_id}",
         help="The dashboard's --ignore-legacy: the legacy rows stay where they are, unadopted.",
     )
-current = store.current()
+current = _read(store.current)
 
 # ---- materiality: a band beside each entry's scores, never in them (rule 3) ----
 # Nothing below is cached: the band is one pass over the loaded frame, and the figures are
@@ -252,6 +388,7 @@ if materiality_text:
         years = sorted({int(year) for year in combined["fiscal_year"]})
         if len(years) > 1:  # the figures are set for one year's statements, as the sample's are
             # the latest year first: the one usually under audit
+            _DRAWN.add("materiality_year")
             materiality_year = st.sidebar.selectbox("Fiscal year for materiality", years,
                                                     index=len(years) - 1, key="materiality_year")
         else:
@@ -268,12 +405,18 @@ c2.metric("Flagged", int((combined["risk_score"] > 0).sum()))
 c3.metric("Flags raised", len(flags))
 c4.metric("Flag rate", "{:.2%}".format((combined["risk_score"] > 0).mean()))
 c5.metric("Decided", len(current))
-progress = store.summary()
+progress = _read(store.summary)
 if not progress.empty:
     st.caption("Review progress: " + ", ".join(
         f"{r.decision} {r.entries}" for r in progress.itertuples()
     ))
 
+# Two of the reads that end the run sit inside the first tab (the history's is there too,
+# and does not end it). Their refusal is said here, above the tab bar: said inside that
+# tab, it left the other three blank with no word. A placeholder, not a container: left
+# empty, a container gave Streamlit 1.50's test harness each element below it twice after
+# a rerun.
+_NOTICE.append(st.empty())
 tab_queue, tab_tiers, tab_benford, tab_quality = st.tabs(
     ["Exception queue", "Tier comparison", "Benford", "Detection quality"]
 )
@@ -283,22 +426,28 @@ with tab_queue:
     left, right = st.columns([1, 3])
     with left:
         severities = sorted(flags["severity"].unique()) if not flags.empty else []
-        chosen_sev = st.multiselect("Severity", severities, default=severities)
+        chosen_sev = st.multiselect("Severity", severities, default=severities,
+                                    key=_filter("severity", severities))
         test_ids = sorted(flags["test_id"].unique()) if not flags.empty else []
-        chosen_tests = st.multiselect("Test", test_ids, default=test_ids)
+        chosen_tests = st.multiselect("Test", test_ids, default=test_ids,
+                                      key=_filter("test", test_ids))
         agreements = sorted(combined["agreement"].unique())
-        chosen_agree = st.multiselect("Tier agreement", agreements, default=agreements)
-        min_amount = st.number_input("Minimum amount", value=0.0, step=1000.0)
+        chosen_agree = st.multiselect("Tier agreement", agreements, default=agreements,
+                                      key=_filter("agreement", agreements))
+        min_amount = st.number_input("Minimum amount", value=0.0, step=1000.0,
+                                     key=_filter("amount"))
+        _give_back("outstanding_only")
         outstanding_only = st.checkbox("Outstanding only", value=False, key="outstanding_only",
                                        help="Hide entries that already have a decision.")
         chosen_bands = None
         if materiality is not None:
-            # a filter the reviewer chooses, as the amount is, in the bands' own order. Not
-            # keyed, like the other filters: a choice kept across a change of ledger would
-            # empty the queue of a ledger that holds none of the band chosen.
+            # a filter the reviewer chooses, as the amount is, in the bands' own order. Keyed
+            # by its options, like the other filters: a choice kept across a change of ledger
+            # would empty the queue of a ledger that holds none of the band chosen.
             seen = set(combined["materiality_band"])
             present = [b for b in (*BANDS, OTHER_YEAR) if b in seen]
-            chosen_bands = st.multiselect("Materiality band", present, default=present)
+            chosen_bands = st.multiselect("Materiality band", present, default=present,
+                                          key=_filter("band", present))
 
     matching = flags[
         flags["severity"].isin(chosen_sev) & flags["test_id"].isin(chosen_tests)
@@ -313,7 +462,7 @@ with tab_queue:
     if chosen_bands is not None:
         queue = queue[queue["materiality_band"].isin(chosen_bands)]
     if outstanding_only:
-        queue = queue[~queue["entry_id"].isin(store.decided_ids())]
+        queue = queue[~queue["entry_id"].isin(_read(store.decided_ids))]
     queue = queue.merge(current[["entry_id", "decision", "reviewer"]], on="entry_id", how="left")
 
     with right:
@@ -328,12 +477,13 @@ with tab_queue:
 
     if not queue.empty:
         st.divider()
+        _give_back("picked", allowed=queue["entry_id"].tolist())
         picked = st.selectbox("Inspect entry", queue["entry_id"].tolist(), key="picked")
         row = combined[combined["entry_id"] == picked].iloc[0]
 
-        flash = st.session_state.pop("flash", None)
-        if flash:
-            st.success(flash)
+        # Where "Recorded: ..." is said, once the note below has been read: a run that stops
+        # at that read says it above its own error instead (see _stop_for_the_store).
+        said = st.empty()
 
         a, b, c, *rest = st.columns(4 if materiality is not None else 3)
         a.metric("Rule score", "{:.1f}".format(row["risk_score"]))
@@ -359,7 +509,10 @@ with tab_queue:
 
         # ---- narrative: advisory text, never a decision ----
         st.markdown("**Reviewer note** (written by Claude, advisory only)")
-        narrative = store.get_narrative(picked)
+        narrative = _read(store.get_narrative, picked)
+        flash = st.session_state.pop("flash", None)
+        if flash:
+            said.success(flash)
         # The note the reviewer actually read is the one rendered on the
         # *previous* run of this script: a submit reruns everything, and a
         # version written in between (a rewrite, another reviewer) would
@@ -427,16 +580,29 @@ with tab_queue:
 
         # ---- decision: a named human, append-only ----
         st.markdown("**Record a decision**")
-        choice_key, note_key = f"choice-{entry_key}", f"note-{entry_key}"
+        choice_key, note_key = (f"{prefix}{entry_key}" for prefix in DRAFT_KEYS)
         # The form is not cleared on submit: a refused submit (the note changed
         # while the reviewer was reading it) must not discard what they typed.
         # The draft is cleared here instead, on the rerun after a decision was
         # recorded, and each entry keeps its own draft in the meantime.
-        if st.session_state.pop("clear-decision", None) == entry_key:
+        clearing = st.session_state.pop("clear-decision", None) == entry_key
+        if clearing:
+            # Assigned, never removed. A removed key resets the value for this script and
+            # tells the browser nothing: it went on showing the decision just recorded, and
+            # sent it back with the next submit. An assigned key reaches the browser as the
+            # widget's new value. The choice is cleared to none: a form that came back on
+            # "accept" recorded an accept the reviewer never chose at a second click.
+            st.session_state[choice_key] = None
+            st.session_state[note_key] = ""
+        else:
+            # What a reviewer was recording when a run stopped for the store (see
+            # _stop_for_the_store), given back the same way, so the browser shows it again.
+            # Only this entry's: another entry's draft waits for its own form.
             for key in (choice_key, note_key):
-                st.session_state.pop(key, None)
+                _give_back(key)
         with st.form(key=f"decision-{entry_key}"):
-            choice = st.radio("Decision", DECISIONS, horizontal=True,
+            # No decision is chosen until the reviewer chooses one (rule 8).
+            choice = st.radio("Decision", DECISIONS, index=None, horizontal=True,
                               format_func=str.capitalize, key=choice_key)
             note = st.text_area("Note", placeholder="What you checked, or why this is fine.",
                                 key=note_key)
@@ -459,8 +625,13 @@ with tab_queue:
                 # that stopped the page).
                 st.warning("Enter your name in the sidebar first: nothing was recorded, and "
                            "what you typed is kept.")
-            elif st.session_state.get("last_decision") == signature:
+            elif clearing or st.session_state.get("last_decision") == signature:
+                # A click that arrives on the run that clears the form carries the decision
+                # just recorded: it is the second click, whatever the cleared form now holds.
                 st.warning("That decision was just recorded.")
+            elif choice is None:
+                st.warning("Choose a decision first: nothing was recorded, and what you typed "
+                           "is kept.")
             elif seen_id != latest_id:
                 # The note changed between the render the reviewer read and
                 # this submit. Recording the new id would claim they read it;
@@ -488,8 +659,9 @@ with tab_queue:
                     # Nothing was written (an uncommitted insert is rolled back), so
                     # nothing that marks it done is set either: the draft stays, and the
                     # same submit is not refused as a duplicate when it is retried.
-                    # record()'s own ValueErrors stay tracebacks: the radio gives a known
-                    # decision, the queue an entry, and a missing name is refused above.
+                    # record()'s own ValueErrors stay tracebacks: the decision is one of the
+                    # radio's (none chosen is refused above), the queue gives an entry, and
+                    # a missing name is refused above.
                     st.error(md(f"The decision was not recorded ({type(exc).__name__}: {exc}). "
                                 "What you typed is kept: record it again."))
                 else:
@@ -498,8 +670,12 @@ with tab_queue:
                     st.session_state["clear-decision"] = entry_key
                     st.rerun()
 
-        history = store.history(picked)
-        if not history.empty:
+        # The last thing the queue draws, and nothing else is built on it: where the store
+        # refuses this read (a file replaced while a note was being requested fails the save
+        # above and then this), the message stands in its place and the other tabs are drawn.
+        history = _read(store.history, picked,
+                        otherwise="The decision history could not be read, so it is not shown")
+        if history is not None and not history.empty:
             st.markdown("**Decision history** (append-only)")
             st.dataframe(history[["decided_at", "decision", "reviewer", "note", "narrative_id"]],
                          width="stretch", hide_index=True)

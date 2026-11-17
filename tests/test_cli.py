@@ -934,6 +934,36 @@ def test_narrate_and_report_refuse_a_database_they_cannot_open_without_a_traceba
     assert notes.read_text() == "not a database\n"
 
 
+def test_narrate_and_adopt_legacy_refuse_a_database_path_that_cannot_be_used(
+        tmp_path, capsys, monkeypatch):
+    """Both show a RuntimeError from the store's open as one `error:` line, and the open let
+    two cases through as raw errors, a traceback here: a folder that cannot be made (its own
+    parent is a file), which `narrate` met, and an empty file that is read-only, which both
+    did (`adopt-legacy` refuses a path that does not exist before it opens anything)."""
+    monkeypatch.chdir(tmp_path)
+    main(["generate", "--start", "2024-01-01", "--end", "2024-03-31", "--out-dir", str(tmp_path)])
+    ledger = str(tmp_path / "ledger.csv")
+    blocker = tmp_path / "a-file"
+    blocker.write_text("x")
+    under_a_file = str(blocker / "review.sqlite")
+    # narrate opens the store before it builds an API client, so none of this needs a key.
+    cases = [(["narrate", ledger, "--no-model", "--db", under_a_file], "cannot be made"),
+             (["adopt-legacy", ledger, "--db", under_a_file], "no review database at")]
+    if not (hasattr(os, "geteuid") and os.geteuid() == 0):  # root writes to a read-only file
+        empty = tmp_path / "empty.sqlite"
+        empty.write_bytes(b"")
+        empty.chmod(0o444)
+        refused = "attempt to write a readonly database"
+        cases += [(["narrate", ledger, "--no-model", "--db", str(empty)], refused),
+                  (["adopt-legacy", ledger, "--db", str(empty)], refused)]
+    capsys.readouterr()
+
+    for command, reason in cases:
+        assert main(command) == 2
+        out = capsys.readouterr().out
+        assert out.count("error: ") == 1 and reason in out, out
+
+
 def test_narrate_files_each_ledger_under_its_own_identity(tmp_path, capsys, monkeypatch, llm):
     """Two ledgers that share entry ids share one database and never each other's notes."""
     from ledgerlens import cli
@@ -961,6 +991,91 @@ def test_narrate_files_each_ledger_under_its_own_identity(tmp_path, capsys, monk
         assert len(ReviewStore(db, ident).narrative_ids()) == 4
     assert ReviewStore(db, identities[0]).ledgers()["ledger_id"].tolist() == sorted(identities)
     assert len(client.calls) == 8
+
+
+def test_adopt_legacy_says_so_when_the_file_refuses_the_copy(tmp_path, capsys, monkeypatch):
+    """A read-only file that holds rows to adopt opens (the open writes nothing to a current
+    file) and then refuses the copy: an OperationalError, a traceback. One `error:` line,
+    and nothing adopted. A statement of ours the driver would not run is still a fault."""
+    from ledgerlens import cli
+    from ledgerlens.ingest import ledger_identity, load_csv
+    from ledgerlens.review import ReviewStore
+
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("root writes to a read-only file")
+    monkeypatch.chdir(tmp_path)
+    main(["generate", "--start", "2024-01-01", "--end", "2024-03-31", "--out-dir", str(tmp_path)])
+    ledger, db = str(tmp_path / "ledger.csv"), tmp_path / "review.sqlite"
+    identity = ledger_identity(load_csv(ledger), ledger)
+    ReviewStore(db, identity)
+    with sqlite3.connect(str(db)) as raw:  # a note from before ledgers were keyed
+        raw.execute("INSERT INTO narratives (entry_id, summary, generated_at, ledger_id) VALUES "
+                    "('JE-2024-000001', 'old', '2026-09-23T00:00:00+00:00', 'legacy')")
+    raw.close()
+    db.chmod(0o444)
+    capsys.readouterr()
+
+    assert main(["adopt-legacy", ledger, "--db", str(db)]) == 2
+
+    assert capsys.readouterr().out == (
+        f"error: {db} refused the copy, so nothing was adopted "
+        "(OperationalError: attempt to write a readonly database)\n")
+    db.chmod(0o644)
+    assert ReviewStore(db, identity).narrative_ids() == set()
+
+    def faulty(self, entry_ids=None):
+        raise sqlite3.ProgrammingError("You can only execute one statement at a time.")
+
+    monkeypatch.setattr(cli.ReviewStore, "adopt_legacy", faulty)
+    with pytest.raises(sqlite3.ProgrammingError):
+        main(["adopt-legacy", ledger, "--db", str(db)])
+
+
+def test_adopt_legacy_s_refusal_is_one_line_whatever_refused_the_copy(tmp_path, capsys, monkeypatch):
+    """The line quotes a path as typed and SQLite's own text, so both go through one_line.
+    And a refusal is the store's whatever its kind: a lock another program holds, through
+    SQLite itself, or an integrity error."""
+    from contextlib import closing
+
+    from ledgerlens import cli
+    from ledgerlens.ingest import ledger_identity, load_csv
+    from ledgerlens.review import ReviewStore
+    from ledgerlens.summary import one_line
+
+    monkeypatch.chdir(tmp_path)
+    main(["generate", "--start", "2024-01-01", "--end", "2024-03-31", "--out-dir", str(tmp_path)])
+    ledger, db = str(tmp_path / "ledger.csv"), tmp_path / "two\nlines.sqlite"
+    identity = ledger_identity(load_csv(ledger), ledger)
+    ReviewStore(db, identity)
+    with sqlite3.connect(str(db)) as raw:  # a note from before ledgers were keyed
+        raw.execute("INSERT INTO narratives (entry_id, summary, generated_at, ledger_id) VALUES "
+                    "('JE-2024-000001', 'old', '2026-09-23T00:00:00+00:00', 'legacy')")
+    raw.close()
+    capsys.readouterr()
+    shown = one_line(str(db))
+    assert "\n" in str(db) and "\n" not in shown
+
+    # The lock is real; only SQLite's five-second wait for it is shortened.
+    connect = sqlite3.connect
+    monkeypatch.setattr(sqlite3, "connect", lambda *a, **k: connect(*a, **{"timeout": 0.05, **k}))
+    with closing(sqlite3.connect(str(db), isolation_level=None)) as holder:
+        holder.execute("BEGIN IMMEDIATE")  # a writer mid-transaction: readers get in, the copy does not
+        assert main(["adopt-legacy", ledger, "--db", str(db)]) == 2
+        holder.execute("ROLLBACK")
+    assert capsys.readouterr().out == (
+        f"error: {shown} refused the copy, so nothing was adopted "
+        "(OperationalError: database is locked)\n")
+    monkeypatch.setattr(sqlite3, "connect", connect)
+
+    def refused(self, entry_ids=None):
+        raise sqlite3.IntegrityError("UNIQUE constraint failed:\n narratives.id")
+
+    monkeypatch.setattr(cli.ReviewStore, "adopt_legacy", refused)
+    assert main(["adopt-legacy", ledger, "--db", str(db)]) == 2
+    assert capsys.readouterr().out == (
+        f"error: {shown} refused the copy, so nothing was adopted "
+        "(IntegrityError: UNIQUE constraint failed: narratives.id)\n")
+    assert ReviewStore(db, identity).narrative_ids() == set()
 
 
 def test_narrate_refuses_to_ignore_legacy_rows_unless_told_to(tmp_path, capsys, monkeypatch, llm):

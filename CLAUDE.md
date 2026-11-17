@@ -27,7 +27,9 @@ so every job differs from the venvs (the three test jobs on 2026-11-15, among ot
 and python-dateutil newer on each; pandas, anthropic, pytest and mcp newer on 3.11 and 3.12;
 numpy newer on 3.12; numpy and scipy on 3.11 older than the 3.12 venv's). The dashboard
 job's 3.12 leg resolves to a newer Streamlit and pyarrow too. Green here is not yet green
-there.
+there. For the dashboard that has a second sense: its tests read what a session holds after
+a stopped run only from Streamlit 1.66 (the dashboard-reads bullet below), and the 3.12
+venv has 1.64, so CI's 3.12 dashboard leg can fail where both venvs pass.
 
 ## Current state
 
@@ -700,7 +702,7 @@ there.
   nothing that marks it done is set (the double-click guard, the flash, the draft's clearing),
   so the same submit records it on a retry. Both messages quote the error, so they go through
   `md()`, and the page goes on past them, unless its next read fails too (a file removed or
-  replaced during the request: the reads are in Next). A fault in our own code stays
+  replaced during the request: until the reads bullet below). A fault in our own code stays
   Streamlit's traceback, and so do `record`'s own `ValueError`s, with one exception found on
   the way: on Streamlit 1.50 a click lands when the reviewer's name is cleared and the button
   clicked before the rerun that disables it, and `record` refused the nameless decision as a
@@ -715,8 +717,9 @@ there.
   guard's only under Streamlit 1.50, where the click lands; building the `Decision` inside the
   `try` is equivalent). Checked in a browser on a read-only file: the message, the form and the
   draft, then the same click recording once the file was writable. Not changed: the page's
-  reads (`get_narrative`, `history`, `summary`, `ledgers`) on a store that fails mid-session,
-  and the CLI's `narrate`, which saved only after the whole batch, so a refused save there lost
+  reads (`get_narrative`, `history`, `summary`, `ledgers`) on a store that fails mid-session
+  (until the reads bullet below), and the CLI's `narrate`, which saved only after the whole
+  batch, so a refused save there lost
   the notes still waiting (until the narrate bullet below). CI installs no Streamlit, so these
   tests run in the two venvs only (until the dashboard-job bullet below). Version unchanged
   (1.2.0).
@@ -961,23 +964,282 @@ there.
   folder over the venv's other packages; neither venv changed). CI's checks go from five to
   seven, and the pull request's own run was the first on Linux for the dashboard's tests:
   100 passed on each of the two new legs (2026-11-16). Version unchanged (1.2.1).
-- **Next** — in the order the maintainer set on 2026-11-16. First, in one PR: the dashboard's
-  reads on a store that fails mid-session (still Streamlit's traceback), and the decision
-  form's draft, which a browser on Streamlit 1.50.0 still shows after a decision was recorded
-  (on `main` before the store-writes change too; AppTest sees it cleared, and the double-click
-  guard refuses the same submit). Then a v1.2.2 release; week 8's hardening (a changelog, mypy
-  in CI, `mcp_server.py`'s coverage, a performance pass, and the whole suite in CI with the
-  `app` extra installed); week 7 as a separate ledger
+- **The dashboard's reads, the store's open and the decision draft
+  (`fix/dashboard-store-reads`, after v1.2.1)** — the two items the store-writes bullet and
+  the last Next left open, and more found on the way and by its reviews.
+  - **Reads.** The page opens the store once a run and then reads it at seven places
+    (`other_ledgers`, `ledgers`, `current`, `summary`, `decided_ids`, `get_narrative`,
+    `history`), each on a connection of its own, so a file that opened can refuse the next
+    read: locked past SQLite's five-second wait, removed or replaced while a note was being
+    requested, a disk or iCloud error. That was Streamlit's traceback. `app._read` wraps
+    each one: the store's refusal is a message through `md()`, with SQLite's own type and
+    text, and the run ends there (`st.stop()`), because what the page draws next is built
+    on what could not be read (the legacy check that gates writes, the queue's decisions,
+    the note a decision must point at) and no write may follow a read that failed.
+    `history` is the exception: it is the last thing the queue draws and nothing is built
+    on it, so the message stands in its place and the other tabs are drawn (the case the
+    store-writes bullet named: a file replaced during a request refuses the save and then
+    this read). Five of the seven go through `pd.read_sql_query`, which raises
+    `pandas.errors.DatabaseError`, an `OSError` and not a `sqlite3.Error`, with what SQLite
+    raised as its cause: both are caught, and the cause is what is shown. Still a
+    traceback: `review.CALLER_FAULTS`, raw or wrapped by pandas, a pandas error with no
+    SQLite refusal behind it, and anything else of ours. Two of the reads that end the run
+    (`decided_ids`, `get_narrative`) sit inside the first tab, where `history` is read too:
+    their refusal is drawn above the tab bar, in a placeholder made before the tabs,
+    because said inside that tab it left the other three blank with no word.
+  - **The open** (`review.py`, so every caller has it). A probe of seven kinds of file found
+    three faults. A folder that cannot be made (its own parent is a file) escaped as an
+    `OSError`, and an empty file that is read-only as `OperationalError` from the schema
+    statements every open runs: a traceback in the dashboard and in `narrate` (and, for the
+    second, `adopt-legacy`), which show a `RuntimeError` from the open as one line. Both are
+    `RuntimeError`s now (`CALLER_FAULTS` in the schema statements are re-raised as they are).
+    And a file another program held locked past the wait was reported as "is not a SQLite
+    database", because every `sqlite3.DatabaseError` while the schema was read was; an
+    `OperationalError` there now reads "could not be read as a SQLite database", by both
+    openers. The dashboard draws the open's message through `md()` too (it names the path as
+    typed). The read-only opener's own check (of the schema and the append-only guard) is
+    put into words the same way, and `adopt-legacy` prints one `error:` line when a file
+    that opened then refuses the copy (read-only with rows to adopt, or locked by another
+    program): it was a traceback.
+  - **The draft that stayed.** After a recorded decision the page removed the draft's two
+    keys from session state. That resets the value for the script and sends the browser
+    nothing: a browser went on showing the choice and the note just recorded and sent them
+    back with the next submit, on Streamlit 1.64 as on 1.50 (the last Next said 1.50). The
+    keys are now assigned, which reaches the browser as the widget's new value
+    (`set_value`): the note to empty and the choice to none. The form has no preselected
+    decision any more (`st.radio(index=None)`), and a submit with none chosen records
+    nothing and says so. Cleared back to "accept", as this change first had it, the form
+    recorded an accept with an empty note at a second click, as the entry's latest decision:
+    an escalation became an accept the reviewer never chose. (While a browser still showed
+    the decision just recorded, the fault fixed here, the double-click guard refused that
+    click.) A click that arrives on the run that clears the form carries the decision just
+    recorded and is refused as the duplicate it is.
+  - **The draft that was lost.** Found in the browser while checking the above: a run that
+    stops before the form (the open's stop, on `main` already, and now a read's) takes the
+    form off the page, and when the store answered again the form came back empty, so the
+    decision being recorded was gone (1.50 and 1.64). It takes every control below the stop
+    off the page as well, and a browser starts a control it is shown again from its
+    default. So `app._stop_for_the_store` does two things with what the stopped run had not
+    drawn. It sets aside the form's values and the controls that say which entry they were
+    for and whether a decision may be written (the entry selector, "Outstanding only",
+    "Start this ledger's review from scratch"), and each takes its value back by assignment
+    when it is next drawn: a form only its own entry's draft, the selector only an entry
+    still in the queue. And it forgets the queue's other filters and the fiscal year, so
+    the script starts them from their defaults as the browser does (the filters are keyed
+    for that, each key holding the filter's options; Minimum amount has none). A filter the
+    run had drawn is still on the page and is kept. Three ways this change first had it,
+    each found by review. Given back to the form alone, the draft returned only for a
+    reviewer on the queue's first entry: on any other the browser's selector was back on
+    the first, and the next click was thrown away. With the filters left in the session,
+    the next run drew the queue from filters the browser no longer showed, and under
+    Streamlit 1.50, where the entry selector is another control once its options change,
+    the click after that went back to the queue's first entry and an empty form, and
+    recorded nothing. And a decision recorded on the run before, whose form is waiting to
+    be cleared, was set aside as a draft too: it came back into the form later, the next
+    decision submitted for that entry was refused as "just recorded", and it could be
+    recorded a second time. The caption under the message says what comes back and what
+    starts over, says to rerun with the menu's Rerun, and says that reloading the tab
+    starts a new session and loses what was being recorded. A pending "Recorded: ..." is
+    drawn above the error: a decision recorded on the run before is still said once, where
+    an error alone, straight after the click, read as if the click had failed. (The page
+    itself says it only once the entry's note has been read: said before that read, a stop
+    there left it below the error, inside the tab.)
+  - **Tests.** 105 new cases (96 in `test_app.py`, six in `test_review.py`, three in
+    `test_cli.py`): each read refused by each kind of store error, raw and through pandas;
+    the two reads behind a condition (the legacy check's, the outstanding filter's); the
+    file replaced between the open and a read, and during a request, through SQLite and
+    pandas themselves; the faults of the open, the lock held by a real second connection;
+    both drafts by what the browser is told (`set_value` on the widget's message, which
+    AppTest exposes), on an entry that is not the queue's first and with "Outstanding only"
+    ticked; a form with no decision chosen, a second click, and a click that arrives on the
+    clearing run; a decision recorded just before a stop (before the tab bar and inside the
+    tab), the next one for that entry, and a new one for an entry already decided; what a
+    stopped run forgets (each of the five filters and the fiscal year) and what it keeps;
+    the selector and the two boxes given back once, and either box left to the reviewer
+    where the stopped run had drawn it; a start-from-scratch tick given back to its own
+    file's box and no other, and never another ledger's on the same file; a draft that
+    waits through a second stop while another entry is on the page; the confirmation said
+    once, directly under the selector, on a healthy page; the open's and `adopt-legacy`'s
+    refusals with more than one kind of error. 74 fail on `c5ec5d3` on both Pythons; the
+    other 31 pin what must not change (a fault of ours is still a traceback; the same
+    decision sent again is refused; the next entry's form is left alone; the confirmation
+    stands where it stood; a tick for one ledger is not another's). The fourth commit's six
+    also fail on `e5af5de`, two of them (the filters') on reading a key the filters did not
+    have there, so what those two pin is shown by mutants; the fifth's pass on the fourth,
+    and what they pin is shown by the 14; of the sixth's six, three fail on `e5af5de` (the
+    two for a stop inside the tab, which are that commit's regression, and the tick's
+    return with its file) and all pass on the fifth, whose code the sixth does not change,
+    so what they pin is shown by its mutants; the seventh's two likewise pass on the sixth.
+    Up to Streamlit 1.65 AppTest forgets more than a session does after a stopped run (it
+    drops the state of every control it did not send, where a session keeps what the
+    stopped run did not reach; from 1.66 AppTest keeps it too: read in the tagged source,
+    and run here under 1.50, 1.64 and 1.67), so these tests read what the browser is told
+    and what the session holds as the run stops, and the flows were checked in a browser on
+    Streamlit 1.50 and 1.64. What the browser is told after a stop is read as a session
+    would have it only from Streamlit 1.66: two plausible slips (the give-back assigning
+    only what the session no longer holds, which is the first review's high again, and a
+    stop that consumes the pending clear) pass every dashboard test under 1.50 and 1.64 and
+    fail under 1.67. So CI's 3.12 dashboard leg sees what the two venvs cannot, until the
+    3.12 venv has a Streamlit of 1.66 or later. On the third commit: a decision typed on
+    the queue's third entry with "Outstanding only" ticked, the file made unreadable at the
+    click and readable again, comes back with its entry after a rerun and records once; the
+    form then holds no choice, and a second click records nothing. On the fourth: the same
+    with the Severity filter narrowed instead (13 of the 16 entries in the queue of the
+    small ledger the check ran on) and an entry further down picked: after the rerun the
+    filter and the queue are back at their defaults, the entry and the draft are back, and
+    the click records once. The third commit in that flow under Streamlit 1.50: the rerun
+    drew 13 entries under a filter that showed all three severities, and the click went
+    back to the queue's first entry and an empty form and recorded nothing. Before the push
+    the dashboard job's two files were run under Streamlit 1.67.0 as well, the newest then,
+    which CI's 3.12 dashboard leg installs (with pandas 3.1.1, pyarrow 26.0.1 and pytest
+    9.2.0, from the `pip --target` folder #35 was checked with): 196 passed. Mutants, one
+    at a time on a scratch copy: 42 of the first two commits, 20 of the third, nine of the
+    fourth, the 14 of the test-strength review's 18 that had survived, and the six of the
+    fourth round's ten that had (both below), three written for the sixth commit's own
+    tests, and the last check's four survivors. Each was killed by a named test in at least
+    one of the two venvs when it was run; two depend on Streamlit's version. One of the
+    nine, a filter's key without its options, is killed under Streamlit 1.64 and 1.67 and
+    not under 1.50, which makes the options part of a keyed control's identity by itself.
+    One of the 20, assigning an entry that has left the queue, is killed under 1.50 only,
+    where the selector takes the value and the page would inspect an entry that is not in
+    its queue: from 1.64 Streamlit falls back to the first entry by itself, and the mutant
+    changes nothing a session shows. (The fifth commit's test read what the browser is told
+    on that run, to kill it under 1.64 as well. That held only in a harness that had
+    already forgotten the selector, and failed under Streamlit 1.67: see Review.) A third
+    did until the seventh commit: one of the 42, a second stopped run that empties what the
+    first set aside, was killed only where the harness had forgotten the form by the second
+    stop, so up to Streamlit 1.65, and passed every dashboard test under 1.67; the seventh
+    commit's test kills it under 1.50, 1.64 and 1.67. The sixth and seventh commits'
+    mutants were run under all three. The last check and its skeptic re-ran under 1.67 what
+    still applies to the final text (the nine, the fifth commit's fifteen, and 29 of the
+    first 62): no other depends on the version, and one of the 42 has been an equivalent
+    mutant since the fourth commit (nothing of a recorded decision waits any more). The
+    other 22 of the 42 (the reads, the open, the markdown) carry no state from one run to
+    the next and were not run again.
+  - **Review.** A correctness review of the first two commits (one reviewer, scratch clone)
+    found two highs, one medium and six lows, all fixed in the third commit. The highs: the
+    draft given back to the form alone, so lost on any entry but the queue's first, and the
+    accept recorded at a second click. The medium: the draft tests ran on a harness that
+    forgets what a session keeps (said under Tests). The lows: `adopt-legacy`'s traceback
+    and the read-only opener's raw error (both under The open); a caption that told the
+    reviewer to wait where waiting cures nothing and whose "press R" read as a reload; the
+    order of the confirmation and the error, which no test pinned; a refusal inside the
+    first tab that left the other tabs blank; and totals written against an older base. A
+    verification of the third commit with a claims audit (one agent, scratch clone) found
+    those closed for what they named, and two more highs, both said above: the recorded
+    decision set aside as a draft (a regression of the third commit), and the filters under
+    Streamlit 1.50 (found in a model of a session and a browser, AppTest with the page hash
+    carried across runs and each newly drawn control given the value a browser would hold,
+    then reproduced in a browser: under Tests). And five lows: the first rerun drew the
+    queue from filters the browser no longer showed (gone with the filters' fix); the
+    start-from-scratch tick was not kept, so after a stop the box showed unticked while the
+    script held it ticked, and the next click was thrown away; the confirmation stood below
+    the error when the run stopped at the note's read; "where it is an error" for a value
+    that is no option, which Streamlit 1.50 takes; and wording (the caption promised back a
+    decision that had only been typed, and one that another file, its second way out, does
+    not show; "three multiselects" where a materiality adds a fourth; `adopt-legacy` said
+    "could not be written" of a refused read as well; a comment on the form's handler). All
+    are fixed in the fourth commit but two that sit in commit messages: `ca1e4bf`'s gives
+    the suite as 1438 / 1453 where its own CLAUDE.md, after the rebase, says 1443 / 1458,
+    and `e5af5de`'s says Streamlit 1.50 refuses a value that is no option. A test-strength
+    review of the third commit (one agent, scratch clone; 18 mutants of its own, each run
+    alone on both Pythons) found by itself the same regression and the confirmation below
+    the error at the note's read, both fixed in the fourth commit by then, and no other
+    fault. 14 of its mutants survived the tests they were run against, the third commit's
+    (one of them, the confirmation drawn where the run stopped, was already killed by the
+    fourth commit's test for the note's read). Nothing pinned that the selector and
+    "Outstanding only" are given back once, that a box the stopped run had drawn is not set
+    aside, where the confirmation goes at a stop inside the tab, that the clear is for the
+    recorded entry's own form, or that an entry let go stays let go; one assertion held
+    under Streamlit 1.50 only because two runs drew as many elements; and each handler of
+    the open, and `adopt-legacy`'s line, had been tried with one kind of error and an
+    ordinary path. The fifth commit is those tests (six new cases, six tests extended, no
+    change to the code): all 14 are killed on both Pythons. A verification of the fourth
+    and fifth commits, a claims audit and a skeptic over both (three agents, one after
+    another, scratch clone) refuted nothing and found one thing to fix before the push, in
+    a test of the fifth commit: `test_an_entry_that_left_the_queue_meanwhile_is_let_go`
+    failed under Streamlit 1.67, which CI's 3.12 dashboard leg installs. It read that the
+    browser is told nothing about the selector on the run that lets the entry go. AppTest
+    from Streamlit 1.66 carries the page it was on from one run to the next, so it keeps
+    what a stopped run did not reach, as a session does: the selector still holds the entry
+    that left, the page assigns nothing, and Streamlit falls back to the first entry by
+    itself and tells the browser so. The page is right under 1.50, 1.64 and 1.67; the
+    assertion described a harness that had forgotten the selector, not a session, and is
+    gone. The rest is answered in the sixth commit, which changes tests and, in `app.py`,
+    two comments and a docstring: no code. Six of the verification's ten mutants had
+    survived the tests they were run against: what is left out at a stop was pinned for a
+    stop before the tab bar only, and nothing told the entry whose form waits to be cleared
+    from the entry last decided; nothing pinned that the start-from-scratch box is given
+    back once, or left alone where the stopped run had drawn it; the forget test narrowed
+    two of the five filters; and nothing pinned where the confirmation stands on a healthy
+    page (six new cases, three tests extended). Two behaviours it found are named under Not
+    changed (the tick's return with its file, and a note written just before a stop under
+    an older Streamlit). And wording, corrected in this bullet: what AppTest forgets, by
+    version; what the test-strength review found by itself, and what its 14 mutants had
+    been run against; "the draft given back to the wrong entry"; which reads sit in the
+    first tab; the amount's key; and, under Next, a second reason to record the GIF again.
+    A last check of the sixth commit, with a skeptic over it (two agents, one after the
+    other, scratch clone), found no fault in the page and no test that fails, and one
+    medium and five lows, each reproduced and answered in the seventh commit (tests and
+    wording; no code). The medium: "but for two" was not so, a third mutant depended on
+    Streamlit's version (under Tests), and from Streamlit 1.66 no test read that a second
+    stop adds to what the first set aside. The lows: the confirmation test passed with the
+    confirmation drawn twice, or inside the first score column (it now reads one, directly
+    under the selector); nothing pinned the ledger half of the start-from-scratch key,
+    which is `main`'s (a case added); "under Streamlit 1.50 only" said too little of the
+    note written before a stop (Not changed); the two slips only Streamlit 1.66 or later
+    lets a test see (under Tests); a test docstring that still had two reads in the first
+    tab; and the lists of commit messages, which follow. Three more commit messages stay in
+    the list with statements that are not so, and `e5af5de`'s holds a second one:
+    `f376fa9`'s says that the review found one fault and that its 14 mutants passed every
+    test, and counts as killed on both Pythons the mutant only Streamlit 1.50 kills (it
+    was, by the assertion that is gone); `9f5c8a3`'s says that each of its nine mutants is
+    killed by a named test (one is not under Streamlit 1.50), and it and `e5af5de`'s say of
+    AppTest what holds up to Streamlit 1.65; `75e41d2`'s says "under Streamlit 1.50 only"
+    of what holds before 1.64.
+  - **Not changed.** A draft typed but not yet submitted when another control reruns the
+    page into a failed read is still lost: the browser had not sent it. A browser reload
+    starts a new session, so nothing is kept across one (the caption says so). A draft set
+    aside comes back with the file it was submitted for: with another database named in the
+    sidebar, the caption's second way out, the entry comes back and the form is empty, and
+    the draft returns when the first file is named again. A start-from-scratch tick set
+    aside at a stop does the same: it comes back to its own file's box, also after a visit
+    to another file, where without a stop such a visit asks again (Streamlit forgets a box
+    it no longer draws); it never reaches another file's box. After a run that stopped
+    before it drew them, the queue's filters (Severity, Test, Tier agreement, Minimum
+    amount, and Materiality band where a materiality is given) and the fiscal year start
+    over. Under Streamlit before 1.64, a decision still in the form (a write the store
+    refused, or a draft given back) is not set aside when the run that stops is the rerun
+    straight after "Write narrative" saved a note: those releases count a run that ends at
+    `st.rerun()` as finished and drop the form it had not drawn, where 1.64 and 1.67 keep
+    it (run in AppTest under 1.50, 1.64 and 1.67; the tagged source has the exception for a
+    rerun from 1.64.0, and not at 1.49.0, 1.50.0, 1.62.0 or 1.63.0; the same on the third
+    commit, and `main` sets nothing aside). The page's three earlier stops (no ledger at
+    the path, a ledger that cannot be loaded, a controls file that cannot be used) come
+    before the store is opened and are as they are on `main`: nothing is set aside or
+    forgotten there. A database path that holds a NUL is still a `ValueError` (a shell
+    cannot pass one). The command line's own reads after its open (`narrate`'s ledgers and
+    narrative ids, `report --db` and `summary --db`) are still a traceback if the file
+    fails in between. `adopt-legacy`'s other lines print a database path as typed, so one
+    that holds a line break is printed on two lines: only the refusal line added here puts
+    it through `one_line`.
+  Version unchanged (1.2.1).
+- **Next** — in the order the maintainer set on 2026-11-16: a v1.2.2 release; week 8's
+  hardening (a changelog, mypy in CI, `mcp_server.py`'s coverage, a performance pass, and
+  the whole suite in CI with the `app` extra installed); week 7 as a separate ledger
   (`generate --realistic`, from its own streams as the held-out ledger is, so the default
   ledger, the eval cases and the held-out measurement do not move); and publishing last,
   under another distribution name (on PyPI, `ledgerlens` has been another project's package
-  since 2026-11-10). Open beyond that, unchanged: re-recording `docs/demo.gif` (its model
-  scores predate v1.0.0's tie fix); week 5's model train/test split (a re-measurement under
-  rule 10); a Benford baseline for a ledger's own size (the bands still depend on n above
-  300); a note's model and time in the workpaper and the MCP entry rows (the explain tool
-  returns both); the prompt a note answered (a review-schema change); and the reported model
-  on new eval rows (a row-shape change).
-- 1370 tests on 3.9 (1 skipped) / 1385 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
+  since 2026-11-10). Open beyond that: re-recording `docs/demo.gif` (its model scores
+  predate v1.0.0's tie fix, and since the dashboard-reads change its last frame shows what
+  that change fixed: the decision just recorded still in the form, which now clears to no
+  choice); a Streamlit of 1.66 or later in the 3.12 venv, the maintainer's call (until then
+  only CI's 3.12 dashboard leg reads a stopped run as a session has it); and, unchanged, week 5's model train/test split (a re-measurement under rule
+  10); a Benford baseline for a ledger's own size (the bands still depend on n above 300);
+  a note's model and time in the workpaper and the MCP entry rows (the explain tool returns
+  both); the prompt a note answered (a review-schema change); and the reported model on new
+  eval rows (a row-shape change).
+- 1475 tests on 3.9 (1 skipped) / 1490 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
