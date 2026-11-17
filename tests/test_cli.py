@@ -605,9 +605,10 @@ def test_report_attaches_an_existing_review_db_only(tmp_path, capsys):
 def test_report_writes_the_workpaper_when_the_ledger_and_the_store_hold_a_control_character(
         tmp_path, capsys):
     """A vertical tab (Word's line break, pasted into a note) in a ledger cell, a decision's note
-    or a note's text made `report` raise openpyxl's IllegalCharacterError, and the review store
-    is append-only: a store holding one could never write its workpaper again. The characters
-    are built with chr(), never typed as escapes."""
+    or a note's summary made `report` raise openpyxl's IllegalCharacterError, and the review
+    store is append-only: the text could not be edited out, and `report --db` stopped until a
+    later decision or a rewritten note took its place in the workpaper. The characters are
+    built with chr(), never typed as escapes."""
     import openpyxl
     import pandas as pd
 
