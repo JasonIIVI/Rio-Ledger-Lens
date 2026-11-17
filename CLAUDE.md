@@ -804,9 +804,14 @@ venv has 1.64, so CI's 3.12 dashboard leg can fail where both venvs pass.
   openpyxl refuses a C0 control character other than tab, line feed and carriage return
   (`IllegalCharacterError`), so a vertical tab (Word's line break, pasted into a note) in a
   ledger cell (a user, which JET-02, 03, 04 and 12 quote; an account code on the Benford
-  sheet), a decision's note or reviewer, or a note's text stopped `report`, and the review store
-  is append-only: a store holding one could never write its workpaper again (found by the
-  narrate branch's fix-verification; on `main` too). openpyxl
+  sheet), a decision's note or reviewer, or a note's summary stopped `report`, and the review
+  store is append-only, so the text could not be edited out: `report --db` stopped until
+  something recorded later took its place in the workpaper, a new decision on the entry or,
+  for a note, a rewrite (with a new decision on it, where a decision had recorded the old
+  version). (Found by the narrate branch's fix-verification; on `main` too. Until the v1.2.2
+  notes' claims review this bullet said such a store "could never write its workpaper again",
+  as `c5ec5d3`'s message and #34's text still do, and #33's text in the present tense ("can
+  never").) openpyxl
   writes U+FFFE and U+FFFF (valid UTF-8 in a CSV, valid JSON in a reply) and half of a surrogate
   pair without a word, and the file then fails to load (`ParseError`): `report` said it had
   written a workpaper that would not open. And it cut a text over 32,767 characters there in
@@ -838,7 +843,10 @@ venv has 1.64, so CI's 3.12 dashboard leg can fail where both venvs pass.
   ledger with the model, labels and a copy of the review database, with materiality, and on the
   sandbox pull, under 3.9 and 3.12. Not changed: a carriage return is written as it is and read
   back as a line feed (XML's line-end handling), the same break; text already holding a literal
-  `[U+000B]` reads like a replacement (the Summary's count tells them apart); a literal
+  `[U+000B]` reads like a replacement (the Summary counts replacements only: with no count
+  row every marker is the text's own, and with one the count says how many markers are
+  replacements, not which; until the v1.2.2 notes' claims review this said the count "tells
+  them apart", as #34's text still does); a literal
   `_xHHHH_` is written as it is, as before, and the file format reads it as an escape, so Excel
   may show the character it names (not checked in Excel; openpyxl reads it back as written);
   `build_workpaper` still returns the path and the CLI prints no extra line (the workpaper is the
@@ -1237,7 +1245,10 @@ venv has 1.64, so CI's 3.12 dashboard leg can fail where both venvs pass.
   (`generate --realistic`, from its own streams as the held-out ledger is, so the default
   ledger, the eval cases and the held-out measurement do not move); and publishing last,
   under another distribution name (on PyPI, `ledgerlens` has been another project's package
-  since 2026-11-10). Open beyond that: re-recording `docs/demo.gif` (its model scores
+  since 2026-11-10). Open beyond that: `benford --by` with a column the ledger does not
+  have (a `KeyError` traceback in v1.2.1 and v1.2.2 alike, found by the v1.2.2 notes' claims
+  review; one for week 8's hardening if the maintainer agrees); re-recording
+  `docs/demo.gif` (its model scores
   predate v1.0.0's tie fix, and since the dashboard-reads change its last frame shows what
   that change fixed: the decision just recorded still in the form, which now clears to no
   choice); a Streamlit of 1.66 or later in the 3.12 venv, the maintainer's call (until then
