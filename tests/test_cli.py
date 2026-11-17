@@ -1032,9 +1032,9 @@ def test_adopt_legacy_says_so_when_the_file_refuses_the_copy(tmp_path, capsys, m
 
 
 def test_adopt_legacy_s_refusal_is_one_line_whatever_refused_the_copy(tmp_path, capsys, monkeypatch):
-    """The line quotes a path as typed and SQLite's own text, so both go through one_line,
-    as the CLI's other lines do. And a refusal is the store's whatever its kind: a lock
-    another program holds, through SQLite itself, or an integrity error."""
+    """The line quotes a path as typed and SQLite's own text, so both go through one_line.
+    And a refusal is the store's whatever its kind: a lock another program holds, through
+    SQLite itself, or an integrity error."""
     from contextlib import closing
 
     from ledgerlens import cli

@@ -184,8 +184,9 @@ def _give_back(key: str, allowed=None) -> None:
 
 def _filter(name: str, options=()) -> str:
     """The key of one of the queue's filters, marked as drawn. Its options are part of the
-    key, so a filter is the control it was without one: another ledger's options make it
-    another filter, and a choice is never carried to a queue that could not hold it."""
+    key (the amount has none), so a filter is the control it was without one: another
+    ledger's options make it another filter, and a choice is never carried to a queue that
+    could not hold it."""
     key = f"filter-{name}|" + "|".join(map(str, options))
     _DRAWN.add(key)
     return key
@@ -353,7 +354,10 @@ if not others.empty:
 # every note again. Writes therefore wait for a choice, as narrate's refusal
 # does: adopt the rows from the command line, or start this ledger over. The
 # choice is made for one file: keyed like every per-entry widget, it is asked
-# again when the sidebar points at another database.
+# again when the sidebar points at another database. A tick a stopped run set
+# aside waits under that key, so it comes back to this file's box and no other,
+# also after a visit to another file, as a draft does (without a stop such a
+# visit asks again here too: Streamlit forgets a box it no longer draws).
 writes_blocked = False
 if (LEGACY_LEDGER_ID in set(others["ledger_id"])
         and ledger_id not in set(_read(store.ledgers)["ledger_id"])):
@@ -407,10 +411,11 @@ if not progress.empty:
         f"{r.decision} {r.entries}" for r in progress.itertuples()
     ))
 
-# Two reads below sit inside the first tab. Their refusal is said here, above the tab
-# bar: said inside that tab, it left the other three blank with no word. A placeholder,
-# not a container: left empty, a container gave Streamlit 1.50's test harness each
-# element below it twice after a rerun.
+# Two of the reads that end the run sit inside the first tab (the history's is there too,
+# and does not end it). Their refusal is said here, above the tab bar: said inside that
+# tab, it left the other three blank with no word. A placeholder, not a container: left
+# empty, a container gave Streamlit 1.50's test harness each element below it twice after
+# a rerun.
 _NOTICE.append(st.empty())
 tab_queue, tab_tiers, tab_benford, tab_quality = st.tabs(
     ["Exception queue", "Tier comparison", "Benford", "Detection quality"]
