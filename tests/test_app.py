@@ -1036,7 +1036,7 @@ def test_a_new_decision_for_an_entry_already_decided_is_a_draft_like_any_other(
 
 
 def _kinds(block):
-    """The kinds of everything drawn under ``block``, in the order it is drawn."""
+    """The kinds of everything under ``block``, in page order."""
     kinds = []
     for _, node in sorted(block.children.items()):
         kinds.append(node.type)
@@ -1046,16 +1046,18 @@ def _kinds(block):
 
 
 def test_the_confirmation_of_a_recorded_decision_stands_under_the_selector(data_dir, tmp_path):
-    """It is said once the entry's note has been read, and where it was said before that
-    read was guarded: between the entry selector and the entry's scores. Drawn where the
-    note is read, it stood below the entry's lines."""
+    """It is said once the entry's note has been read, one time, and where it was said
+    before that read was guarded: directly under the entry selector, above the entry's
+    scores. Drawn where the note is read, it stood below the entry's lines."""
     at = _run(data_dir, tmp_path / "review.sqlite", reviewer="ana")
 
     _submit(at, "Escalate", "checked the purchase order")
 
-    assert any(s.value == "Recorded: escalate by ana." for s in at.success)
+    assert [s.value for s in at.success] == ["Recorded: escalate by ana."]
     kinds = _kinds(at.tabs[0])
-    assert kinds.index("selectbox") < kinds.index("success") < kinds.index("metric")
+    at_selector = kinds.index("selectbox")
+    assert kinds.count("success") == 1 and kinds[at_selector + 1] == "success"
+    assert "metric" in kinds[at_selector + 2:]
 
 
 @pytest.mark.parametrize("read", ["decided_ids", "get_narrative"])
@@ -1185,7 +1187,10 @@ def test_a_decision_being_recorded_when_a_read_fails_is_given_back_to_the_form(
 
     assert [e.value for e in at.error] == [STOPS_HERE + LOCKED + END]
     assert not any("Record decision" in b.label for b in at.button)
-    at.run()  # still refused: a second stopped run must not empty what the first set aside
+    # Still refused. Up to Streamlit 1.65 the harness has forgotten the form by this run, so
+    # only what the first stop set aside brings it back; from 1.66 the session still holds
+    # it, and the second-stop test further down is what reads that a second stop adds.
+    at.run()
     assert not at.exception, at.exception
     assert [e.value for e in at.error] == [STOPS_HERE + LOCKED + END]
     monkeypatch.setattr(ReviewStore, read, real)
@@ -1416,6 +1421,41 @@ def test_a_draft_set_aside_waits_for_its_own_entry_s_form(data_dir, tmp_path, id
     assert ReviewStore(db, identity).history(other).empty
 
 
+def test_a_draft_that_waits_survives_a_second_stop_with_another_entry_on_the_page(
+        data_dir, tmp_path, identity, monkeypatch):
+    """A second stopped run adds to what the first set aside; it does not start from
+    nothing. Here the draft waits while another entry is on the page: its own form is not
+    drawn, the session no longer holds its values, and what waits is the only copy. (A
+    second stop straight after the first shows this only up to Streamlit 1.65: from 1.66
+    AppTest, like a session, still holds the form's values there and sets them aside again.)"""
+    db = tmp_path / "review.sqlite"
+    at = _run(data_dir, db, reviewer="ana")
+    other, mine = at.selectbox(key="picked").options[:2]
+    at.selectbox(key="picked").set_value(mine).run()
+    key = _entry_key(at)
+    real = ReviewStore.get_narrative
+    _refusing(monkeypatch, "get_narrative", sqlite3.OperationalError("database is locked"))
+    _submit(at, "Escalate", "checked the purchase order")  # the first stop: the draft is set aside
+    assert [e.value for e in at.error] == [STOPS_HERE + LOCKED + END]
+    monkeypatch.setattr(ReviewStore, "get_narrative", real)
+    at.selectbox(key="picked").set_value(other).run()  # a look at another entry: a whole run
+    assert not at.exception, at.exception
+    assert _entry_key(at) != key
+    real = ReviewStore.other_ledgers
+    _refusing(monkeypatch, "other_ledgers", sqlite3.OperationalError("database is locked"))
+
+    at.run()  # the second stop, with the draft's form off the page
+
+    assert [e.value for e in at.error] == [STOPS_HERE + LOCKED + END]
+    monkeypatch.setattr(ReviewStore, "other_ledgers", real)
+    at.run()
+    assert not at.exception, at.exception
+    at.selectbox(key="picked").set_value(mine).run()
+    assert not at.exception, at.exception
+    _assert_given_back_and_recorded_once(at, db, identity, mine, key)
+    assert ReviewStore(db, identity).history(other).empty
+
+
 NO_CHOICE = "Choose a decision first: nothing was recorded, and what you typed is kept."
 
 
@@ -1502,8 +1542,8 @@ def test_the_same_decision_sent_again_is_refused_as_just_recorded(data_dir, tmp_
 @pytest.mark.parametrize("read", ["decided_ids", "get_narrative"])
 def test_a_refusal_inside_the_queue_tab_is_said_above_the_tab_bar(
         data_dir, tmp_path, monkeypatch, read):
-    """Two reads sit inside the first tab. Said there, their refusal left the other three
-    tabs blank with no word for a reviewer who had one of them open."""
+    """Two of the reads that end the run sit inside the first tab. Said there, their refusal
+    left the other three tabs blank with no word for a reviewer who had one of them open."""
     at = _run(data_dir, tmp_path / "review.sqlite", reviewer="ana")
     _refusing(monkeypatch, read, sqlite3.OperationalError("database is locked"))
 
@@ -1706,12 +1746,8 @@ def test_a_tick_set_aside_at_a_stop_is_given_back_to_its_own_file_only(
     assert not _record_button(at).disabled
 
 
-def test_the_same_decision_on_a_shared_entry_id_in_another_ledger_is_recorded(
-        data_dir, tmp_path, identity):
-    """The double-click guard, the draft and the remembered note id belong to one
-    ledger's entry: a second ledger's entry with the same id is a different entry."""
-    import pandas as pd
-
+def _the_same_entries_in_another_ledger(data_dir, tmp_path, identity):
+    """A second ledger with the same entry ids and flags and another digest: its folder and id."""
     from ledgerlens import jets
     from ledgerlens.ingest import ledger_identity, load_csv
 
@@ -1724,7 +1760,36 @@ def test_the_same_decision_on_a_shared_entry_id_in_another_ledger_is_recorded(
     lines.to_csv(other / "ledger.csv", index=False)
     other_id = ledger_identity(load_csv(other / "ledger.csv"), other / "ledger.csv")
     assert other_id != identity
+    return other, other_id
 
+
+def test_a_tick_for_one_ledger_is_not_another_ledger_s_on_the_same_file(data_dir, tmp_path, identity):
+    """The other half of the box's key. Two ledgers can be reviewed against one database,
+    and its legacy rows can be adopted into either: a tick made for the first must not open
+    writes for the second, whose box asks again."""
+    other, other_id = _the_same_entries_in_another_ledger(data_dir, tmp_path, identity)
+    db = tmp_path / "review.sqlite"
+    _legacy_note_on_screen(data_dir, db, identity)
+    at = _run(data_dir, db, reviewer="ana")
+    _start_fresh_box(at).check()
+    at.run()
+    assert not _record_button(at).disabled
+
+    at.text_input(key="ledger_path").set_value(str(other / "ledger.csv"))
+    at.run()
+
+    assert not at.exception, at.exception
+    assert any("adopt-legacy" in w.value for w in at.sidebar.warning)
+    assert not _start_fresh_box(at).value
+    assert _record_button(at).disabled
+    assert other_id not in set(ReviewStore(db, other_id).ledgers()["ledger_id"])  # nothing written
+
+
+def test_the_same_decision_on_a_shared_entry_id_in_another_ledger_is_recorded(
+        data_dir, tmp_path, identity):
+    """The double-click guard, the draft and the remembered note id belong to one
+    ledger's entry: a second ledger's entry with the same id is a different entry."""
+    other, other_id = _the_same_entries_in_another_ledger(data_dir, tmp_path, identity)
     db = tmp_path / "review.sqlite"
     at = _run(data_dir, db, reviewer="ana")
     picked = at.selectbox(key="picked").value
