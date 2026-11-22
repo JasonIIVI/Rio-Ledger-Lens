@@ -33,6 +33,12 @@ venv has 1.64, so CI's 3.12 dashboard leg can fail where both venvs pass.
 
 ## Current state
 
+- **v1.2.2** is #33 to #37 (#33 `fix/narrate-validate-and-save`, squash-merged 2026-11-12 as
+  `7c702e0`; #34 `fix/workpaper-cell-text`, 2026-11-15, `c5ec5d3`; #35 `ci/dashboard-tests`,
+  2026-11-16, `bf578e8`; #37 `fix/dashboard-store-reads`, 2026-11-17, `75e88e4`; #36 is an
+  Issue, the weekly run's) and the version bump (`release/v1.2.2`), to be tagged on the
+  bump's squash-merge commit with release notes reviewed against the code and covering all
+  four; the tag's commit is recorded here by the next PR, as #32 recorded v1.2.1's.
 - **v1.2.1** is #21 to #30 (#21 `fix/pandas-4-warnings`, squash-merged 2026-10-25 as
   `b0434a2`; #22 `fix/display-sort-ties`, 2026-10-26, `cd00a95`; #24
   `fix/benford-small-sample`, 2026-10-30, `2b113b7`; #25 `fix/reported-model`, 2026-10-31,
@@ -798,9 +804,14 @@ venv has 1.64, so CI's 3.12 dashboard leg can fail where both venvs pass.
   openpyxl refuses a C0 control character other than tab, line feed and carriage return
   (`IllegalCharacterError`), so a vertical tab (Word's line break, pasted into a note) in a
   ledger cell (a user, which JET-02, 03, 04 and 12 quote; an account code on the Benford
-  sheet), a decision's note or reviewer, or a note's text stopped `report`, and the review store
-  is append-only: a store holding one could never write its workpaper again (found by the
-  narrate branch's fix-verification; on `main` too). openpyxl
+  sheet), a decision's note or reviewer, or a note's summary stopped `report`, and the review
+  store is append-only, so the text could not be edited out: `report --db` stopped until
+  something recorded later took its place in the workpaper, a new decision on the entry or,
+  for a note, a rewrite (with a new decision on it, where a decision had recorded the old
+  version). (Found by the narrate branch's fix-verification; on `main` too. Until the v1.2.2
+  notes' claims review this bullet said such a store "could never write its workpaper again",
+  as `c5ec5d3`'s message and #34's text still do, and #33's text in the present tense ("can
+  never").) openpyxl
   writes U+FFFE and U+FFFF (valid UTF-8 in a CSV, valid JSON in a reply) and half of a surrogate
   pair without a word, and the file then fails to load (`ParseError`): `report` said it had
   written a workpaper that would not open. And it cut a text over 32,767 characters there in
@@ -832,7 +843,10 @@ venv has 1.64, so CI's 3.12 dashboard leg can fail where both venvs pass.
   ledger with the model, labels and a copy of the review database, with materiality, and on the
   sandbox pull, under 3.9 and 3.12. Not changed: a carriage return is written as it is and read
   back as a line feed (XML's line-end handling), the same break; text already holding a literal
-  `[U+000B]` reads like a replacement (the Summary's count tells them apart); a literal
+  `[U+000B]` reads like a replacement (the Summary counts replacements only: with no count
+  row every marker is the text's own, and with one the count says how many markers are
+  replacements, not which; until the v1.2.2 notes' claims review this said the count "tells
+  them apart", as #34's text still does); a literal
   `_xHHHH_` is written as it is, as before, and the file format reads it as an escape, so Excel
   may show the character it names (not checked in Excel; openpyxl reads it back as written);
   `build_workpaper` still returns the path and the CLI prints no extra line (the workpaper is the
@@ -1224,21 +1238,26 @@ venv has 1.64, so CI's 3.12 dashboard leg can fail where both venvs pass.
     that holds a line break is printed on two lines: only the refusal line added here puts
     it through `one_line`.
   Version unchanged (1.2.1).
-- **Next** — in the order the maintainer set on 2026-11-16: a v1.2.2 release; week 8's
-  hardening (a changelog, mypy in CI, `mcp_server.py`'s coverage, a performance pass, and
-  the whole suite in CI with the `app` extra installed); week 7 as a separate ledger
+- **Next** — in the order the maintainer set on 2026-11-16: the v1.2.2 tag and release,
+  each on the maintainer's ask, and the PR that records the tag here; week 8's hardening (a
+  changelog, mypy in CI, `mcp_server.py`'s coverage, a performance pass, and the whole
+  suite in CI with the `app` extra installed); week 7 as a separate ledger
   (`generate --realistic`, from its own streams as the held-out ledger is, so the default
   ledger, the eval cases and the held-out measurement do not move); and publishing last,
   under another distribution name (on PyPI, `ledgerlens` has been another project's package
-  since 2026-11-10). Open beyond that: re-recording `docs/demo.gif` (its model scores
+  since 2026-11-10). Open beyond that: `benford --by` with a column the ledger does not
+  have (a `KeyError` traceback in v1.2.1 and v1.2.2 alike, found by the v1.2.2 notes' claims
+  review; one for week 8's hardening if the maintainer agrees); re-recording
+  `docs/demo.gif` (its model scores
   predate v1.0.0's tie fix, and since the dashboard-reads change its last frame shows what
   that change fixed: the decision just recorded still in the form, which now clears to no
   choice); a Streamlit of 1.66 or later in the 3.12 venv, the maintainer's call (until then
-  only CI's 3.12 dashboard leg reads a stopped run as a session has it); and, unchanged, week 5's model train/test split (a re-measurement under rule
-  10); a Benford baseline for a ledger's own size (the bands still depend on n above 300);
-  a note's model and time in the workpaper and the MCP entry rows (the explain tool returns
-  both); the prompt a note answered (a review-schema change); and the reported model on new
-  eval rows (a row-shape change).
+  only CI's 3.12 dashboard leg reads a stopped run as a session has it); and, unchanged,
+  week 5's model train/test split (a re-measurement under rule 10); a Benford baseline for
+  a ledger's own size (the bands still depend on n above 300); a note's model and time in
+  the workpaper and the MCP entry rows (the explain tool returns both); the prompt a note
+  answered (a review-schema change); and the reported model on new eval rows (a row-shape
+  change).
 - 1475 tests on 3.9 (1 skipped) / 1490 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
