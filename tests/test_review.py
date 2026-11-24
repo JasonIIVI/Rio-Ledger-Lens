@@ -879,6 +879,20 @@ def test_a_fresh_file_refuses_a_row_that_names_no_ledger(store):
                         "VALUES (7, 'JE-1', 'no ledger', '2026-01-01T00:00:00+00:00')")
 
 
+def test_a_cursor_that_inserted_nothing_has_no_row_id_to_record():
+    """Saving a note, recording a decision and adopting legacy rows each file the id SQLite
+    gives the row just inserted. A cursor that has inserted nothing has none: a fault of the
+    caller's, so a TypeError as ``int(None)`` was (now one that says what is missing), and
+    not an error ``adopt-legacy`` would print as a refusal by the file. After an insert it is
+    the row's id."""
+    with closing(sqlite3.connect(":memory:")) as conn:
+        with pytest.raises(TypeError, match="no row was inserted"):
+            review._row_id(conn.cursor())
+        conn.execute("create table t (x)")
+        assert review._row_id(conn.execute("insert into t values (1)")) == 1
+        assert review._row_id(conn.execute("insert into t values (1)")) == 2
+
+
 def test_a_read_only_store_bound_to_another_ledger_sees_nothing_but_the_counts(tmp_path):
     path = tmp_path / "review.sqlite"
     ReviewStore(path, LEDGER).record(Decision("JE-1", "accept", "ana"))

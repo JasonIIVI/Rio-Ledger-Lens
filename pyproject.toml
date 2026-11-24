@@ -25,7 +25,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0", "pytest-cov>=4.0", "ruff>=0.4"]
+# mypy 1.19 is the last release that runs on Python 3.9; newer Pythons get a newer one.
+dev = ["pytest>=7.0", "pytest-cov>=4.0", "ruff>=0.4", "mypy>=1.19"]
 # 1.49: st.dataframe takes width="stretch", which app.py gives it.
 app = ["streamlit>=1.49"]
 llm = ["anthropic>=0.125"]
@@ -39,6 +40,9 @@ ledgerlens-mcp = "ledgerlens.mcp_server:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+ledgerlens = ["py.typed"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
@@ -48,6 +52,27 @@ addopts = "-q"
 # the floor rounds up to it and passes.
 [tool.coverage.report]
 precision = 2
+# A signature written only for a type checker never runs.
+exclude_also = ["if TYPE_CHECKING:"]
+
+# No python_version here: mypy 2 no longer checks for Python 3.9, so each mypy checks for
+# the Python it runs on (3.9 under mypy 1.19, the newest elsewhere). pandas, scikit-learn,
+# scipy and openpyxl ship no types, so whatever comes out of them is Any: the check covers
+# the package's own signatures, its handling of None, and its standard-library code. The
+# MCP SDK cannot be installed on Python 3.9, where its imports are missing.
+[tool.mypy]
+files = ["src/ledgerlens", "tests/typed_callers.py"]
+check_untyped_defs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+warn_redundant_casts = true
+
+[[tool.mypy.overrides]]
+module = [
+  "pandas", "pandas.*", "sklearn", "sklearn.*", "scipy", "scipy.*",
+  "openpyxl", "openpyxl.*", "mcp", "mcp.*",
+]
+ignore_missing_imports = true
 
 [tool.ruff]
 line-length = 100

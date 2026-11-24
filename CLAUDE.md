@@ -13,11 +13,11 @@ Audit analytics over general ledger data. Read this before changing anything.
 | Working folder | `~/Library/Mobile Documents/com~apple~CloudDocs/LedgerGen project` (iCloud) |
 | Virtualenvs | `~/.venvs/ledgerlens` (3.9) and `~/.venvs/ledgerlens312` (3.12) — **deliberately outside iCloud**, one set per machine |
 | Python here | system 3.9.6 plus python.org **3.12.0** at `/usr/local/bin/python3.12`. Code must stay 3.9-compatible; only `mcp_server.py` needs 3.10+. pandas 2.2 or later (`ingest` imports `pandas.tseries.api.guess_datetime_format`), Streamlit 1.49 or later (`st.dataframe(width="stretch")`); CI installs the latest (pandas 2.3 on 3.9, 3.1 on 3.11 and 3.12; the venvs have 2.3 and 3.0.6), so the floors themselves are not run, and a new pandas reaches CI before the venvs |
-| CI | GitHub Actions: pytest on 3.9 / 3.11 / 3.12, each leg failing under a coverage floor (96% on 3.9, 97% on the others, compared to two decimals), + a detection-quality gate + a `rule-1` job (no data or secret file tracked) + a `dashboard` job (the dashboard's tests and the workpaper's with the `app` extra installed: on 3.9 under Streamlit 1.50, the last one 3.9 can install, and on 3.12 under the newest; the test jobs install no Streamlit, which requires pyarrow, so their 3.11 and 3.12 legs stay the suite's runs on pandas 3 without pyarrow, and a step in them fails if pyarrow is there); `claude.yml` answers `@claude`; `weekly.yml` regenerates the default ledger on Mondays and opens an Issue with `ledgerlens summary`. The 3.9 jobs run on `ubuntu-24.04` (setup-python has no 3.9 for Ubuntu 26.04, `ubuntu-latest` since November 2026), the rest on `ubuntu-latest`; that holds while GitHub keeps 24.04 runners, and dropping 3.9 is the maintainer's call |
+| CI | GitHub Actions: pytest on 3.9 / 3.11 / 3.12, each leg type-checked with mypy first and failing under a coverage floor (96% on 3.9, 97% on the others, compared to two decimals), + a detection-quality gate + a `rule-1` job (no data or secret file tracked) + a `dashboard` job (the dashboard's tests and the workpaper's with the `app` extra installed: on 3.9 under Streamlit 1.50, the last one 3.9 can install, and on 3.12 under the newest; the test jobs install no Streamlit, which requires pyarrow, so their 3.11 and 3.12 legs stay the suite's runs on pandas 3 without pyarrow, and a step in them fails if pyarrow is there); `claude.yml` answers `@claude`; `weekly.yml` regenerates the default ledger on Mondays and opens an Issue with `ledgerlens summary`. The 3.9 jobs run on `ubuntu-24.04` (setup-python has no 3.9 for Ubuntu 26.04, `ubuntu-latest` since November 2026), the rest on `ubuntu-latest`; that holds while GitHub keeps 24.04 runners, and dropping 3.9 is the maintainer's call |
 
 ```bash
-source ~/.venvs/ledgerlens/bin/activate && pytest -q && ruff check src tests app.py
-source ~/.venvs/ledgerlens312/bin/activate && pytest -q      # also runs the MCP tests
+source ~/.venvs/ledgerlens/bin/activate && pytest -q && ruff check src tests app.py && mypy
+source ~/.venvs/ledgerlens312/bin/activate && pytest -q && mypy   # also runs the MCP tests
 ```
 
 Run both before every commit. The 3.9 venv has anthropic 0.x; the 3.12 venv has anthropic 1.x
@@ -33,8 +33,8 @@ after a stopped run only from Streamlit 1.66 (the dashboard-reads bullet below),
 maintainer's word the 3.12 venv now has Streamlit 1.67.0, that leg's version when it was
 installed, and reads a stopped run as CI does; the 3.9 venv stays on 1.50, the last one
 Python 3.9 can install. Both venvs have mypy since the same day (1.19.1 on 3.9, the last
-release for it, and 2.4.1 on 3.12), for the type check week 8 is to add; nothing runs it
-yet.
+release for it, and 2.4.1 on 3.12). CI's 3.11 and 3.12 legs install the newest mypy, so a
+new mypy reaches CI before the 3.12 venv, as a new pandas does.
 
 ## Current state
 
@@ -1341,11 +1341,93 @@ yet.
   (one floor for every leg, the floors swapped, no floor, the step allowed to fail) fail
   the pin. The floor is CI's alone: a local `pytest --cov` prints two decimals and enforces
   nothing. The two totals are computed from main's log and the 15 statements these tests
-  add, not measured: the PR's own run is the first measurement. A floor is raised once the
+  add, not measured: the PR's own run is the first measurement. (It measured 96.71% on 3.9
+  and 98.00% on 3.11 and 3.12, 106 of 5,300 statements missed: the new tests cover three
+  statements outside the module too. The comment in `ci.yml` and CONTRIBUTING gave the
+  computed 97.94% until the type-check PR corrected them.) A floor is raised once the
   total has moved well clear of it, and never lowered to get a change through. Version
   unchanged (1.2.2).
+- **The type check (week 8, `ci/type-check`, after v1.2.2)** — CI's test job runs `mypy`
+  on its three Pythons, after the lint and before the suite, and the package ships
+  `py.typed`. The settings (`pyproject.toml`): every function annotated
+  (`disallow_untyped_defs`, `disallow_incomplete_defs`), unannotated bodies checked. No
+  `python_version`: mypy 2 refuses to check for Python 3.9, so each leg checks for the
+  Python it runs on, the 3.9 leg under mypy 1.19.1 (the last release that runs there, hence
+  `mypy>=1.19` in the dev extra) and the others under the newest (2.4.1 on 2026-11-24).
+  pandas, scikit-learn, scipy and openpyxl ship no types, so what comes out of them is
+  `Any`: the check covers the package's own signatures, its handling of `None` and its
+  standard-library code (the connectors, the controls, the materiality figures, the review
+  store's SQL), not what a frame holds. The MCP SDK's imports are missing on 3.9 and
+  allowed to be. Before the change mypy reported 115 findings under these settings on 3.12
+  and 117 on 3.9: 36 signatures with no annotation, and the rest values that may be
+  `None`. The 36 are annotated and nothing else in them changed. The rest are settled
+  without `assert`, `cast` or `# type: ignore`, by testing the value where the code tested
+  something that implied it:
+  - `cli.py`: fourteen sites read `if df is None:` (or `controls`) where they read
+    `if problem:` after `_load_ledger` and `_load_controls`, which return a value or the
+    line to print and never both or neither.
+  - `ledger_context.py`: `state()` returns a `LoadedState` tuple (lines, flags, entries,
+    controls, model report, identity) read from the attributes as they stand after
+    `load()`, and every question starts from it. Nothing is kept between calls: the tests
+    replace a loaded context's `flags` and `combined`, and the next question must see the
+    replacement. `summary.collect` reads the same view. `load()` computes everything first
+    and sets `combined` last, since `loaded` reads it and the MCP SDK runs tools in worker
+    threads.
+  - `model.py`: `AnomalyModel.report()` gives the fit's report or raises before a fit, as
+    `score` does, so `score_ledger` returns a `ModelReport` and not an optional one.
+  - `materiality.py`: `_decimal` gives `""` for "no problem" where it gave `None`, and
+    `Materiality.__post_init__` tests the numbers; every `SamplingError` reads as it did.
+  - `review.py`: `_row_id` reads the id of the row just inserted, in place of three
+    `int(cur.lastrowid)`, and raises the same TypeError for a cursor that inserted nothing.
+  - `connectors/qbo.py`: one function, `_loopback_port`, judges the redirect address for
+    the config's check and for `callback_port`; the sign-in wait ends when it reads an
+    outcome under the lock (the `Event` beside it is gone) and reads its listener from the
+    selector key's data; `parse_qbo_datetime` tests for "no format matched" in place of a
+    `for`/`else` the older mypy could not follow; three functions take any sequence of
+    mappings.
+  - `generate.py`: the held-out vendor drips look their five days up in a table built
+    once and draw the start from the same list in the same order, so both ledgers are byte
+    for byte what they were (their sha256 pins).
+  The grader's hash is unchanged: the six functions it reads were annotated already and
+  are untouched. Not preserved, in states `load()` cannot produce: a context with one of
+  its six attributes set to None afterwards is refused by every question
+  (`LedgerNotLoaded`, which is no RuntimeError, ValueError or OSError, so neither the
+  command line nor the MCP server words it as a file that cannot be used); before, a
+  question failed only if it read the missing piece, with an AttributeError or TypeError,
+  and answered otherwise. 17 new test cases: a model's report before and after a fit;
+  `state()` loading on first use and following a replaced attribute; each of the six
+  questions asked after a frame was replaced, and with each piece missing; `load()`
+  setting `combined` last; a cursor that inserted nothing; and `pyproject.toml`'s side
+  (the marker shipped as package data, no `python_version`, the three settings, the files
+  checked, mypy in the dev extra). Mutants, one at a time on a scratch copy: seven of the
+  code (a question put back on `load()`, the state kept between calls, the error made a
+  RuntimeError, `combined` set before the model's report, `_row_id` raising what
+  `adopt-legacy` would print, `report()` handing back None) and seven of `pyproject.toml`,
+  each killed by a test named for it; the first version of the ordering test let its
+  mutant through (it read the last assignment, not the first) and was tightened. A review
+  (one reviewer on scratch clones of both trees: 72 command-line runs on both Pythons, 771
+  materiality cases, the generator's four files, the six grader functions) found no
+  output, exit status, exception or draw that differs, and nothing high. Three mediums,
+  all fixed. `Materiality` and `Controls` were declared by their fields, so a typed caller
+  could not write `Materiality("50000")` (84 errors when mypy read the tests), and the
+  package passed only because its own callers hand over `Any`: a `TYPE_CHECKING`-only
+  `__init__` now says what each constructor takes, `load_csv` says it reads an open file
+  too, and `tests/typed_callers.py` holds such calls under mypy (narrowing a constructor
+  again is six errors there). The first version of the view raised a RuntimeError, which
+  two handlers print as a refused review database: now `LedgerNotLoaded`, as above. And
+  its test asked one question of six: now each has its own cases. Its lows are fixed too:
+  `combined` last; two fallbacks that could not be reached and would have misbehaved
+  quietly if they were (`port or 0`, and a timeout's wording for a wait that ended with no
+  outcome); the error type of `_row_id`; wording. The gate runs mypy in both venvs, and
+  coverage leaves out `if TYPE_CHECKING:` blocks, which never run. Not verified before the
+  PR's own run: the 3.11 leg, whose numpy and mypy no venv has (mypy 2.4.1 told to check
+  for 3.11 against the 3.12 venv's numpy 2.5 reports one error inside numpy's own stubs,
+  which use syntax Python 3.11 lacks; the 3.11 leg installs an older numpy), and that a
+  built wheel holds `py.typed` (neither venv can build offline; the package-data line is
+  pinned). The same PR corrects #43's computed 97.94% to the measured 98.00% in
+  `ci.yml`'s comment and CONTRIBUTING. Version unchanged (1.2.2).
 - **Next** — in the order the maintainer set on 2026-11-16: the rest of week 8's hardening
-  (mypy in CI, a performance pass, and the whole
+  (a performance pass, and the whole
   suite in CI with the `app` extra installed); week 7 as a separate ledger
   (`generate --realistic`, from its own streams as the held-out ledger is, so the default
   ledger, the eval cases and the held-out measurement do not move); and publishing last,
@@ -1360,7 +1442,7 @@ yet.
   the workpaper and the MCP entry rows (the explain tool returns both); the prompt a note
   answered (a review-schema change); and the reported model on new eval rows (a row-shape
   change).
-- 1484 tests on 3.9 (1 skipped) / 1504 on 3.12 (the twenty MCP tests need 3.10+), ruff clean.
+- 1501 tests on 3.9 (1 skipped) / 1521 on 3.12 (the twenty MCP tests need 3.10+), ruff and mypy clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
@@ -1401,7 +1483,7 @@ ledger CSV ──▶ ingest ──┼──▶ Isolation Forest ─────�
 | `review.py` | append-only SQLite store keyed by ledger (`ledger_id`; schema version 4 via `PRAGMA user_version`, numbered migrations from frozen DDL): decisions and versioned narratives, enforced by triggers; `read_only()` opener; `ledgers()` / `adopt_legacy()`; `CALLER_FAULTS`, the driver's errors that are a caller's fault rather than a refused write |
 | `narrate.py` | Claude narratives: structured-output JSON contract (checked again by `validate`: a field that is not text, or text the store cannot encode, refused; an evidence item's lines joined into one), cacheable system prompt, usage accounting, the model each response names (`response_model`), each note of a batch handed to the caller's `keep` as it comes back (`NoteNotKept` stops the batch) |
 | `narrative_eval.py` | case selection (the one label reader), rubric grader (the citation stripped before numbers are counted), `case_prompt` with per-case `overrides`, runner with case-file and ledger provenance, report with grader notes, case-set notes and baseline |
-| `ledger_context.py` | read-only query layer (summary, top exceptions, explain, search, Benford, review status); opens the review DB `mode=ro`, bound to the ledger's identity; 3.9-safe |
+| `ledger_context.py` | read-only query layer (summary, top exceptions, explain, search, Benford, review status), each question starting from `state()`, the loaded state as it stands with nothing missing (`LedgerNotLoaded` if a piece was taken away); opens the review DB `mode=ro`, bound to the ledger's identity; 3.9-safe |
 | `mcp_server.py` | MCP registration over `ledger_context` (v2 SDK, stdio); needs 3.10+ |
 | `summary.py` | one page on a scored ledger (`collect`, `render` as text / markdown / JSON); scores nothing itself; `md_code` renders ledger text as inert markdown |
 | `env.py` | dependency-free `.env` loader |
@@ -1509,7 +1591,18 @@ unhelpful. Say so wherever the number is quoted.
   from 17 (pandas 2.3 and 3.0 alike), and the order it gave tied lines differed between a Mac
   and the x86-64 Linux runners. A table that cannot reach 17 rows (the dashboard's four
   agreement counts) may rest on that.
-- Run `ruff check src tests app.py` and both venvs' test suites before every commit.
+- Run `ruff check src tests app.py`, `mypy` and the test suite in both venvs before every
+  commit.
+- `src/` has no `assert`, no `cast` and no `# type: ignore`. Where mypy cannot see that a
+  value is there, test the value itself: `if df is None:` after a helper that returns a
+  value or the line to print (exactly one of the two is None), or read the state through a
+  typed view that is built from the live attributes, as `LedgerContext.state()` is. A
+  statement that cannot be reached is not added to satisfy the checker, and neither is a
+  fallback that would misbehave quietly if it ever were. A constructor that takes more than
+  its fields hold says so in a `TYPE_CHECKING`-only `__init__`, and `tests/typed_callers.py`
+  (checked by mypy, not collected by pytest) holds the calls a typed caller must be able to
+  write. The six functions the eval's grader hashes are annotated already: do not touch
+  them for typing.
 - A change someone using the tool would notice gets a line under `Unreleased` in
   `CHANGELOG.md`. A version bump renames that section to the version and the day its
   release is published (UTC), gives each line its PR's number, opens a new empty

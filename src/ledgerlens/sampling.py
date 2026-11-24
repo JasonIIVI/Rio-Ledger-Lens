@@ -116,7 +116,7 @@ INPUT_NOTE = (
 
 def _confidence(value: object) -> Decimal:
     level, why = _decimal(value, "confidence")
-    if why:
+    if level is None:
         raise SamplingError(why)
     if not 0 < level < 1:
         raise SamplingError(f"confidence must be above 0 and below 1, got {level}")
@@ -352,13 +352,13 @@ def stratified_select(df: pd.DataFrame, materiality: Materiality, size: object,
         })
     bands = []
     for b in range(strata):
-        members = [c for c, k in zip(cents, band) if k == b]
+        amounts = [c for c, k in zip(cents, band) if k == b]
         bands.append({
             "band": b + 1,
-            "entries": len(members),
-            "value": sum(members) / 100,
-            "from": min(members) / 100 if members else None,
-            "to": max(members) / 100 if members else None,
+            "entries": len(amounts),
+            "value": sum(amounts) / 100,
+            "from": min(amounts) / 100 if amounts else None,
+            "to": max(amounts) / 100 if amounts else None,
             "drawn": alloc[b],
         })
     return Selection(

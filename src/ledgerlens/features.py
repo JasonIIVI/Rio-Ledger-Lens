@@ -49,7 +49,7 @@ def _freq_encode(series: pd.Series) -> pd.Series:
     return series.map(counts).astype(float).fillna(0.0)
 
 
-def _cyclical(values: pd.Series, period: int):
+def _cyclical(values: pd.Series, period: int) -> tuple[pd.Series, pd.Series]:
     """Encode a cyclical quantity so that 23:00 and 00:00 are neighbours."""
     radians = 2 * np.pi * values.astype(float) / period
     return np.sin(radians), np.cos(radians)

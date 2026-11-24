@@ -15,6 +15,7 @@ import re
 import stat
 import warnings
 from pathlib import Path
+from typing import IO, Any
 
 import numpy as np
 import pandas as pd
@@ -124,7 +125,7 @@ def quote(value: object) -> str:
     return text
 
 
-def _canonical(column: str, value):
+def _canonical(column: str, value: Any) -> str | int | None:
     """One value as the digest sees it, the same from memory and from a CSV."""
     if pd.isna(value):
         return None  # NA, NaT, NaN and (below) an empty string are one token
@@ -246,7 +247,7 @@ def _is_number(value: object) -> bool:
 def _spelled(numbers: pd.Series) -> pd.Series:
     """Numbers in a date column as the dates their digits spell (see ``_DIGIT_FORMATS``),
     NaT where they spell none."""
-    def digits(value) -> str:
+    def digits(value: Any) -> str:
         if isinstance(value, str):
             return value.strip()  # as written: a leading zero is a digit, as it is not in a number
         number = float(value)
@@ -269,7 +270,7 @@ def _has_zone(value: object) -> bool:
     return getattr(value, "tzinfo", None) is not None
 
 
-def _dates(cells: pd.Series, **how) -> pd.Series | None:
+def _dates(cells: pd.Series, **how: Any) -> pd.Series | None:
     """``to_datetime`` with failures as NaT, or None for cells in several zones (pandas 2
     returns objects for those, with a warning; pandas 3 raises). pandas' warnings are kept from
     the user: its guess warns about dayfirst=False on 16/01/2024, which no one can pass here."""
@@ -374,7 +375,7 @@ def _read_dates(column: str, raw: pd.Series, blank: np.ndarray) -> tuple[pd.Seri
     # the clock or a time with a zone (only the cells before it are checked for a zone here)
     candidates = np.flatnonzero(text & ~blank & ~number & ~clock)
 
-    def lead(cells) -> int | None:
+    def lead(cells: Any) -> int | None:
         return next((int(i) for i in candidates if not _has_zone(cells[i])), None)
 
     cells, final = raw, objs
@@ -512,8 +513,8 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def load_csv(path: str | Path) -> pd.DataFrame:
-    """Read a GL CSV from disk and prepare it.
+def load_csv(path: str | Path | IO[str]) -> pd.DataFrame:
+    """Read a GL CSV from disk (or from an open text file) and prepare it.
 
     Text columns are read as text: an account code such as 0100 must come
     back as the string it is, not as the integer 100.

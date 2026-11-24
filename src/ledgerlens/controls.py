@@ -24,9 +24,11 @@ import os
 import reprlib
 import stat
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .ingest import quote
 
@@ -67,7 +69,7 @@ class _Unusable:
         return self.text
 
 
-def _number(text: str, kind) -> object:
+def _number(text: str, kind: Callable[[str], object]) -> object:
     if len(text) > 40:
         return _Unusable(text, "has more digits than a control needs")
     try:
@@ -202,6 +204,14 @@ class Controls:
     manual_entry_approvers: tuple[str, ...]
     approval_limit: float
     source: str | None = field(default=None, compare=False)
+
+    if TYPE_CHECKING:
+        # What the constructor takes is wider than what the fields hold once __post_init__
+        # has judged them: any list or tuple of names, and a limit as an int, a float or a
+        # Decimal. Whatever a controls file holds is handed over as it is and refused here.
+        def __init__(self, manual_entry_approvers: object, approval_limit: object,
+                     source: str | None = None) -> None:
+            ...
 
     def __post_init__(self) -> None:
         problems = _approver_problems(self.manual_entry_approvers)

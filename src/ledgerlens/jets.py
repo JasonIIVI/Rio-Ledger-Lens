@@ -16,7 +16,7 @@ chosen with that in mind.
 
 from __future__ import annotations
 
-from typing import Callable
+from typing import Any, Callable
 
 import numpy as np
 import pandas as pd
@@ -392,7 +392,7 @@ def run_all(
     and JET-06 read; None is the synthetic company's (``DEFAULT_CONTROLS``).
     """
     controls = DEFAULT_CONTROLS if controls is None else controls
-    settings = {
+    settings: dict[str, dict[str, Any]] = {
         "JET-06": {"threshold": controls.approval_limit},
         "JET-12": {"approvers": controls.manual_entry_approvers},
     }

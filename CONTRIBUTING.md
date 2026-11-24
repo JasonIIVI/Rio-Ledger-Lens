@@ -17,6 +17,7 @@ Claude API: the `llm` fixture in `tests/conftest.py` stands in for it.
 
 ```bash
 ruff check src tests app.py
+mypy
 pytest -q --cov=ledgerlens
 ```
 
@@ -25,8 +26,21 @@ regenerates the ledger and fails if precision drops below 0.80 or recall below 0
 Those three test jobs also fail under a coverage floor: 96% on 3.9, where the MCP SDK
 cannot be installed and `mcp_server.py` counts as untested, and 97% on 3.11 and 3.12. Each
 is the whole percent under that job's own total when the floor was set (96.71% and
-97.94%), so a new module left untested fails the job. Raise a floor once the total has
+98.00%), so a new module left untested fails the job. Raise a floor once the total has
 moved well clear of it; never lower one to get a change through.
+
+`mypy` checks `src/ledgerlens` with the settings in `pyproject.toml`, and CI runs it on
+all three Pythons: every function is annotated, and a value that may be `None` is tested
+before it is used. pandas, scikit-learn, scipy and openpyxl ship no types, so what comes
+out of them is unchecked. The source has no `assert`, no `cast` and no `# type: ignore`:
+when the checker cannot see that a value is there, test the value itself (`if df is None:`
+after a helper that returns a value or a reason), or give the state a typed view, as
+`LedgerContext.state()` does. A constructor that takes more than its fields hold says so in
+a `TYPE_CHECKING`-only `__init__`, and `tests/typed_callers.py` holds the calls a typed
+caller must be able to write: mypy checks that file, and pytest does not collect it. The
+six functions the eval's grader hashes (`narrate.validate` and five in
+`narrative_eval.py`) are annotated already: an edit to one, a docstring included, moves the
+grader's hash.
 The dashboard's tests (`tests/test_app.py`) need the `app` extra, which those jobs do not
 install, and one workpaper test (in `tests/test_report.py`) needs the pyarrow that comes
 with it. CI runs both files in its `dashboard` job, on Python 3.9 and 3.12.

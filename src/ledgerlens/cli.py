@@ -276,11 +276,11 @@ def cmd_test(args: argparse.Namespace) -> int:
         print(problem)
         return 2
     df, problem = _load_ledger(args.ledger)
-    if problem:
+    if df is None:
         print(problem)
         return 2
     controls, problem = _load_controls(args.ledger)
-    if problem:
+    if controls is None:
         print(problem)
         return 2
     labels = None
@@ -346,7 +346,7 @@ def cmd_test(args: argparse.Namespace) -> int:
 
 def cmd_benford(args: argparse.Namespace) -> int:
     df, problem = _load_ledger(args.ledger)
-    if problem:
+    if df is None:
         print(problem)
         return 2
     if args.by:
@@ -386,11 +386,11 @@ def cmd_benford(args: argparse.Namespace) -> int:
 def cmd_score(args: argparse.Namespace) -> int:
     """Run both tiers and show how they agree."""
     df, problem = _load_ledger(args.ledger)
-    if problem:
+    if df is None:
         print(problem)
         return 2
     controls, problem = _load_controls(args.ledger)
-    if problem:
+    if controls is None:
         print(problem)
         return 2
     labels = None
@@ -456,11 +456,11 @@ def cmd_report(args: argparse.Namespace) -> int:
         print(problem)
         return 2
     df, problem = _load_ledger(args.ledger)
-    if problem:
+    if df is None:
         print(problem)
         return 2
     controls, problem = _load_controls(args.ledger)
-    if problem:
+    if controls is None:
         print(problem)
         return 2
     labels = None
@@ -597,7 +597,7 @@ def cmd_summary(args: argparse.Namespace) -> int:
         # Read here, not by the context, which is handed a frame: said as test says it,
         # and not printed when used (the page names them; JSON stays one document).
         controls, problem = _load_controls(args.ledger)
-        if problem:
+        if controls is None:
             print(problem)
             return 2
         labels = None
@@ -657,8 +657,8 @@ def cmd_sample(args: argparse.Namespace) -> int:
               "performance materiality")
         return 2
     materiality, problem = _materiality_from(args)
-    if problem:
-        print(problem)
+    if materiality is None:  # the parser requires --materiality here; said again if it ever does not
+        print(problem or "error: --materiality is required")
         return 2
     try:
         check_sample_parameters(args.method, confidence=args.confidence, size=args.size,
@@ -667,7 +667,7 @@ def cmd_sample(args: argparse.Namespace) -> int:
         print(f"error: {one_line(exc)}")
         return 2
     df, problem = _load_ledger(args.ledger)
-    if problem:
+    if df is None:
         print(problem)
         return 2
     try:
@@ -694,11 +694,11 @@ def cmd_narrate(args: argparse.Namespace) -> int:
     """Write Claude narratives for the riskiest entries, each stored in the review store as it
     comes back."""
     df, problem = _load_ledger(args.ledger)
-    if problem:
+    if df is None:
         print(problem)
         return 2
     controls, problem = _load_controls(args.ledger)
-    if problem:
+    if controls is None:
         print(problem)
         return 2
     _say_controls(controls)
@@ -780,7 +780,7 @@ def cmd_adopt_legacy(args: argparse.Namespace) -> int:
         print(f"error: no review database at {args.db}")
         return 2
     df, problem = _load_ledger(args.ledger)
-    if problem:
+    if df is None:
         print(problem)
         return 2
     try:
@@ -922,6 +922,8 @@ def cmd_pull_qbo(args: argparse.Namespace) -> int:
               "with a letter or digit")
         return 2
     store = None
+    tokens: Tokens | None
+    transport: qbo.Transport | None
     if args.fixtures:
         realm = args.realm_id or FIXTURE_REALM
         try:  # a replay converts times the way the recorded pull did
@@ -1072,7 +1074,7 @@ def cmd_eval_narratives(args: argparse.Namespace) -> int:
         print("--select needs --labels: the label file decides which entries to test")
         return 2
     df, problem = _load_ledger(args.ledger)
-    if problem:
+    if df is None:
         print(problem)
         return 2
     # Rule 1 at the point of writing, before anything is scored: the committed
@@ -1083,7 +1085,7 @@ def cmd_eval_narratives(args: argparse.Namespace) -> int:
     ledger_sha256 = narrative_eval.ledger_digest(df)
     default_ledger = ledger_sha256 == narrative_eval.DEFAULT_LEDGER_SHA256
     controls, problem = _load_controls(args.ledger)
-    if problem:
+    if controls is None:
         print(problem)
         return 2
     if default_ledger and not controls.is_default:

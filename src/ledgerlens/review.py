@@ -378,7 +378,19 @@ def _narrative_dict(row: sqlite3.Row) -> dict:
     return data
 
 
-def _check_ledger_id(ledger_id) -> str:
+def _row_id(cur: sqlite3.Cursor) -> int:
+    """The id SQLite gave the row ``cur`` has just inserted.
+
+    A cursor that has inserted nothing has none. That is a fault in the caller, not a
+    refusal by the file, so it is a TypeError, as ``int(None)`` was, and no handler words it
+    as a review database that cannot be used.
+    """
+    if cur.lastrowid is None:
+        raise TypeError("no row was inserted, so there is no row id to record")
+    return int(cur.lastrowid)
+
+
+def _check_ledger_id(ledger_id: object) -> str:
     """The identity a store is bound to: ``csv:<digest>`` or ``qbo:<realm>``, never blank."""
     if not isinstance(ledger_id, str) or not ledger_id or any(c.isspace() for c in ledger_id):
         raise ValueError(
@@ -509,7 +521,7 @@ class ReviewStore:
                 ),
             )
             conn.commit()
-            return int(cur.lastrowid)
+            return _row_id(cur)
 
     def history(self, entry_id: str) -> pd.DataFrame:
         """Every decision ever recorded against one entry, oldest first."""
@@ -586,7 +598,7 @@ class ReviewStore:
                 ),
             )
             conn.commit()
-            return int(cur.lastrowid)
+            return _row_id(cur)
 
     def get_narrative(self, entry_id: str) -> dict | None:
         """The latest narrative written for an entry, with its ``id``, or None."""
@@ -733,7 +745,7 @@ class ReviewStore:
                          r["evidence_to_request"], r["suggested_control"], r["confidence"],
                          r["model"], r["generated_at"]),
                     )
-                    remap[r["id"]] = int(cur.lastrowid)
+                    remap[r["id"]] = _row_id(cur)
                 for r in decisions:
                     old = r["narrative_id"]
                     if old is not None and old not in remap:

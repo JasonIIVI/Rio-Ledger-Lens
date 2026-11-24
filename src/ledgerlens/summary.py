@@ -22,6 +22,7 @@ import json
 import platform
 import re
 import textwrap
+from collections.abc import Callable, Sequence
 from dataclasses import asdict
 from datetime import date, datetime, timezone
 
@@ -106,7 +107,7 @@ def _decision_kind(value: object) -> str | None:
     """
     if value is None:
         return None
-    return value if value in DECISIONS else "unrecognised"
+    return value if isinstance(value, str) and value in DECISIONS else "unrecognised"
 
 
 def _definitional(anomaly_type: str) -> bool | None:
@@ -140,9 +141,9 @@ def collect(
     gets its band and the page a block of the figures and the flagged entries by band,
     ``fiscal_year`` being the year the figures are set for (``materiality.fiscal_year_for``).
     """
-    context.load()
+    state = context.state()
     base = context.summary()
-    report = context.model_report
+    report = state.model_report
     payload = {
         "caveat": CAVEAT,  # the page-wide caveat opens the page; it opens the JSON too
         "run_date": (today or datetime.now(timezone.utc).date()).isoformat(),
@@ -175,7 +176,7 @@ def collect(
             "caveat": MODEL_TIER_NOTE,
             **asdict(report),
             "top_pct": context.model_top_pct,
-            "flagged": int(context.combined["model_flag"].sum()),
+            "flagged": int(state.combined["model_flag"].sum()),
         },
         "top_exceptions": [_entry(r) for r in context.top_exceptions(limit=top)["entries"]],
     }
@@ -184,15 +185,15 @@ def collect(
         # Beside the score and never in it (rule 3): a label per entry, counts of the flagged
         # entries by band, and the two notes ahead of the figures they qualify.
         if fiscal_year is None:  # the ledger's one year, or the population's refusal of several
-            fiscal_year = fiscal_year_for(context.combined)
-        banded = bands(context.combined, materiality, fiscal_year)
-        by_id = dict(zip(context.combined["entry_id"], banded))
+            fiscal_year = fiscal_year_for(state.combined)
+        banded = bands(state.combined, materiality, fiscal_year)
+        by_id = dict(zip(state.combined["entry_id"], banded))
         payload["materiality"] = {
             "note": BAND_NOTE,
             "fiscal_year_note": FISCAL_YEAR_NOTE,
             **materiality.as_dict(),
             "fiscal_year": fiscal_year,
-            "flagged_by_band": count_by_band(banded[context.combined["risk_score"] > 0]),
+            "flagged_by_band": count_by_band(banded[state.combined["risk_score"] > 0]),
         }
         for entry in payload["top_exceptions"]:
             entry["materiality_band"] = by_id.get(entry["entry_id"])
@@ -225,7 +226,7 @@ def collect(
         }
 
     if labels is not None:
-        by_archetype = records(evaluate.recall_by_archetype(context.flags, labels))
+        by_archetype = records(evaluate.recall_by_archetype(state.flags, labels))
         for row in by_archetype:
             row["definitional"] = _definitional(row["anomaly_type"])
             row["held_out"] = row["anomaly_type"] in HeldOutType.ALL
@@ -237,7 +238,7 @@ def collect(
             HeldOutType.ALL.index(r["anomaly_type"]) if r["held_out"] else 0,
             r["definitional"] is not False,
             r["anomaly_type"]))
-        metrics = evaluate.evaluate(context.flags, labels, context.lines["entry_id"].unique())
+        metrics = evaluate.evaluate(state.flags, labels, state.lines["entry_id"].unique())
         flagged, truth = metrics["flagged"] > 0, metrics["true_anomalies"] > 0
         payload["detection_caveat"] = evaluate.DETECTION_CAVEAT  # first: read before the figures
         payload["detection"] = {
@@ -384,7 +385,7 @@ def _read_as(row: dict) -> str:
     return "definitional" if row["definitional"] else "not definitional"
 
 
-def _controls_sentence(controls: dict, code) -> str:
+def _controls_sentence(controls: dict, code: Callable[[object], str]) -> str:
     """The controls as one line, every string from a file through ``code``."""
     if controls["source"] is None:
         origin = "the synthetic company's (no controls file beside the ledger)"
@@ -529,7 +530,9 @@ def render_text(payload: dict) -> str:
     return "\n".join(out)
 
 
-def _table(header: tuple[str, ...], rows: list[tuple[str, ...]], right: tuple[int, ...] = ()) -> list[str]:
+def _table(
+    header: tuple[str, ...], rows: Sequence[tuple[str, ...]], right: tuple[int, ...] = (),
+) -> list[str]:
     rule = ["---:" if i in right else "---" for i in range(len(header))]
     return ["| " + " | ".join(cells) + " |" for cells in (header, tuple(rule), *rows)]
 

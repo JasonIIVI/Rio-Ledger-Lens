@@ -16,6 +16,9 @@ them together with the caveat they need.
 
 ### Added
 - This changelog, and issue templates for a bug report and a feature request.
+- Type information: the package ships `py.typed`, every function is annotated, and CI
+  checks it with mypy. `LedgerContext.state()` gives a loaded context's state with nothing
+  left optional, and `AnomalyModel.report()` the report of a fit.
 
 ### Fixed
 - `benford --by` with a column the ledger does not have prints one `error:` line that

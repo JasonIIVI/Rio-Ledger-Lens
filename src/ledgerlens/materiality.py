@@ -24,6 +24,7 @@ import operator
 from dataclasses import dataclass
 from decimal import ROUND_FLOOR, Decimal, InvalidOperation, localcontext
 from fractions import Fraction
+from typing import TYPE_CHECKING
 
 import pandas as pd
 
@@ -44,8 +45,8 @@ _MAX_DIGITS = 40
 class SamplingError(ValueError):
     """Materiality, or a sampling parameter, that cannot be used."""
 
-def _decimal(value: object, name: str) -> tuple[Decimal | None, str | None]:
-    """``(value as a Decimal, None)``, or ``(None, why it is not a finite number)``.
+def _decimal(value: object, name: str) -> tuple[Decimal | None, str]:
+    """``(value as a Decimal, "")``, or ``(None, why it is not a finite number)``.
 
     Read as written: a string is parsed by Decimal, never through a float, so 0.1 is
     0.1. A number built in code is read by its value: an integer exactly, a float (numpy's
@@ -78,7 +79,7 @@ def _decimal(value: object, name: str) -> tuple[Decimal | None, str | None]:
         return None, f"{name} must be a number, got {quote(value)}"
     if not number.is_finite():
         return None, f"{name} must be a finite number, got {quote(str(value))}"
-    return number, None
+    return number, ""
 
 def _whole(value: object, name: str, low: int, high: int | None = None) -> int:
     """``value`` as a whole number from ``low`` (to ``high``), or a SamplingError.
@@ -134,10 +135,17 @@ class Materiality:
     performance_share: Decimal = DEFAULT_PERFORMANCE_SHARE
     trivial_share: Decimal = DEFAULT_TRIVIAL_SHARE
 
+    if TYPE_CHECKING:
+        # What the constructor takes is wider than what the fields hold once __post_init__
+        # has read them: a figure as written (a string), an int, a float or a Decimal.
+        def __init__(self, overall: object, performance_share: object = ...,
+                     trivial_share: object = ...) -> None:
+            ...
+
     def __post_init__(self) -> None:
         problems = []
         overall, why = _decimal(self.overall, "materiality")
-        if why:
+        if overall is None:
             problems.append(why)
         elif overall <= 0:
             problems.append(f"materiality must be above 0, got {overall}")
@@ -147,23 +155,27 @@ class Materiality:
             # compared, not computed: below the ceiling the quantized value is exact
             problems.append(f"materiality {overall} is not a whole number of cents")
         performance, why = _decimal(self.performance_share, "performance share")
-        why = why or _share_problem(performance, "performance share", None)
-        performance_ok = why is None
+        if performance is not None:
+            why = _share_problem(performance, "performance share", None) or ""
+        performance_ok = not why
         if why:
             problems.append(why)
         trivial, why = _decimal(self.trivial_share, "clearly trivial share")
-        why = why or _share_problem(trivial, "clearly trivial share",
-                                    performance if performance_ok else None)
+        if trivial is not None:
+            why = _share_problem(trivial, "clearly trivial share",
+                                 performance if performance_ok else None) or ""
         if why:
             problems.append(why)
-        if not problems:
-            object.__setattr__(self, "overall", overall)
-            object.__setattr__(self, "performance_share", performance)
-            object.__setattr__(self, "trivial_share", trivial)
-            for figure, cents, share in (("performance materiality", self.performance_cents, performance),
-                                         ("clearly trivial", self.trivial_cents, trivial)):
-                if cents < 1:
-                    problems.append(f"{figure} ({percent(share)} of {overall}) is less than a cent")
+        # With no problem so far all three are numbers; said to the type checker in the same test.
+        if problems or overall is None or performance is None or trivial is None:
+            raise SamplingError("; ".join(problems))
+        object.__setattr__(self, "overall", overall)
+        object.__setattr__(self, "performance_share", performance)
+        object.__setattr__(self, "trivial_share", trivial)
+        for figure, cents, share in (("performance materiality", self.performance_cents, performance),
+                                     ("clearly trivial", self.trivial_cents, trivial)):
+            if cents < 1:
+                problems.append(f"{figure} ({percent(share)} of {overall}) is less than a cent")
         if problems:
             raise SamplingError("; ".join(problems))
 
