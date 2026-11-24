@@ -106,7 +106,8 @@ venv has 1.64, so CI's 3.12 dashboard leg can fail where both venvs pass.
   choice was keyed by ledger but not by file, a `null` override and a Unicode-digit line key
   got past the case loader, and the draft half of the per-entry keying was untested.
 - **QuickBooks Online connector (PR #8, `week4/qbo-connector`, released in v1.0.0)** — `connectors/qbo.py`,
-  standard library only: OAuth 2.0 through the token store (`ledgerlens qbo-auth`, a
+  no new dependency (HTTP, OAuth and the callback server are the standard library's; the
+  mapping uses pandas): OAuth 2.0 through the token store (`ledgerlens qbo-auth`, a
   localhost callback that accepts only the expected state), a client that refreshes once on
   a 401, waits out a 429 (60 s unless `Retry-After` says otherwise) and pages queries, and a
   pure mapping (`ledgerlens pull-qbo`): journal entries from the entity with the user from
@@ -1238,8 +1239,45 @@ venv has 1.64, so CI's 3.12 dashboard leg can fail where both venvs pass.
     that holds a line break is printed on two lines: only the refusal line added here puts
     it through `one_line`.
   Version unchanged (1.2.1).
-- **Next** — in the order the maintainer set on 2026-11-16: week 8's hardening (a
-  changelog, mypy in CI, `mcp_server.py`'s coverage, a performance pass, and the whole
+- **A changelog and issue templates (week 8, `docs/changelog`, after v1.2.2)** — the first
+  of week 8's hardening PRs. `CHANGELOG.md` summarises every release, v0.2.0 to v1.2.2, in
+  the Keep a Changelog layout (Added, Changed, Fixed), each version linked to its release's
+  notes on GitHub, the fuller record. It was written from the nine published notes, and
+  from the commits for what they leave out: #6, which v0.4.0's notes do not name, week 1's
+  work, and the PR numbers of v0.2.0 and v0.3.0. Each date is the day the release was
+  published, in UTC. It quotes no detection figure, so no caveat has to travel with it. An
+  `Unreleased` section heads it, and its lines get their PR numbers when it becomes a
+  version. `tests/test_changelog.py` cannot check a summary's wording, and holds what a
+  version bump or an edit would break: every second-level heading is `Unreleased` or a
+  dated version, the newest version listed is the package's (a bump with no entry fails),
+  versions run downwards and dates never upwards, every version links to its own release
+  tag and `Unreleased` compares from the newest, and nothing in the file has the shape of a
+  detection figure (a decimal below 1 to two places or more, a percent, a lift).
+  `.github/ISSUE_TEMPLATE/` has a bug report and a feature request. Both say the repository
+  is public and that nothing real goes into an Issue (rule 1 at the front door). The hazard
+  is `claude.yml`: it runs when a new Issue's title or body holds its mention, and a
+  template's text, an HTML comment included, is the body of every Issue opened from it, so
+  a mention there would start that workflow for every Issue opened from it. The test reads
+  the mention from the workflow and holds every file in the folder to it, in any case, and
+  to no `@` at all. 19 mutants (a bump with no entry, a heading the pattern does not read,
+  versions and dates out of order, a wrong or missing link, a figure of each shape, a
+  mention in a template's comment), run one at a time on a scratch copy, are each killed by
+  the test named for them. README and CONTRIBUTING point at the changelog, and
+  CONTRIBUTING says which change gets a line and what a version bump does to the file. A
+  claims review (one agent, read-only, against the nine notes, the commits and the code)
+  found nothing false that a reader would act on, and five mediums, all fixed: four
+  sentences that said more than the notes (a reply's evidence item was stored under its
+  Python spelling, not a traceback; Benford's note is ahead of the figures on three
+  surfaces and on the workpaper's Methodology sheet; the QuickBooks connector adds no
+  dependency but does import pandas; `test`, `score` and `benford` print ledger text as one
+  line, where "the command line" was too wide), and a bump recipe that, followed as
+  written, failed the new test (it must open a new `Unreleased` section). Its lows are
+  fixed too: five upgrade notes the first draft left out (v0.4.0's `adopt-legacy` step
+  among them), a heading, and wording. The QuickBooks sentence was this file's own: the
+  connector bullet above and the module table said "standard library only" and "stdlib",
+  and now say what the code does. Version unchanged (1.2.2).
+- **Next** — in the order the maintainer set on 2026-11-16: the rest of week 8's hardening
+  (mypy in CI, `mcp_server.py`'s coverage, a performance pass, and the whole
   suite in CI with the `app` extra installed), which since the maintainer's word of
   2026-11-24 also holds `benford --by` with a column the ledger does not have (a `KeyError`
   traceback in v1.2.1 and v1.2.2 alike, found by the v1.2.2 notes' claims review; to be one
@@ -1258,7 +1296,7 @@ venv has 1.64, so CI's 3.12 dashboard leg can fail where both venvs pass.
   the workpaper and the MCP entry rows (the explain tool returns both); the prompt a note
   answered (a review-schema change); and the reported model on new eval rows (a row-shape
   change).
-- 1475 tests on 3.9 (1 skipped) / 1490 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
+- 1481 tests on 3.9 (1 skipped) / 1496 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
@@ -1303,7 +1341,7 @@ ledger CSV ──▶ ingest ──┼──▶ Isolation Forest ─────�
 | `mcp_server.py` | MCP registration over `ledger_context` (v2 SDK, stdio); needs 3.10+ |
 | `summary.py` | one page on a scored ledger (`collect`, `render` as text / markdown / JSON); scores nothing itself; `md_code` renders ledger text as inert markdown |
 | `env.py` | dependency-free `.env` loader |
-| `connectors/qbo.py` | QuickBooks Online: `QboConfig` (`QBO_*`), transports (urllib, `RecordedTransport` replay, sanitizing `Recorder`), OAuth (`QboAuth`, `CallbackServer`), `QboClient` (refresh, throttling, paging), and the mapping into the ledger contract (`pull`, `PullStats`, `write_identity`); stdlib |
+| `connectors/qbo.py` | QuickBooks Online: `QboConfig` (`QBO_*`), transports (urllib, `RecordedTransport` replay, sanitizing `Recorder`), OAuth (`QboAuth`, `CallbackServer`), `QboClient` (refresh, throttling, paging), and the mapping into the ledger contract (`pull`, `PullStats`, `write_identity`); HTTP, OAuth and the callback server on the standard library, the mapping on pandas |
 | `connectors/tokens.py` | QuickBooks token store: `~/.config/ledgerlens/qbo-<environment>-<realm>.json` (`$XDG_CONFIG_HOME/ledgerlens/` when set; `$LEDGERLENS_TOKEN_DIR` overrides both), mode 600, a record only for the realm its file names, refuses any path inside a git checkout; stdlib |
 | `cli.py` | `generate` / `test` / `score` / `benford` / `report` / `summary` / `sample` / `narrate` / `adopt-legacy` / `eval-narratives` / `qbo-auth` / `pull-qbo` |
 | `app.py` | Streamlit dashboard: queue, note, decision form, history |
@@ -1408,6 +1446,12 @@ unhelpful. Say so wherever the number is quoted.
   and the x86-64 Linux runners. A table that cannot reach 17 rows (the dashboard's four
   agreement counts) may rest on that.
 - Run `ruff check src tests app.py` and both venvs' test suites before every commit.
+- A change someone using the tool would notice gets a line under `Unreleased` in
+  `CHANGELOG.md`. A version bump renames that section to the version and the day its
+  release is published (UTC), gives each line its PR's number, opens a new empty
+  `Unreleased` section above it, adds the version's link and points the `Unreleased` link at
+  the new tag; if the release is published on another day, the PR that records the tag
+  corrects the date. The changelog quotes no detection figure.
 - The Claude API is never called from a test: `tests/conftest.py` has the fake client
   (`llm` fixture) shaped like the real responses, thinking block included.
 - The held-out recipes are tested on `DEV_SEEDS`. The measured ledger (`HELD_OUT_SEED`) is the

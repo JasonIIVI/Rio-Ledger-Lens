@@ -26,6 +26,19 @@ The dashboard's tests (`tests/test_app.py`) need the `app` extra, which those jo
 install, and one workpaper test (in `tests/test_report.py`) needs the pyarrow that comes
 with it. CI runs both files in its `dashboard` job, on Python 3.9 and 3.12.
 
+A change that someone using the tool would notice gets a line under `Unreleased` in
+`CHANGELOG.md`. A version bump renames that section to the version and the day its release
+is published (UTC), gives each of its lines the number of the pull request that made the
+change, opens a new empty `Unreleased` section above it, adds the version's link at the
+foot of the file and points the `Unreleased` link at the new tag;
+`tests/test_changelog.py` fails a bump that adds no entry. The changelog quotes no
+detection figure: those are given in the README, with their caveat.
+
+To report a problem or ask for a feature, the issue templates under
+`.github/ISSUE_TEMPLATE/` ask for what is needed. The repository is public, so nothing real
+goes into an Issue: no ledger, labels file, workpaper, review database, controls file,
+token or key.
+
 ## Adding a journal-entry test
 
 1. Write the function in `src/ledgerlens/jets.py`. It takes the prepared DataFrame and

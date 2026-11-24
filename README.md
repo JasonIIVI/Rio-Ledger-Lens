@@ -727,6 +727,9 @@ and reopen Claude Desktop:
 - [x] **Week 6, second part** — each entry's materiality band beside its risk score, in `test`,
       `summary`, the workpaper and the dashboard, never folded into the score (v1.2.0)
 
+What each release changed, the fixes of v1.2.1 and v1.2.2 included, is summarised in
+[CHANGELOG.md](CHANGELOG.md), which links to every release's full notes.
+
 ## Limitations
 
 [docs/limitations.md](docs/limitations.md) says what the published numbers can carry, how
