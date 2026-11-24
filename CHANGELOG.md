@@ -17,6 +17,10 @@ them together with the caveat they need.
 ### Added
 - This changelog, and issue templates for a bug report and a feature request.
 
+### Fixed
+- `benford --by` with a column the ledger does not have prints one `error:` line that
+  names the columns there are, where it ended in a traceback.
+
 ## [1.2.2] - 2026-11-24
 
 ### Changed

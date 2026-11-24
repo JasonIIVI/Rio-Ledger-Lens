@@ -350,6 +350,12 @@ def cmd_benford(args: argparse.Namespace) -> int:
         print(problem)
         return 2
     if args.by:
+        if args.by not in df.columns:
+            # The groupby raised a KeyError: a traceback. The name is quoted as typed (a stray
+            # space or another case is usually why it missed), and a header is ledger text.
+            print("error: cannot segment by {}: not a column of this ledger (its columns: {})".format(
+                quote(args.by), ", ".join(one_line(column) for column in df.columns)))
+            return 2
         result = segmented_benford(df, by=args.by, min_n=args.min_n)
         if result.empty:
             # Segments are kept by their rows (lines), not by entries.
