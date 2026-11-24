@@ -121,3 +121,53 @@ def test_the_entry_account_is_the_first_of_its_largest_lines(ledger):
     forward = build_features(ledger)["amount_z_in_account"]
     backward = build_features(ledger.iloc[::-1])["amount_z_in_account"]
     pd.testing.assert_series_equal(backward.sort_index(), forward.sort_index())
+
+
+def _entropy_of(amount):
+    """The digit entropy as it is defined: Shannon entropy, in bits, of an amount's digits."""
+    digits = [c for c in f"{abs(amount):.2f}" if c.isdigit()]
+    if not digits:
+        return 0.0
+    share = pd.Series(digits).value_counts(normalize=True)
+    return float(-(share * np.log2(share)).sum())
+
+
+def test_digit_entropy_is_each_amounts_own_entropy_to_the_last_bit():
+    """The entropy is worked out once for each pattern of digit counts and looked up after
+    that. Every amount must still get exactly what its own digits give, to the last bit of
+    the float: the model reads this column, and a difference in the last place can move a
+    score. Amounts that share a pattern with other digits (5,555.00 and 7,777.00), share a
+    length but not a pattern (1,111.11 and 1,234.56), or have no digits at all are here."""
+    from ledgerlens.features import _digit_entropy
+
+    amounts = pd.Series([
+        5555.00, 7777.00, 5500.55, 1111.11, 1234.56, 6543.21, 1122.33, 9.99, 0.00, -0.0, 100000.00,
+        -5555.00, 0.004, 0.005, 1234567890.12, 99999999999.99, 1e15, 0.1 + 0.2, 12.3, 123.456,
+        float("nan"), float("inf"), float("-inf"), 1.0, 10.0, 100.0, 1000.0, 7.0, 77.0, 777.77,
+    ])
+    got = _digit_entropy(amounts).to_numpy(dtype="float64")
+    want = np.array([_entropy_of(a) for a in amounts], dtype="float64")
+    assert np.array_equal(got.view(np.int64), want.view(np.int64))
+    assert got[0] == got[1] == got[2] != got[3]  # one pattern, three amounts; another pattern
+    assert got[3] < got[4] and got[4] == got[5]  # six distinct digits carry more than one repeated
+    assert got[20] == got[21] == got[22] == 0.0  # no digits: nothing to measure
+
+
+def test_digit_entropy_asks_pandas_once_for_each_pattern_not_once_for_each_amount(monkeypatch):
+    """One pandas call for every amount made this the slowest step of the model tier: nearly
+    half of `score`'s time on a ledger of 100,000 entries. The patterns are few (37 on that
+    ledger), so the calls must be too. Counted, not timed."""
+    from ledgerlens.features import _digit_entropy
+
+    calls = []
+    real = pd.Series.value_counts
+
+    def counted(self, *args, **kwargs):
+        calls.append(len(self))
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(pd.Series, "value_counts", counted)
+    amounts = pd.Series([round(1000 + 0.37 * i, 2) for i in range(3000)])
+    result = _digit_entropy(amounts)
+    assert len(result) == 3000 and result.nunique() == len(calls)  # one call for each distinct pattern
+    assert len(calls) < 60

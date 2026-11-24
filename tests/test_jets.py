@@ -167,6 +167,41 @@ def test_a_same_day_duplicate_is_the_one_keyed_later():
     assert "as JE-3 posted 1 day(s) earlier" in flags["reason"].iloc[0]
 
 
+def test_the_duplicate_test_groups_only_the_fingerprints_that_occur_again(monkeypatch):
+    """Nearly every fingerprint (amount, accounts, description) occurs once, and visiting each
+    such group was most of this test's time on a large ledger: 99,633 groups for 100,569
+    entries, 730 of them of two or more. Only entries whose fingerprint occurs again are
+    grouped, and what is flagged is what was: three postings of one invoice flag the second
+    and the third, a blank description is a fingerprint like any other, and an entry with no
+    twin is not flagged. Counted, not timed."""
+    key = ["entry_amount", "pair", "description"]
+    rows = [
+        ("JE-01", "2024-03-01", "2024-03-01 09:00", "6000", "1000", 500.0, "Invoice 42"),
+        ("JE-02", "2024-03-02", "2024-03-02 09:00", "6000", "1000", 500.0, "Invoice 42"),
+        ("JE-03", "2024-03-03", "2024-03-03 09:00", "6000", "1000", 500.0, "Invoice 42"),
+        ("JE-04", "2024-03-04", "2024-03-04 09:00", "6100", "1000", 75.0, None),
+        ("JE-05", "2024-03-05", "2024-03-05 09:00", "6100", "1000", 75.0, None),
+        ("JE-06", "2024-03-06", "2024-03-06 09:00", "6100", "1000", 75.0, "A description of its own"),
+    ] + [(f"JE-{n:02d}", "2024-03-07", "2024-03-07 09:00", "6200", "1000", 10.0 * n, f"One of a kind {n}")
+         for n in range(7, 47)]
+    ledger = _entries(rows)
+    grouped = []
+    real = pd.DataFrame.groupby
+
+    def counted(self, by=None, *args, **kwargs):
+        if by == key:
+            grouped.append(sorted(self["entry_id"]))
+        return real(self, by, *args, **kwargs)
+
+    monkeypatch.setattr(pd.DataFrame, "groupby", counted)
+    flags = jets.jet_duplicate_entries(ledger)
+    assert grouped == [["JE-01", "JE-02", "JE-03", "JE-04", "JE-05"]]  # 5 of the 46 entries
+    assert sorted(flags["entry_id"]) == ["JE-02", "JE-03", "JE-05"]
+    by_id = dict(zip(flags["entry_id"], flags["reason"]))
+    assert "as JE-01 posted 1 day(s) earlier" in by_id["JE-02"] and "as JE-01 posted 2 day(s) earlier" in by_id["JE-03"]
+    assert "as JE-04 posted 1 day(s) earlier" in by_id["JE-05"]
+
+
 def test_a_dormant_account_is_woken_by_the_entry_keyed_first():
     """Two entries on the day a quiet account wakes tie on the date. The gap, and so the
     flag, go to the one keyed first, whatever order the rows arrive in; keyed at the same
