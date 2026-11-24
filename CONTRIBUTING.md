@@ -22,6 +22,11 @@ pytest -q --cov=ledgerlens
 
 CI runs both on Python 3.9, 3.11 and 3.12, plus a detection-quality job that
 regenerates the ledger and fails if precision drops below 0.80 or recall below 0.90.
+Those three test jobs also fail under a coverage floor: 96% on 3.9, where the MCP SDK
+cannot be installed and `mcp_server.py` counts as untested, and 97% on 3.11 and 3.12. Each
+is the whole percent under that job's own total when the floor was set (96.71% and
+97.94%), so a new module left untested fails the job. Raise a floor once the total has
+moved well clear of it; never lower one to get a change through.
 The dashboard's tests (`tests/test_app.py`) need the `app` extra, which those jobs do not
 install, and one workpaper test (in `tests/test_report.py`) needs the pyarrow that comes
 with it. CI runs both files in its `dashboard` job, on Python 3.9 and 3.12.

@@ -381,6 +381,10 @@ def step_script(workflow, name):
 
 RUNS_ON = "${{ matrix.python-version == '3.9' && 'ubuntu-24.04' || 'ubuntu-latest' }}"
 
+#: The coverage floor of the test job, per leg: the 3.9 leg cannot install the MCP SDK, so
+#: mcp_server.py counts as untested there and its total is about a point lower.
+FLOOR = "${{ matrix.python-version == '3.9' && '96' || '97' }}"
+
 #: The Python of the two steps that guard what a job has installed, as ci.yml gives it to
 #: `python -c`: the text the two pins below hold the workflow to. What the steps do is
 #: tested after them, by running the workflow's own lines and not these.
@@ -429,8 +433,38 @@ def test_the_test_job_is_these_lines_and_installs_no_streamlit():
         "      - name: Lint",
         "        run: ruff check src tests app.py",
         "      - name: Test",
-        "        run: pytest -q --cov=ledgerlens --cov-report=term-missing",
+        f"        run: pytest -q --cov=ledgerlens --cov-report=term-missing --cov-fail-under={FLOOR}",
     ]
+
+
+def test_the_coverage_floor_is_compared_to_two_decimals(tmp_path):
+    """The test job fails under a coverage floor. At coverage's default of whole percents the
+    total is rounded before it is compared: with pytest-cov 7.1 a total of 3.97% against a
+    floor of 4 printed "FAIL Required test coverage of 4% not reached" and exited 0, on
+    Python 3.9 and 3.12 alike. pyproject.toml sets two decimals. This runs a suite that
+    covers two statements of three under this repository's own coverage settings: 66.67%
+    must fail a floor of 67 and pass a floor of 66."""
+    pytest.importorskip("pytest_cov")
+    (tmp_path / "thing.py").write_text("X = 1\n\n\ndef unused():\n    return 2\n")
+    (tmp_path / "test_thing.py").write_text("import thing\n\n\ndef test_x():\n    assert thing.X == 1\n")
+    settings = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    # the outer run may itself be measured: its coverage settings must not reach this one
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("COV_CORE_", "COVERAGE_"))}
+    env.update(COVERAGE_FILE=str(tmp_path / ".coverage"), PYTHONDONTWRITEBYTECODE="1")
+    env.pop("PYTHONPATH", None)
+
+    def run(floor):
+        return subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--rootdir", str(tmp_path),
+             "--cov=thing", f"--cov-config={settings}", f"--cov-fail-under={floor}", "test_thing.py"],
+            cwd=tmp_path, env=env, capture_output=True, text=True)
+
+    under, over = run(67), run(66)
+    for done in (under, over):  # the suite ran, and its total is printed to two decimals
+        assert "1 passed" in done.stdout, done.stdout + done.stderr
+        assert re.search(r"(?m)^TOTAL +3 +1 +66\.67%$", done.stdout), done.stdout + done.stderr
+    assert under.returncode != 0, under.stdout  # at whole percents this run exits 0
+    assert over.returncode == 0, over.stdout + over.stderr
 
 
 def test_the_dashboard_job_is_these_lines_under_both_streamlits():

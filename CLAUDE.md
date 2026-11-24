@@ -13,7 +13,7 @@ Audit analytics over general ledger data. Read this before changing anything.
 | Working folder | `~/Library/Mobile Documents/com~apple~CloudDocs/LedgerGen project` (iCloud) |
 | Virtualenvs | `~/.venvs/ledgerlens` (3.9) and `~/.venvs/ledgerlens312` (3.12) — **deliberately outside iCloud**, one set per machine |
 | Python here | system 3.9.6 plus python.org **3.12.0** at `/usr/local/bin/python3.12`. Code must stay 3.9-compatible; only `mcp_server.py` needs 3.10+. pandas 2.2 or later (`ingest` imports `pandas.tseries.api.guess_datetime_format`), Streamlit 1.49 or later (`st.dataframe(width="stretch")`); CI installs the latest (pandas 2.3 on 3.9, 3.1 on 3.11 and 3.12; the venvs have 2.3 and 3.0.6), so the floors themselves are not run, and a new pandas reaches CI before the venvs |
-| CI | GitHub Actions: pytest on 3.9 / 3.11 / 3.12 + a detection-quality gate + a `rule-1` job (no data or secret file tracked) + a `dashboard` job (the dashboard's tests and the workpaper's with the `app` extra installed: on 3.9 under Streamlit 1.50, the last one 3.9 can install, and on 3.12 under the newest; the test jobs install no Streamlit, which requires pyarrow, so their 3.11 and 3.12 legs stay the suite's runs on pandas 3 without pyarrow, and a step in them fails if pyarrow is there); `claude.yml` answers `@claude`; `weekly.yml` regenerates the default ledger on Mondays and opens an Issue with `ledgerlens summary`. The 3.9 jobs run on `ubuntu-24.04` (setup-python has no 3.9 for Ubuntu 26.04, `ubuntu-latest` since November 2026), the rest on `ubuntu-latest`; that holds while GitHub keeps 24.04 runners, and dropping 3.9 is the maintainer's call |
+| CI | GitHub Actions: pytest on 3.9 / 3.11 / 3.12, each leg failing under a coverage floor (96% on 3.9, 97% on the others, compared to two decimals), + a detection-quality gate + a `rule-1` job (no data or secret file tracked) + a `dashboard` job (the dashboard's tests and the workpaper's with the `app` extra installed: on 3.9 under Streamlit 1.50, the last one 3.9 can install, and on 3.12 under the newest; the test jobs install no Streamlit, which requires pyarrow, so their 3.11 and 3.12 legs stay the suite's runs on pandas 3 without pyarrow, and a step in them fails if pyarrow is there); `claude.yml` answers `@claude`; `weekly.yml` regenerates the default ledger on Mondays and opens an Issue with `ledgerlens summary`. The 3.9 jobs run on `ubuntu-24.04` (setup-python has no 3.9 for Ubuntu 26.04, `ubuntu-latest` since November 2026), the rest on `ubuntu-latest`; that holds while GitHub keeps 24.04 runners, and dropping 3.9 is the maintainer's call |
 
 ```bash
 source ~/.venvs/ledgerlens/bin/activate && pytest -q && ruff check src tests app.py
@@ -1300,8 +1300,52 @@ yet.
   printed raw or through `repr`, the columns printed raw, exit status 0 or 1, the line
   said and the test run anyway, a shortened list), run one at a time on a scratch copy,
   are each killed by the test named for them. Version unchanged (1.2.2).
+- **The MCP server's tests and a coverage floor (week 8, `test/mcp-server-coverage`, after
+  v1.2.2)** —
+  `mcp_server.py` was the one module under 90% coverage: 77% of its 64 statements,
+  measured on Python 3.12. No test ran `main()`, the search tool's body, or the branch of
+  `_ctx` that builds a context from the environment when none was set, so nothing held
+  where the server takes its ledger from, that its refusal of a missing ledger goes to
+  stderr (on stdio, stdout is the protocol), or that each search filter reaches the context
+  layer under its own name. Five tests, the module unchanged, take it to 100%: the search
+  tool passes every filter on under its own name, adds and drops nothing, and has `limit`
+  and `source` validated before it runs; with no context set the tools serve the ledger
+  and the review database the two environment variables name, build that context once and
+  never create the database; `main()` refuses a ledger that is not there on stderr with
+  exit status 2, nothing on stdout and the server not started; it takes the ledger and the
+  review database from the flag, else the environment, else `data/`, starts the server once
+  and prints nothing; and it loads `.env` before it reads the environment, where a
+  variable already set outranks the file. 25 mutants of the module (a filter dropped,
+  swapped or handed on as another; the default paths in place of the environment's; the
+  context rebuilt at every call; the environment beating the flag; either source ignored
+  for either path; the refusal on stdout, with another exit status, without what to do, or
+  followed by serving anyway; the server never started or started twice; a line on stdout;
+  `.env` read late or never), run one at a time on a scratch copy, are each killed by a
+  test named for them. A test that lets `load_dotenv` write into `os.environ` first
+  records the variable with monkeypatch (set, then removed): a `delenv` after the loader
+  would otherwise put the loader's value back at teardown. The tests need the MCP SDK, so
+  they run on 3.10+ only, as the rest of the file. With them comes a coverage floor in CI,
+  which the maintainer agreed to on 2026-11-24. The test job's `pytest` takes
+  `--cov-fail-under`, per leg: 96 on 3.9 and 97 on 3.11 and 3.12, each the whole percent
+  under that leg's total as CI's own log gave it on `4bb2d63`, with these tests counted in
+  (3.9: 174 of 5,293 statements missed, 96.71%, `mcp_server.py` counting as untested there
+  because the SDK cannot be installed; 3.11 and 3.12: 109 of 5,297, 97.94%). A module of
+  the MCP server's size (64 statements) landing untested fails either. `pyproject.toml`
+  sets coverage's `precision` to 2 with it, and the floor does not hold without that: at the
+  default of whole percents the total is rounded before it is compared, so under
+  pytest-cov 7.1 a total of 3.97% against a floor of 4 printed "FAIL Required test coverage
+  of 4% not reached" and exited 0, on Python 3.9 and 3.12 alike. `tests/test_workflows.py`
+  pins the job's new line and runs a suite of three statements under the repository's own
+  coverage settings: its 66.67% must fail a floor of 67 and pass one of 66. That test fails
+  with the setting removed or at 0, 1 or 3 decimals, and four mutants of the workflow line
+  (one floor for every leg, the floors swapped, no floor, the step allowed to fail) fail
+  the pin. The floor is CI's alone: a local `pytest --cov` prints two decimals and enforces
+  nothing. The two totals are computed from main's log and the 15 statements these tests
+  add, not measured: the PR's own run is the first measurement. A floor is raised once the
+  total has moved well clear of it, and never lowered to get a change through. Version
+  unchanged (1.2.2).
 - **Next** — in the order the maintainer set on 2026-11-16: the rest of week 8's hardening
-  (mypy in CI, `mcp_server.py`'s coverage, a performance pass, and the whole
+  (mypy in CI, a performance pass, and the whole
   suite in CI with the `app` extra installed); week 7 as a separate ledger
   (`generate --realistic`, from its own streams as the held-out ledger is, so the default
   ledger, the eval cases and the held-out measurement do not move); and publishing last,
@@ -1316,7 +1360,7 @@ yet.
   the workpaper and the MCP entry rows (the explain tool returns both); the prompt a note
   answered (a review-schema change); and the reported model on new eval rows (a row-shape
   change).
-- 1483 tests on 3.9 (1 skipped) / 1498 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
+- 1484 tests on 3.9 (1 skipped) / 1504 on 3.12 (the twenty MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth

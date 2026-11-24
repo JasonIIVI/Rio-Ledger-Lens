@@ -271,3 +271,161 @@ async def test_benford_over_mcp_gives_no_band_under_300_amounts_and_the_note_fir
             for shown in (result.structured_content, json.loads(result.content[0].text)):
                 assert next(iter(shown)) == "small_sample" and shown["small_sample"] == SMALL_SAMPLE_NOTE
             assert "nonconformity" not in result.content[0].text.replace("Non-conformity", "")
+
+
+# --- the parts no test reached: the search tool, the environment fallback, main() ---------
+
+
+@pytest.mark.anyio
+async def test_search_entries_over_mcp_passes_every_filter_on_under_its_own_name(client):
+    """The one tool no test called. Each argument must reach the context layer as the filter
+    it names: one dropped or handed on as another narrows nothing, or the wrong thing, and
+    the answer still looks like an answer."""
+    context = mcp_server._ctx()
+    row = next(r for r in context.search_entries(limit=100)["entries"] if r["source"] == "Manual")
+    account = str(context.lines.loc[context.lines["entry_id"] == row["entry_id"], "account_code"].iloc[0])
+    asked = {"account_code": account, "created_by": row["created_by"], "source": "Manual",
+             "min_amount": 1.0, "fiscal_year": int(row["fiscal_year"]), "period": int(row["period"]),
+             "limit": 7}
+    result = await client.call_tool("ledgerlens_search_entries", asked)
+    assert not result.is_error
+    answer = result.structured_content
+    filters = {key: value for key, value in asked.items() if key != "limit"}
+    assert answer["filters"] == filters  # each one arrived, under its own name
+    assert answer == context.search_entries(**asked)  # and the tool adds or drops nothing
+    assert 1 <= answer["count"] <= 7 and row["entry_id"] in {e["entry_id"] for e in answer["entries"]}
+    for entry in answer["entries"]:
+        assert (entry["created_by"], entry["source"]) == (row["created_by"], "Manual")
+        assert (entry["fiscal_year"], entry["period"]) == (row["fiscal_year"], row["period"])
+
+    # limit is the tool's own argument: it cuts the rows and is validated before the tool runs
+    one = await client.call_tool("ledgerlens_search_entries", {"limit": 1})
+    assert one.structured_content["count"] == 1 and one.structured_content["matching"] > 1
+    assert (await client.call_tool("ledgerlens_search_entries", {"limit": 0})).is_error
+    assert (await client.call_tool("ledgerlens_search_entries", {"source": "Ledger"})).is_error
+
+
+def _generated(tmp_path, name="ledger.csv"):
+    from ledgerlens.cli import main
+
+    main(["generate", "--start", "2024-01-01", "--end", "2024-01-31", "--out-dir", str(tmp_path)])
+    path = tmp_path / name
+    if name != "ledger.csv":
+        (tmp_path / "ledger.csv").rename(path)
+    return path
+
+
+@pytest.mark.anyio
+async def test_with_no_context_set_the_tools_serve_the_ledger_the_environment_names(
+        tmp_path, monkeypatch, capsys):
+    """Nothing but main() calls use_context. A host that imports the module and runs its
+    server object reaches the tools with none set, and they must serve the ledger and the
+    review database the two environment variables name, not the default paths."""
+    from ledgerlens.ledger_context import ENV_LEDGER, ENV_REVIEW_DB
+
+    ledger = _generated(tmp_path, "books.csv")
+    capsys.readouterr()
+    monkeypatch.setenv(ENV_LEDGER, str(ledger))
+    monkeypatch.setenv(ENV_REVIEW_DB, str(tmp_path / "reviews.sqlite"))
+    monkeypatch.setattr(mcp_server, "_context", None)
+    async with Client(mcp_server.mcp, raise_exceptions=True) as c:
+        summary = await c.call_tool("ledgerlens_summary", {})
+        status = await c.call_tool("ledgerlens_review_status", {})
+    assert not summary.is_error and not status.is_error
+    expected = LedgerContext(ledger).load().summary()
+    assert summary.structured_content["entries"] == expected["entries"] > 0
+    assert summary.structured_content["lines"] == expected["lines"]
+    assert status.structured_content["ledger_id"] == expected["review"]["ledger_id"]  # this ledger's
+    assert status.structured_content["review_db"] == str(tmp_path / "reviews.sqlite")
+    assert status.structured_content["exists"] is False
+    assert not (tmp_path / "reviews.sqlite").exists()  # a read never creates the database
+    served = mcp_server._context  # built once, and kept for the next call
+    assert served is not None and mcp_server._ctx() is served
+
+
+def _main(monkeypatch, argv):
+    """Run main() with the server's run() replaced: (exit code, the context it served or
+    None, how many times the server was started)."""
+    started = []
+    monkeypatch.setattr(mcp_server.mcp, "run", lambda *args, **kwargs: started.append((args, kwargs)))
+    monkeypatch.setattr(mcp_server, "_context", None)
+    code = mcp_server.main(argv)
+    return code, mcp_server._context, started
+
+
+def test_main_refuses_a_ledger_that_is_not_there_on_stderr_and_starts_nothing(
+        tmp_path, monkeypatch, capsys):
+    """On stdio, stdout is the protocol: the refusal goes to stderr, with the path and what to
+    do, the exit status says so, and the server is not started on a ledger it cannot read."""
+    from ledgerlens.ledger_context import ENV_LEDGER, ENV_REVIEW_DB
+
+    monkeypatch.chdir(tmp_path)  # no .env here, and no data/ledger.csv
+    monkeypatch.delenv(ENV_LEDGER, raising=False)
+    monkeypatch.delenv(ENV_REVIEW_DB, raising=False)
+    for argv, named in ((["--ledger", str(tmp_path / "nope.csv")], str(tmp_path / "nope.csv")),
+                        ([], "data/ledger.csv")):
+        code, context, started = _main(monkeypatch, argv)
+        printed = capsys.readouterr()
+        assert code == 2 and context is None and started == [], argv
+        assert printed.out == "", argv
+        assert printed.err == (f"ledger not found: {named} (run `ledgerlens generate` or set "
+                               f"{ENV_LEDGER})\n"), argv
+
+
+def test_main_serves_the_ledger_a_flag_names_then_the_environments_then_the_default(
+        tmp_path, monkeypatch, capsys):
+    """Where the ledger and the review database come from, in the order the module's
+    docstring and --help give: the flag, else the environment variable, else data/. A flag
+    that lost to the environment would serve another ledger than the one asked for."""
+    from ledgerlens.ledger_context import ENV_LEDGER, ENV_REVIEW_DB
+
+    flagged = _generated(tmp_path / "flag", "flagged.csv")
+    named = _generated(tmp_path / "env", "named.csv")
+    default = _generated(tmp_path / "cwd" / "data")
+    capsys.readouterr()
+    monkeypatch.chdir(tmp_path / "cwd")
+
+    def served(argv):
+        code, context, started = _main(monkeypatch, argv)
+        printed = capsys.readouterr()
+        assert code == 0 and started == [((), {})], argv  # started once, on stdio's defaults
+        assert printed.out == "" and printed.err == "", argv  # stdout is the protocol
+        return str(context._ledger), str(context.review_db)
+
+    monkeypatch.setenv(ENV_LEDGER, str(named))
+    monkeypatch.setenv(ENV_REVIEW_DB, str(tmp_path / "env" / "named.sqlite"))
+    assert served(["--ledger", str(flagged), "--review-db", str(tmp_path / "flag" / "f.sqlite")]) == (
+        str(flagged), str(tmp_path / "flag" / "f.sqlite"))
+    assert served(["--ledger", str(flagged)]) == (str(flagged), str(tmp_path / "env" / "named.sqlite"))
+    assert served([]) == (str(named), str(tmp_path / "env" / "named.sqlite"))
+    monkeypatch.delenv(ENV_LEDGER)
+    monkeypatch.delenv(ENV_REVIEW_DB)
+    assert served([]) == ("data/ledger.csv", "data/review.sqlite")
+    assert default.exists()  # the default path is read against the working directory
+
+
+def test_main_reads_dotenv_before_the_environment_and_a_real_variable_outranks_it(
+        tmp_path, monkeypatch, capsys):
+    """A .env beside the server may name the ledger: it is loaded before the environment is
+    read, so the ledger it names is the one served, and a variable already set wins over
+    the file, as env.load_dotenv promises."""
+    from ledgerlens.ledger_context import ENV_LEDGER, ENV_REVIEW_DB
+
+    in_file = _generated(tmp_path / "file", "from-dotenv.csv")
+    in_shell = _generated(tmp_path / "shell", "from-shell.csv")
+    capsys.readouterr()
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text(f"{ENV_LEDGER}={in_file}\n", encoding="utf-8")
+    for name in (ENV_LEDGER, ENV_REVIEW_DB):
+        # Set, then removed: monkeypatch now holds each variable's state from before the
+        # test, and restores it last, whatever load_dotenv writes into os.environ below.
+        monkeypatch.setenv(name, "recorded")
+        monkeypatch.delenv(name)
+
+    code, context, started = _main(monkeypatch, [])
+    assert (code, str(context._ledger), len(started)) == (0, str(in_file), 1)
+    monkeypatch.delenv(ENV_LEDGER)  # load_dotenv put it there; monkeypatch did not
+
+    monkeypatch.setenv(ENV_LEDGER, str(in_shell))
+    code, context, started = _main(monkeypatch, [])
+    assert (code, str(context._ledger), len(started)) == (0, str(in_shell), 1)

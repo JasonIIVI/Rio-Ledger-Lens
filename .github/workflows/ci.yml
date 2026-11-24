@@ -42,8 +42,14 @@ jobs:
       - name: Lint
         run: ruff check src tests app.py
 
+      # A floor under each leg's own total, as this job's log gave it on main (4bb2d63) with
+      # the MCP server's tests added: 96.71% on 3.9, where the MCP SDK cannot be installed
+      # and mcp_server.py counts as untested, and 97.94% on 3.11 and 3.12. A module the size
+      # of the MCP server's (64 statements) landing untested fails either. The total is
+      # compared to two decimals (pyproject.toml): at whole percents one within half a point
+      # under the floor printed FAIL and passed.
       - name: Test
-        run: pytest -q --cov=ledgerlens --cov-report=term-missing
+        run: pytest -q --cov=ledgerlens --cov-report=term-missing --cov-fail-under=${{ matrix.python-version == '3.9' && '96' || '97' }}
 
   # The tests that need what the app extra installs, which the test job leaves out on
   # purpose: the dashboard's need Streamlit, and one of the workpaper's needs pyarrow.
