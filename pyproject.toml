@@ -43,6 +43,12 @@ where = ["src"]
 testpaths = ["tests"]
 addopts = "-q"
 
+# Two decimals, because CI's test job fails under a coverage floor (--cov-fail-under) and the
+# total is compared as it is printed: at whole percents a total up to half a point under
+# the floor rounds up to it and passes.
+[tool.coverage.report]
+precision = 2
+
 [tool.ruff]
 line-length = 100
 target-version = "py39"
