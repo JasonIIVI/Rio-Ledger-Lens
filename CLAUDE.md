@@ -13,7 +13,7 @@ Audit analytics over general ledger data. Read this before changing anything.
 | Working folder | `~/Library/Mobile Documents/com~apple~CloudDocs/LedgerGen project` (iCloud) |
 | Virtualenvs | `~/.venvs/ledgerlens` (3.9) and `~/.venvs/ledgerlens312` (3.12) — **deliberately outside iCloud**, one set per machine |
 | Python here | system 3.9.6 plus python.org **3.12.0** at `/usr/local/bin/python3.12`. Code must stay 3.9-compatible; only `mcp_server.py` needs 3.10+. pandas 2.2 or later (`ingest` imports `pandas.tseries.api.guess_datetime_format`), Streamlit 1.49 or later (`st.dataframe(width="stretch")`); CI installs the latest (pandas 2.3 on 3.9, 3.1 on 3.11 and 3.12; the venvs have 2.3 and 3.0.6), so the floors themselves are not run, and a new pandas reaches CI before the venvs |
-| CI | GitHub Actions: pytest on 3.9 / 3.11 / 3.12, each leg type-checked with mypy first and failing under a coverage floor (96% on 3.9, 97% on the others, compared to two decimals), + a detection-quality gate + a `rule-1` job (no data or secret file tracked) + a `dashboard` job (the dashboard's tests and the workpaper's with the `app` extra installed: on 3.9 under Streamlit 1.50, the last one 3.9 can install, and on 3.12 under the newest; the test jobs install no Streamlit, which requires pyarrow, so their 3.11 and 3.12 legs stay the suite's runs on pandas 3 without pyarrow, and a step in them fails if pyarrow is there); `claude.yml` answers `@claude`; `weekly.yml` regenerates the default ledger on Mondays and opens an Issue with `ledgerlens summary`. The 3.9 jobs run on `ubuntu-24.04` (setup-python has no 3.9 for Ubuntu 26.04, `ubuntu-latest` since November 2026), the rest on `ubuntu-latest`; that holds while GitHub keeps 24.04 runners, and dropping 3.9 is the maintainer's call |
+| CI | GitHub Actions: pytest on 3.9 / 3.11 / 3.12, each leg type-checked with mypy first and failing under a coverage floor (96% on 3.9, 97% on the others, compared to two decimals), + a detection-quality gate + a `rule-1` job (no data or secret file tracked) + a `dashboard` job (the whole suite again with every extra installed, the `app` extra among them, so with pyarrow: on 3.9 under Streamlit 1.50, the last one 3.9 can install, and on 3.12 under the newest; the test jobs install no Streamlit, which requires pyarrow, so their 3.11 and 3.12 legs stay the suite's runs on pandas 3 without pyarrow, and a step in them fails if pyarrow is there); `claude.yml` answers `@claude`; `weekly.yml` regenerates the default ledger on Mondays and opens an Issue with `ledgerlens summary`. The 3.9 jobs run on `ubuntu-24.04` (setup-python has no 3.9 for Ubuntu 26.04, `ubuntu-latest` since November 2026), the rest on `ubuntu-latest`; that holds while GitHub keeps 24.04 runners, and dropping 3.9 is the maintainer's call |
 
 ```bash
 source ~/.venvs/ledgerlens/bin/activate && pytest -q && ruff check src tests app.py && mypy
@@ -1462,9 +1462,45 @@ new mypy reaches CI before the 3.12 venv, as a new pandas does.
   the filter, no filter, blank descriptions never twins), run one at a time on a scratch
   copy, are each killed by a test named for them. The timings are one machine's, single
   runs, and no test pins them. Version unchanged (1.2.2).
-- **Next** — in the order the maintainer set on 2026-11-16: the last of week 8's hardening
-  (the whole
-  suite in CI with the `app` extra installed); week 7 as a separate ledger
+- **The whole suite with the `app` extra in CI (week 8, `ci/suite-with-app-extra`, after
+  v1.2.2)** — the last of week 8's hardening. CI's `dashboard` job ran two files
+  (`tests/test_app.py` and `tests/test_report.py`) with the `app` extra installed, so no CI
+  job ran the rest of the suite with pyarrow installed, where pandas 3 keeps text columns in
+  Arrow (the dashboard-job bullet's "Not changed"; the 3.12 venv runs it so, on the pandas it
+  has). The job now installs `.[dev,llm,mcp,app]` and runs `pytest -rs`: the whole suite, on
+  3.9 (pandas 2.3, Streamlit 1.50) and on 3.12 (the newest pandas, pyarrow and Streamlit),
+  the MCP server's tests among them on the 3.12 leg. `-rs` lists every skipped test with its
+  reason, and there is no second `-q`: `pyproject.toml` already gives one, and with two
+  pytest prints no count of what passed. The job keeps its key, so the checks are still
+  `dashboard (3.9)` and `dashboard (3.12)` (`main` is not a protected branch, so no setting
+  names them; the name is kept for the record's sake). It has no coverage floor: the test
+  job's is the one that counts. Its import step asks for everything a test skips itself
+  without: anthropic, pyarrow, pytest_cov, Streamlit's test harness, and the MCP SDK from
+  Python 3.10, the bound of the `mcp` extra's marker (the 3.9 leg skips the MCP server's
+  tests, as the test job's does). `tests/test_workflows.py` pins the job line for line and
+  runs the step's own script against stand-in packages: under 3.9 it must pass without the
+  SDK, and from 3.10 fail without it. A new test reads every `pytest.importorskip` in the
+  suite and holds the step to exactly those packages (numpy aside: the package itself
+  depends on it), and the step's Python bound to the extra's marker, because between two
+  Pythons that both run the suite (3.11 for 3.10) no run of the step tells a wrong bound
+  from the right one. 14 mutants, run one at a time on a scratch copy, are each killed in
+  both venvs: six of the job's lines (no `mcp` extra, the two files again, a second `-q`,
+  no `-rs`, the suite allowed to fail, one leg), seven of the import step made in the
+  workflow and in the pinned text at once (pytest_cov or anthropic not asked for; the SDK
+  never asked for, asked for on every Python, from 3.11, from 3.9, or looked for and not
+  imported), and a test file that skips itself without a package the step does not import.
+  The previous `ci.yml` fails two of the tests. Not verified before the PR's own run: the
+  3.12 leg, the whole suite under the newest pandas with pyarrow on Linux (the 3.12 venv
+  runs it under pandas 3.0.6 and pyarrow 25, and the test job's 3.12 leg under the newest
+  pandas without pyarrow). Not changed: one test still runs in no CI job
+  (`test_a_differently_cased_spelling_of_the_checkout_is_still_refused`, which skips on a
+  case-sensitive filesystem), and the job now takes the suite's time, not two files' (the
+  suite is about two and a half minutes on the maintainer's laptop). Version unchanged
+  (1.2.2).
+- **Next** — in the order the maintainer set on 2026-11-16, week 8's hardening being done
+  (the changelog, the MCP server's tests and a coverage floor, the type check, the
+  performance pass, and the whole
+  suite in CI with the `app` extra installed): week 7 as a separate ledger
   (`generate --realistic`, from its own streams as the held-out ledger is, so the default
   ledger, the eval cases and the held-out measurement do not move); and publishing last,
   under another distribution name (on PyPI, `ledgerlens` has been another project's package
@@ -1478,7 +1514,7 @@ new mypy reaches CI before the 3.12 venv, as a new pandas does.
   the workpaper and the MCP entry rows (the explain tool returns both); the prompt a note
   answered (a review-schema change); and the reported model on new eval rows (a row-shape
   change).
-- 1504 tests on 3.9 (1 skipped) / 1524 on 3.12 (the twenty MCP tests need 3.10+), ruff and mypy clean.
+- 1505 tests on 3.9 (1 skipped) / 1525 on 3.12 (the twenty MCP tests need 3.10+), ruff and mypy clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth
