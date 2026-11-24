@@ -26,10 +26,15 @@ do not run every version CI does: each CI job installs the newest release its Py
 so every job differs from the venvs (the three test jobs on 2026-11-15, among others: ruff
 and python-dateutil newer on each; pandas, anthropic, pytest and mcp newer on 3.11 and 3.12;
 numpy newer on 3.12; numpy and scipy on 3.11 older than the 3.12 venv's). The dashboard
-job's 3.12 leg resolves to a newer Streamlit and pyarrow too. Green here is not yet green
-there. For the dashboard that has a second sense: its tests read what a session holds after
-a stopped run only from Streamlit 1.66 (the dashboard-reads bullet below), and the 3.12
-venv has 1.64, so CI's 3.12 dashboard leg can fail where both venvs pass.
+job's 3.12 leg resolves to a newer pyarrow too. Green here is not yet green there. For the
+dashboard that had a second sense until 2026-11-24: its tests read what a session holds
+after a stopped run only from Streamlit 1.66 (the dashboard-reads bullet below), and the
+3.12 venv had 1.64, so CI's 3.12 dashboard leg could fail where both venvs passed. On the
+maintainer's word the 3.12 venv now has Streamlit 1.67.0, that leg's version when it was
+installed, and reads a stopped run as CI does; the 3.9 venv stays on 1.50, the last one
+Python 3.9 can install. Both venvs have mypy since the same day (1.19.1 on 3.9, the last
+release for it, and 2.4.1 on 3.12), for the type check week 8 is to add; nothing runs it
+yet.
 
 ## Current state
 
@@ -1276,12 +1281,28 @@ venv has 1.64, so CI's 3.12 dashboard leg can fail where both venvs pass.
   among them), a heading, and wording. The QuickBooks sentence was this file's own: the
   connector bullet above and the module table said "standard library only" and "stdlib",
   and now say what the code does. Version unchanged (1.2.2).
+- **`benford --by` on a column the ledger lacks (week 8, `fix/benford-by-unknown-column`,
+  after v1.2.2)** — `ledgerlens benford LEDGER --by nosuch` handed the name to pandas'
+  groupby, which raised a `KeyError`: a traceback and exit status 1, in v1.2.1 and v1.2.2
+  alike (found by the v1.2.2 notes' claims review; the maintainer agreed on 2026-11-24 to
+  fix it). A name in another case (`Account_Code`) or with a stray space did the same.
+  `cmd_benford` now checks the name against the ledger as loaded and prints one `error:`
+  line, exit status 2: the name as typed, through `ingest.quote` (so a stray space, another
+  case or an escape byte shows), and the columns there are, each through `one_line`,
+  because a header is ledger text too. Nothing is tested or printed after it. Any column
+  the loaded ledger has is still a segment key, the ones an extract adds and the derived
+  ones (`is_weekend`) included, and every output for a column that exists is what it was.
+  The context layer already refused an unknown column, and the MCP tool takes only three.
+  Not changed: `--by ""` still reads as no `--by` (the whole population), and the two lines
+  that repeat a name that is a column print it as typed. Two tests, both failing on
+  `a1bde96` with pandas' `KeyError`; nine mutants, that code among them (the others: the
+  check against the contract's columns instead of the ledger's, the name
+  printed raw or through `repr`, the columns printed raw, exit status 0 or 1, the line
+  said and the test run anyway, a shortened list), run one at a time on a scratch copy,
+  are each killed by the test named for them. Version unchanged (1.2.2).
 - **Next** — in the order the maintainer set on 2026-11-16: the rest of week 8's hardening
   (mypy in CI, `mcp_server.py`'s coverage, a performance pass, and the whole
-  suite in CI with the `app` extra installed), which since the maintainer's word of
-  2026-11-24 also holds `benford --by` with a column the ledger does not have (a `KeyError`
-  traceback in v1.2.1 and v1.2.2 alike, found by the v1.2.2 notes' claims review; to be one
-  `error:` line); week 7 as a separate ledger
+  suite in CI with the `app` extra installed); week 7 as a separate ledger
   (`generate --realistic`, from its own streams as the held-out ledger is, so the default
   ledger, the eval cases and the held-out measurement do not move); and publishing last,
   under another distribution name (on PyPI, `ledgerlens` has been another project's package
@@ -1289,14 +1310,13 @@ venv has 1.64, so CI's 3.12 dashboard leg can fail where both venvs pass.
   `docs/demo.gif` (its model scores
   predate v1.0.0's tie fix, and since the dashboard-reads change its last frame shows what
   that change fixed: the decision just recorded still in the form, which now clears to no
-  choice); a Streamlit of 1.66 or later in the 3.12 venv, the maintainer's call (until then
-  only CI's 3.12 dashboard leg reads a stopped run as a session has it); and, unchanged,
+  choice); and, unchanged,
   week 5's model train/test split (a re-measurement under rule 10); a Benford baseline for
   a ledger's own size (the bands still depend on n above 300); a note's model and time in
   the workpaper and the MCP entry rows (the explain tool returns both); the prompt a note
   answered (a review-schema change); and the reported model on new eval rows (a row-shape
   change).
-- 1481 tests on 3.9 (1 skipped) / 1496 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
+- 1483 tests on 3.9 (1 skipped) / 1498 on 3.12 (the fifteen MCP tests need 3.10+), ruff clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth

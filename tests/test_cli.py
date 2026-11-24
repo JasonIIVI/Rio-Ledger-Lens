@@ -183,6 +183,52 @@ def test_benford_says_when_no_segment_has_enough_rows(tmp_path, capsys):
     assert capsys.readouterr().out == "No segment of 'source' had at least 300 rows.\n"
 
 
+def test_benford_by_a_column_the_ledger_lacks_is_one_error_line(tmp_path, capsys):
+    """`benford --by nosuch` was pandas' KeyError out of the groupby: a traceback. It is one
+    line now: the name as typed, quoted so a stray space, another case or an escape byte
+    shows, then the columns there are. Nothing is tested or printed after it."""
+    from ledgerlens.ingest import load_csv
+
+    main(["generate", "--start", "2024-01-01", "--end", "2024-01-10", "--out-dir", str(tmp_path)])
+    capsys.readouterr()
+    ledger = str(tmp_path / "ledger.csv")
+    columns = ", ".join(load_csv(ledger).columns)
+    assert columns.startswith("entry_id, line_no, ") and columns.endswith(", is_holiday, posting_lag_days")
+    for typed in ("nosuch", "Account_Code", "account_code ", "first_digit", "no\x1bsuch",
+                  "caf" + chr(233)):  # ascii() writes the last one 'caf\xe9'; repr() would not
+        assert main(["benford", ledger, "--by", typed]) == 2, typed
+        assert capsys.readouterr().out == (
+            f"error: cannot segment by {ascii(typed)}: not a column of this ledger "
+            f"(its columns: {columns})\n"), typed
+
+
+def test_benford_by_takes_any_column_the_loaded_ledger_has_and_lists_them_as_one_line(tmp_path, capsys):
+    """The name is checked against the ledger as loaded, not against the contract: a column
+    an extract adds and a derived one are segment keys, as they were. And a header is ledger
+    text: one that holds an escape byte and a line break is listed as visible text on the one
+    line."""
+    import pandas as pd
+
+    main(["generate", "--start", "2024-01-01", "--end", "2024-01-10", "--out-dir", str(tmp_path)])
+    raw = pd.read_csv(tmp_path / "ledger.csv", dtype=str, keep_default_na=False)
+    raw["department"] = ["east" if i % 2 else "west" for i in range(len(raw))]
+    raw["odd\x1b]0;owned\x07\nname"] = "v"
+    wide = tmp_path / "wide.csv"
+    raw.to_csv(wide, index=False)
+    capsys.readouterr()
+    for column, keys in (("department", ("east", "west")), ("is_weekend", ("False",)),
+                         ("account_type", ("Asset", "Expense"))):
+        assert main(["benford", str(wide), "--by", column, "--min-n", "1"]) == 0, column
+        out = capsys.readouterr().out
+        assert f"segmented by {column} " in out and not out.startswith("error:"), column
+        labels = {line.split()[0] for line in out.splitlines()[4:]}
+        assert set(keys) <= labels, (column, labels)
+    assert main(["benford", str(wide), "--by", "Department"]) == 2
+    out = capsys.readouterr().out
+    assert out.count("\n") == 1 and out.endswith(")\n") and "\x1b" not in out and "\x07" not in out
+    assert ", department, odd]0;owned name, amount, " in out
+
+
 def test_bad_date_is_rejected():
     parser = build_parser()
     try:
