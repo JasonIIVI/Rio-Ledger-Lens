@@ -768,9 +768,14 @@ pip install -e ".[dev,llm,mcp,app]"
 pytest -q                    # the MCP tests skip below Python 3.10
 pytest --cov=ledgerlens      # coverage
 ruff check src tests app.py  # lint
+mypy                         # types
 ```
 
-CI runs the suite on Python 3.9, 3.11 and 3.12 plus a detection-quality gate. The suite's
+CI runs the suite on Python 3.9, 3.11 and 3.12 plus a detection-quality gate. Each of those
+three jobs also type-checks the package with mypy and fails if coverage falls under a floor
+set just below its own measured total. The package ships `py.typed`; pandas, scikit-learn,
+scipy and openpyxl ship no types, so the check covers the package's own signatures and its
+handling of `None`, not what those libraries return. The suite's
 jobs install no Streamlit on purpose: it requires pyarrow, and with pyarrow pandas 3 keeps
 text columns in Arrow, so the 3.11 and 3.12 jobs are where the suite runs on pandas 3
 without it. The dashboard's tests need Streamlit and one of the workpaper's needs pyarrow,

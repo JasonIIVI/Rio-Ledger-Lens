@@ -19,6 +19,9 @@ whether anyone keeps using the tool.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
+from typing import Any
+
 import pandas as pd
 
 from .ingest import plural, quote
@@ -85,7 +88,7 @@ class LabelsMismatchError(ValueError):
 _count, _example = plural, quote
 
 
-def check_labels(labels: pd.DataFrame, all_entry_ids) -> None:
+def check_labels(labels: pd.DataFrame, all_entry_ids: Iterable[Any]) -> None:
     """Refuse labels that do not cover exactly the ledger's entries.
 
     A ledger entry with no label becomes a false positive the moment it is
@@ -226,7 +229,10 @@ def attribution(flags: pd.DataFrame, labels: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=columns)
 
 
-def sweep(run, values, labels: pd.DataFrame, test_id: str | None = None) -> pd.DataFrame:
+def sweep(
+    run: Callable[[Any], pd.DataFrame], values: Iterable[Any], labels: pd.DataFrame,
+    test_id: str | None = None,
+) -> pd.DataFrame:
     """One test at several settings: what it raises there, and how much of that is anomalous.
 
     ``run(value)`` gives the test's flags at that setting; the caller runs the test, so
@@ -333,7 +339,7 @@ def compare_tiers(
 def model_lift(
     model_scores: pd.Series,
     labels: pd.DataFrame,
-    tops=(25, 50, 100, 200),
+    tops: Iterable[int] = (25, 50, 100, 200),
 ) -> pd.DataFrame:
     """Precision among the top-N entries the model considers most unusual.
 
@@ -367,7 +373,7 @@ def model_lift(
     return pd.DataFrame(rows)
 
 
-def _archetype_order(present) -> list[str]:
+def _archetype_order(present: Iterable[str]) -> list[str]:
     """Held-out archetypes, then the generator's, each in its own order, then any other by name."""
     present = set(present)
     known = [a for a in (*HeldOutType.ALL, *AnomalyType.ALL) if a in present]

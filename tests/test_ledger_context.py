@@ -10,7 +10,13 @@ import pytest
 from ledgerlens.benford import SMALL_SAMPLE_NOTE, benford_test
 from ledgerlens.generate import generate_ledger
 from ledgerlens.ingest import ledger_identity, prepare
-from ledgerlens.ledger_context import ENV_LEDGER, ENV_REVIEW_DB, LedgerContext, records
+from ledgerlens.ledger_context import (
+    ENV_LEDGER,
+    ENV_REVIEW_DB,
+    LedgerContext,
+    LedgerNotLoaded,
+    records,
+)
 from ledgerlens.review import Decision, ReviewStore
 from ledgerlens.schema import REQUIRED_COLUMNS
 
@@ -241,6 +247,109 @@ def test_from_env_reads_the_paths(monkeypatch):
     assert context._ledger == "x.csv"
     assert context.review_db == Path("y.sqlite")
     assert context.loaded is False
+
+
+#: Each question, asked so that its answer shows which frame it read: (ask, the attribute to
+#: replace, a replacement, what the answer must then say).
+def _questions(context):
+    entry_id = context.top_exceptions(limit=1)["entries"][0]["entry_id"]
+    no_flags = context.flags.iloc[0:0]
+    unflagged = context.combined.assign(risk_score=0.0)
+    one_line = context.lines.head(1)
+    return {
+        "summary": (lambda c: c.summary(), "flags", no_flags, lambda a: a["flags_raised"] == 0),
+        "top_exceptions": (lambda c: c.top_exceptions(limit=3), "combined", unflagged,
+                           lambda a: a["matching"] == 0 and a["entries"] == []),
+        "explain_entry": (lambda c: c.explain_entry(entry_id), "flags", no_flags, lambda a: a["flags"] == []),
+        "search_entries": (lambda c: c.search_entries(limit=3), "combined", context.combined.head(2),
+                           lambda a: a["matching"] == 2),
+        "benford": (lambda c: c.benford(), "lines", one_line, lambda a: a["n"] <= 1),
+        "review_status": (lambda c: c.review_status(), "combined", unflagged, lambda a: a["flagged"] == 0),
+    }
+
+
+QUESTIONS = ("summary", "top_exceptions", "explain_entry", "search_entries", "benford", "review_status")
+
+
+def test_state_is_the_attributes_as_they_stand_and_loads_on_first_use(small_ledger):
+    """``state`` is where every question starts: the six attributes as they are at that
+    moment, none of them missing. A context never loaded is loaded by it, and nothing is
+    kept between calls: an attribute replaced after the load is in the next state."""
+    ledger, _ = small_ledger
+    context = LedgerContext(ledger)
+    assert context.loaded is False and context.lines is None
+    state = context.state()
+    assert context.loaded is True
+    assert (state.lines is context.lines and state.flags is context.flags
+            and state.combined is context.combined and state.controls is context.controls
+            and state.model_report is context.model_report and state.ledger_id == context.ledger_id)
+    fewer = context.flags.iloc[0:0]
+    context.flags = fewer
+    assert context.state().flags is fewer and state.flags is not fewer
+
+
+@pytest.mark.parametrize("question", QUESTIONS)
+def test_every_question_answers_from_a_frame_replaced_after_the_load(small_ledger, question):
+    """The tests of the summary and the workpaper replace a loaded context's flags and
+    entries and ask again; a question that answered from what it held at the load would
+    describe a ledger the caller no longer has."""
+    ledger, _ = small_ledger
+    context = LedgerContext(ledger).load()
+    ask, attribute, replacement, shows = _questions(context)[question]
+    assert not shows(ask(context)), question  # the answer differs before the replacement
+    setattr(context, attribute, replacement)
+    assert shows(ask(context)), question
+
+
+@pytest.mark.parametrize("question", QUESTIONS)
+def test_no_question_is_answered_from_a_state_with_a_piece_missing(small_ledger, question):
+    """load() sets all six or raises, so a piece missing afterwards is a fault of whoever
+    took it away. Every question says so, whichever pieces it reads, with an error that is
+    no RuntimeError, ValueError or OSError: those are what the command line and the MCP
+    server word as a ledger or a review database that cannot be used."""
+    ledger, _ = small_ledger
+    whole = LedgerContext(ledger).load()
+    ask = _questions(whole)[question][0]
+    for gone in ("lines", "flags", "controls", "model_report", "ledger_id"):
+        broken = LedgerContext(ledger).load()
+        setattr(broken, gone, None)
+        with pytest.raises(LedgerNotLoaded, match="one of them is missing") as caught:
+            ask(broken)
+        assert not isinstance(caught.value, (RuntimeError, ValueError, OSError)), (question, gone)
+    reloaded = LedgerContext(ledger).load()
+    reloaded.combined = None  # a context with no entries is one not loaded yet: load() runs again
+    assert ask(reloaded) is not None and reloaded.combined is not None
+
+
+def test_load_sets_the_entries_last_so_a_question_never_meets_half_a_load(small_ledger, monkeypatch):
+    """``loaded`` reads ``combined``, and the MCP SDK runs tools in worker threads: a question
+    that arrives while another thread is still loading must find either nothing loaded or
+    everything. So ``combined`` is assigned last, after the model's report."""
+    from ledgerlens import ledger_context
+
+    ledger, _ = small_ledger
+    seen = {}
+    real = ledger_context.combine
+
+    def spy(*args, **kwargs):
+        seen["before"] = (context.lines, context.flags, context.model_report, context.combined)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(ledger_context, "combine", spy)
+    context = LedgerContext(ledger)
+
+    class Watched(type(context)):
+        def __setattr__(self, name, value):
+            if name == "combined" and value is not None:  # the first time: that is when `loaded` flips
+                seen.setdefault("at_combined", (
+                    self.lines is not None, self.flags is not None, self.model_report is not None,
+                    self.controls is not None, self.ledger_id is not None))
+            super().__setattr__(name, value)
+
+    context.__class__ = Watched
+    context.load()
+    assert seen["before"] == (None, None, None, None)  # nothing is set until all of it is computed
+    assert seen["at_combined"] == (True, True, True, True, True)
 
 
 def test_records_are_plain_json(context):

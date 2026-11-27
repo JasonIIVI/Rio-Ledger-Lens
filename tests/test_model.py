@@ -44,6 +44,17 @@ def test_must_fit_before_scoring(ledger):
         AnomalyModel().score(X)
 
 
+def test_must_fit_before_reporting(ledger):
+    """``score_ledger`` hands back the fit's report, so a model has to say when it has none:
+    before a fit there is nothing to report, and after one the report is the fit's own."""
+    model = AnomalyModel()
+    with pytest.raises(RuntimeError, match="fitted before it can be reported on"):
+        model.report()
+    model.fit(build_features(ledger))
+    assert model.report() is model.report_
+    assert model.report().n_entries == ledger["entry_id"].nunique()
+
+
 def test_anomalies_score_higher_than_normals(ledger, labels):
     """The model must at least separate the two populations on average.
 

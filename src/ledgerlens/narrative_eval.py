@@ -33,9 +33,11 @@ import re
 import tempfile
 import time
 from collections import Counter
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -246,7 +248,7 @@ def refuse_committed_path(path: str | Path, ledger_sha256: str | None, what: str
                 )
 
 
-def _hashes(rows, key: str) -> list[str]:
+def _hashes(rows: Iterable[Mapping[str, Any]], key: str) -> list[str]:
     """The distinct values of one provenance hash over rows, in a fixed order."""
     return sorted({r.get(key) or UNRECORDED for r in rows})
 
@@ -731,7 +733,7 @@ def _stored_rows(path: Path) -> dict[str, dict]:
     return {r["entry_id"]: r for r in rows}
 
 
-def _write_rows(path: Path, rows) -> None:
+def _write_rows(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:
     """Replace a results file in one step, so a crash mid-write leaves the old file whole."""
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".results-", suffix=".tmp")
     try:

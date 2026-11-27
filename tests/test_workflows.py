@@ -432,6 +432,8 @@ def test_the_test_job_is_these_lines_and_installs_no_streamlit():
         f'          python -c "{NO_PYARROW}"',
         "      - name: Lint",
         "        run: ruff check src tests app.py",
+        "      - name: Type check",
+        "        run: mypy",
         "      - name: Test",
         f"        run: pytest -q --cov=ledgerlens --cov-report=term-missing --cov-fail-under={FLOOR}",
     ]

@@ -161,7 +161,7 @@ def us_federal_holidays(year: int) -> set:
     }
 
 
-def is_us_holiday(when) -> bool:
+def is_us_holiday(when: date) -> bool:
     """True if `when` (date or datetime) falls on a US federal holiday."""
     d = when.date() if isinstance(when, datetime) else when
     return d in us_federal_holidays(d.year)

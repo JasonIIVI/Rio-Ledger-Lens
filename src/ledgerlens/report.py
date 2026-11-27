@@ -14,6 +14,7 @@ import re
 import textwrap
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -109,7 +110,7 @@ class _CellText:
         self.cells = 0  # cells holding one or more of them
         self.cut = 0  # texts cut at the limit
 
-    def text(self, value):
+    def text(self, value: Any) -> Any:
         """``value`` as a cell can hold it; anything but text as it came."""
         if not _needs_fitting(value):
             return value
@@ -190,7 +191,7 @@ class _CellText:
             "  " + line for note in notes for line in textwrap.wrap(note, 100, break_on_hyphens=False)]
 
 
-def _autofit(ws, max_width: int = 60, skip_wrapped: bool = False) -> None:
+def _autofit(ws: Any, max_width: int = 60, skip_wrapped: bool = False) -> None:
     """Size each column to its longest value; a wrapped cell can be left out of the measure."""
     for column in ws.columns:
         letter = get_column_letter(column[0].column)
@@ -200,7 +201,7 @@ def _autofit(ws, max_width: int = 60, skip_wrapped: bool = False) -> None:
         ws.column_dimensions[letter].width = min(max(11, longest + 2), max_width)
 
 
-def _text_not_formulas(book) -> None:
+def _text_not_formulas(book: Any) -> None:
     """Every string cell as text, in every sheet.
 
     openpyxl stores a string that begins with "=" as a formula, and one that reads
@@ -215,7 +216,7 @@ def _text_not_formulas(book) -> None:
                     cell.data_type = "s"
 
 
-def _write_table(ws, df: pd.DataFrame, start_row: int = 1) -> None:
+def _write_table(ws: Any, df: pd.DataFrame, start_row: int = 1) -> None:
     for j, name in enumerate(df.columns, start=1):
         cell = ws.cell(row=start_row, column=j, value=str(name))
         cell.fill = HEADER_FILL

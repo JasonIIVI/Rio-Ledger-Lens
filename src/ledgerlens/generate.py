@@ -515,10 +515,13 @@ def _drip_days(business: list[date], start: date) -> list[date] | None:
 def _inject_vendor_drips(b: _EntryBuilder, s: _HeldOutStreams, business: list[date], n: int) -> None:
     """A few hundred dollars every two weeks to a vendor whose name is a near miss."""
     pair = ("6600", "1000")
-    starts = [d for d in business if _drip_days(business, d) is not None]
+    # every day a full run of five can start from, with its run: the same days, in the same
+    # order, as the list the start is drawn from was before
+    runs = {d: days for d in business if (days := _drip_days(business, d)) is not None}
+    starts = list(runs)
     for vendor in s.rng.sample(_NEAR_MISS_VENDORS, n):  # one vendor per drip
         user = s.rng.choice(USERS)
-        for day in _drip_days(business, s.rng.choice(starts)):
+        for day in runs[s.rng.choice(starts)]:
             _held_out_entry(b, s, day, pair, _with_cents(s.rng, 150.0, 450.0),
                             f"Office supplies - {vendor}", user, HeldOutType.SHELL_VENDOR_DRIP)
 

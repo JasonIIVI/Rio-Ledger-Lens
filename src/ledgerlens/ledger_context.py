@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from typing import Any, NamedTuple
 
 import pandas as pd
 
@@ -22,7 +23,7 @@ from . import jets
 from .benford import SMALL_SAMPLE_NOTE, benford_test, segmented_benford
 from .controls import DEFAULT_CONTROLS, Controls, load_controls
 from .ingest import ledger_identity, load_csv
-from .model import combine, score_ledger
+from .model import ModelReport, combine, score_ledger
 from .narrate import entry_context
 from .review import ReviewStore
 
@@ -64,7 +65,7 @@ def records(df: pd.DataFrame, columns: tuple[str, ...] | None = None) -> list[di
     return json.loads(frame.to_json(orient="records", date_format="iso"))
 
 
-def _jsonable(value):
+def _jsonable(value: Any) -> Any:
     """Recursively turn a benford result (numpy scalars, int keys) into plain JSON."""
     if isinstance(value, dict):
         return {str(k): _jsonable(v) for k, v in value.items()}
@@ -79,6 +80,29 @@ def _small_sample_first(result: dict, sufficient: bool) -> dict:
     """Benford's small-sample note as the first key, ahead of the figures it qualifies, and only
     when a test fell under the floor, so a ledger with enough amounts reads as it did."""
     return result if sufficient else {"small_sample": SMALL_SAMPLE_NOTE, **result}
+
+
+class LedgerNotLoaded(Exception):
+    """A question was asked of a context whose loaded state is not whole.
+
+    ``load`` sets all of it or raises, so this is a fault in whoever took a piece away. It
+    is deliberately not a RuntimeError, a ValueError or an OSError: those are what the
+    command line and the MCP server word as a ledger or a review database that cannot be
+    used, and this is neither.
+    """
+
+
+class LoadedState(NamedTuple):
+    """What a loaded context holds, with nothing missing: the ledger's lines, the flags, the
+    entries with both tiers' scores, the controls JET-12 and JET-06 ran against, the model's
+    report and the ledger's identity. :meth:`LedgerContext.state` gives it."""
+
+    lines: pd.DataFrame
+    flags: pd.DataFrame
+    combined: pd.DataFrame
+    controls: Controls
+    model_report: ModelReport
+    ledger_id: str
 
 
 class LedgerContext:
@@ -110,7 +134,7 @@ class LedgerContext:
         self.lines: pd.DataFrame | None = None
         self.flags: pd.DataFrame | None = None
         self.combined: pd.DataFrame | None = None
-        self.model_report = None
+        self.model_report: ModelReport | None = None
 
     @classmethod
     def from_env(cls) -> LedgerContext:
@@ -139,18 +163,38 @@ class LedgerContext:
         if controls is None:  # a file that cannot be used is an error, never the defaults
             controls = load_controls(self._ledger) if from_file else DEFAULT_CONTROLS
         flags = jets.run_all(df, controls=controls)
-        scored = jets.score_entries(df, flags)
+        entries = jets.score_entries(df, flags)
         model_scores, report = score_ledger(df)
+        combined = combine(entries, model_scores, model_top_pct=self.model_top_pct)
         self.ledger_id, self.controls = ledger_id, controls
-        self.lines, self.flags = df, flags
-        self.combined = combine(scored, model_scores, model_top_pct=self.model_top_pct)
-        self.model_report = report
+        self.lines, self.flags, self.model_report = df, flags, report
+        # Last: `loaded` reads it, and a question asked from another thread once it is set
+        # (the MCP SDK runs tools in worker threads) needs everything above to be there.
+        self.combined = combined
         return self
+
+    def state(self) -> LoadedState:
+        """The loaded state, read from the attributes as they stand now (``load`` runs first).
+
+        Every question below starts here and needs all six, whichever of them it reads: the
+        lines, the flags, the entries, the controls, the model's report and the identity.
+        ``load`` sets all six or raises, so no question has to handle the None an attribute
+        holds before a load. The attributes stay what is read: one replaced after a load is
+        the one the next question sees. With one of them taken away no question is answered
+        from the rest: each raises ``LedgerNotLoaded``.
+        """
+        self.load()
+        lines, flags, combined = self.lines, self.flags, self.combined
+        controls, report, ledger_id = self.controls, self.model_report, self.ledger_id
+        if (lines is None or flags is None or combined is None or controls is None
+                or report is None or ledger_id is None):
+            raise LedgerNotLoaded("load() sets the ledger's lines, flags, entries, controls, model "
+                                  "report and identity, and one of them is missing")
+        return LoadedState(lines, flags, combined, controls, report, ledger_id)
 
     def _store(self) -> ReviewStore | None:
         if self.review_db is not None and self.review_db.exists():
-            self.load()
-            return ReviewStore.read_only(self.review_db, self.ledger_id)
+            return ReviewStore.read_only(self.review_db, self.state().ledger_id)
         return None
 
     def _attach_review(self, rows: list[dict]) -> list[dict]:
@@ -178,18 +222,18 @@ class LedgerContext:
 
     def summary(self) -> dict:
         """The population in numbers: what was tested, what fired, how review is going."""
-        self.load()
-        c = self.combined
+        s = self.state()
+        c = s.combined
         flagged = c["risk_score"] > 0
-        by_test = self.flags.groupby("test_id").size() if not self.flags.empty else pd.Series(dtype=int)
+        by_test = s.flags.groupby("test_id").size() if not s.flags.empty else pd.Series(dtype=int)
         agreement = c["agreement"].value_counts()
         return {
             "entries": int(len(c)),
-            "lines": int(len(self.lines)),
+            "lines": int(len(s.lines)),
             "fiscal_years": sorted(int(y) for y in c["fiscal_year"].unique()),
             "flagged": int(flagged.sum()),
             "flag_rate": round(float(flagged.mean()), 4),
-            "flags_raised": int(len(self.flags)),
+            "flags_raised": int(len(s.flags)),
             # Every test and every way the tiers can relate, zeros included and in a
             # fixed order: a reader comparing two runs has to be able to tell "did not
             # fire" from "was not run". Both count rows of their own kind: flags_by_test
@@ -207,8 +251,8 @@ class LedgerContext:
             },
             # What JET-12 and JET-06 were run against, and where it came from (None: no
             # controls file, so the synthetic company's).
-            "controls": self.controls.as_dict(),
-            "model": self.model_report.describe(),
+            "controls": s.controls.as_dict(),
+            "model": s.model_report.describe(),
             "review": self.review_status(),
             "caveat": CAVEAT,
         }
@@ -222,8 +266,8 @@ class LedgerContext:
         agreement: str | None = None,
     ) -> dict:
         """The riskiest flagged entries, highest risk first, with every reason."""
-        self.load()
-        c = self.combined[self.combined["risk_score"] > 0]
+        s = self.state()
+        c = s.combined[s.combined["risk_score"] > 0]
         if fiscal_year is not None:
             c = c[c["fiscal_year"] == fiscal_year]
         if period_from is not None:
@@ -253,13 +297,13 @@ class LedgerContext:
         version with its id, so a decision's ``narrative_id`` can be read
         against the text it was actually made on.
         """
-        self.load()
+        s = self.state()
         try:
-            _, flags, lines = entry_context(self.combined, self.flags, self.lines, entry_id)
+            _, flags, lines = entry_context(s.combined, s.flags, s.lines, entry_id)
         except KeyError:
             raise KeyError(f"no entry {entry_id!r} in the ledger") from None
         store = self._store()
-        entry = records(self.combined[self.combined["entry_id"] == entry_id], ENTRY_COLUMNS)[0]
+        entry = records(s.combined[s.combined["entry_id"] == entry_id], ENTRY_COLUMNS)[0]
         return {
             "entry": entry,
             "lines": records(lines, LINE_COLUMNS),
@@ -281,10 +325,10 @@ class LedgerContext:
         limit: int = 25,
     ) -> dict:
         """Entries matching simple filters, riskiest first. Unflagged entries are included."""
-        self.load()
-        c = self.combined
+        s = self.state()
+        c = s.combined
         if account_code:
-            touched = set(self.lines.loc[self.lines["account_code"] == account_code, "entry_id"])
+            touched = set(s.lines.loc[s.lines["account_code"] == account_code, "entry_id"])
             c = c[c["entry_id"].isin(touched)]
         if created_by:
             c = c[c["created_by"] == created_by]
@@ -312,15 +356,15 @@ class LedgerContext:
 
     def benford(self, by: str | None = None, min_n: int = 300) -> dict:
         """First-digit analysis over the population, or per segment of ``by``."""
-        self.load()
+        s = self.state()
         if by is None:
-            result = _jsonable(benford_test(self.lines["abs_amount"], label="population"))
+            result = _jsonable(benford_test(s.lines["abs_amount"], label="population"))
             result["scope"] = "population"
             result["caveat"] = BENFORD_CAVEAT
             return _small_sample_first(result, result["sufficient_sample"])
-        if by not in self.lines.columns:
+        if by not in s.lines.columns:
             raise KeyError(f"cannot segment by {by!r}; not a ledger column")
-        segments = segmented_benford(self.lines, by=by, min_n=min_n)
+        segments = segmented_benford(s.lines, by=by, min_n=min_n)
         result = {
             "scope": by,
             "min_n": min_n,
@@ -331,23 +375,23 @@ class LedgerContext:
 
     def review_status(self) -> dict:
         """How far the human loop has got. Zeros, not an error, when nobody has started."""
-        self.load()
-        flagged = int((self.combined["risk_score"] > 0).sum())
+        s = self.state()
+        flagged = int((s.combined["risk_score"] > 0).sum())
         store = self._store()
         if store is None:
             return {
                 "review_db": str(self.review_db) if self.review_db else None,
-                "exists": False, "ledger_id": self.ledger_id, "flagged": flagged, "decided": 0,
+                "exists": False, "ledger_id": s.ledger_id, "flagged": flagged, "decided": 0,
                 "outstanding": flagged, "by_decision": {}, "narratives": 0, "other_ledgers": {},
             }
         summary = store.summary()
         return {
             "review_db": str(self.review_db),
             "exists": True,
-            "ledger_id": self.ledger_id,
+            "ledger_id": s.ledger_id,
             "flagged": flagged,
             "decided": len(store.decided_ids()),
-            "outstanding": int(len(store.outstanding(self.combined))),
+            "outstanding": int(len(store.outstanding(s.combined))),
             "by_decision": {str(r.decision): int(r.entries) for r in summary.itertuples()},
             "narratives": len(store.narrative_ids()),
             # Rows this file holds for other ledgers, 'legacy' included: counted,

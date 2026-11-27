@@ -136,13 +136,21 @@ class AnomalyModel:
     def fit_score(self, features: pd.DataFrame) -> pd.Series:
         return self.fit(features).score(features)
 
+    def report(self) -> ModelReport:
+        """What ``fit`` recorded about the fit: how many features went in and which were dropped."""
+        if self.report_ is None:
+            raise RuntimeError("model must be fitted before it can be reported on")
+        return self.report_
 
-def score_ledger(df: pd.DataFrame, contamination: float = DEFAULT_CONTAMINATION):
+
+def score_ledger(
+    df: pd.DataFrame, contamination: float = DEFAULT_CONTAMINATION,
+) -> tuple[pd.Series, ModelReport]:
     """Convenience path: prepared ledger in, (scores, report) out."""
     features = build_features(df)
     model = AnomalyModel(contamination=contamination)
     scores = model.fit_score(features)
-    return scores, model.report_
+    return scores, model.report()
 
 
 def combine(

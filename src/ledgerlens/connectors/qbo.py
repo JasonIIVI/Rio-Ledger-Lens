@@ -39,9 +39,9 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, tzinfo
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Protocol
@@ -160,11 +160,7 @@ class QboConfig:
         if self.environment not in ENVIRONMENTS:
             raise QboConfigError(
                 f"QBO_ENVIRONMENT must be one of {', '.join(ENVIRONMENTS)}, not {self.environment!r}")
-        parts = urllib.parse.urlsplit(self.redirect_uri)
-        if parts.scheme != "http" or parts.hostname not in _LOOPBACK_HOSTS or not parts.port:
-            raise QboConfigError(
-                f"QBO_REDIRECT_URI must be http://localhost:<port>/<path> (the sign-in is caught "
-                f"on this machine), not {self.redirect_uri!r}")
+        _loopback_port(self.redirect_uri)
         if self.timezone:
             _zone(self.timezone)
 
@@ -205,14 +201,25 @@ class QboConfig:
 
     @property
     def callback_port(self) -> int:
-        return int(urllib.parse.urlsplit(self.redirect_uri).port)
+        return _loopback_port(self.redirect_uri)
 
     @property
     def callback_path(self) -> str:
         return urllib.parse.urlsplit(self.redirect_uri).path or "/"
 
 
-def _zone(name: str):
+def _loopback_port(redirect_uri: str) -> int:
+    """The port of a redirect address on this machine, where the sign-in is caught. Any other
+    address, or one that names no port, is a QboConfigError."""
+    parts = urllib.parse.urlsplit(redirect_uri)
+    if parts.scheme != "http" or parts.hostname not in _LOOPBACK_HOSTS or not parts.port:
+        raise QboConfigError(
+            f"QBO_REDIRECT_URI must be http://localhost:<port>/<path> (the sign-in is caught "
+            f"on this machine), not {redirect_uri!r}")
+    return parts.port
+
+
+def _zone(name: str) -> tzinfo:
     try:
         from zoneinfo import ZoneInfo
         return ZoneInfo(name)
@@ -245,7 +252,9 @@ class _NoRedirects(urllib.request.HTTPRedirectHandler):
     to another host (or to plain http) would carry the bearer token or the client secret
     along. No endpoint this connector calls redirects: a 30x comes back as a Response."""
 
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
+    def redirect_request(
+        self, req: urllib.request.Request, fp: Any, code: int, msg: str, headers: Any, newurl: str,
+    ) -> None:
         return None
 
 
@@ -280,7 +289,7 @@ def default_transport() -> Transport:
     return UrllibTransport()
 
 
-def _lower(items) -> dict[str, str]:
+def _lower(items: Iterable[tuple[Any, Any]]) -> dict[str, str]:
     return {str(k).lower(): str(v) for k, v in items}
 
 
@@ -472,7 +481,7 @@ def sanitize(payload: Any, realm_id: str, users: dict[str, str]) -> Any:
         if isinstance(node, dict):
             if "Columns" in node and "Rows" in node:
                 return _sanitize_report(node, walk, user)
-            out = {}
+            out: dict[str, Any] = {}
             for k, v in node.items():
                 if k == "id_token":
                     continue
@@ -555,7 +564,7 @@ def _real_names(users: Mapping[str, str]) -> list[str]:
     return [n for n in users if n and n not in stand_ins]
 
 
-def _sanitize_report(report: dict, walk, user) -> dict:
+def _sanitize_report(report: dict, walk: Callable[[Any], Any], user: Callable[[Any], Any]) -> dict:
     """A report's user names are positional (a column's ColData), not keyed."""
     keys = [column_key(c) for c in (report.get("Columns") or {}).get("Column", [])]
     positions = {i for i, k in enumerate(keys) if k in _USER_COLUMNS}
@@ -652,7 +661,6 @@ class CallbackServer:
         self._state: str | None = None
         self._outcome: Callback | QboAuthError | None = None
         self._lock = threading.Lock()
-        self._done = threading.Event()
         server = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -711,7 +719,6 @@ class CallbackServer:
         with self._lock:  # the first callback with the right state decides
             if self._outcome is None:
                 self._outcome = outcome
-                self._done.set()
         _reply(request, status, text)
 
     def wait(self, state: str, timeout: float) -> Callback:
@@ -721,17 +728,21 @@ class CallbackServer:
         with selectors.DefaultSelector() as selector:
             for listener in self.servers:
                 listener.timeout = 0
-                selector.register(listener, selectors.EVENT_READ)
-            while not self._done.is_set():
+                selector.register(listener, selectors.EVENT_READ, listener)
+            while True:
+                with self._lock:
+                    outcome = self._outcome
+                if outcome is not None:  # the first callback with the right state has decided
+                    break
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise QboAuthError(0, None, f"no sign-in arrived within {timeout:g}s")
                 # Short slices: the callback may arrive on a connection accepted earlier.
                 for key, _ in selector.select(min(remaining, 0.2)):
-                    key.fileobj.handle_request()
-        if isinstance(self._outcome, QboAuthError):
-            raise self._outcome
-        return self._outcome
+                    key.data.handle_request()  # the listener it was registered with
+        if isinstance(outcome, QboAuthError):
+            raise outcome
+        return outcome
 
     def close(self) -> None:
         for listener in self.servers:
@@ -1058,7 +1069,7 @@ class Account:
     sub_account: bool = False
 
 
-def accounts_by_id(rows: list[Mapping[str, Any]], stats: PullStats | None = None) -> dict[str, Account]:
+def accounts_by_id(rows: Sequence[Mapping[str, Any]], stats: PullStats | None = None) -> dict[str, Account]:
     """Account query rows by Id. The code is ``AcctNum`` when numbering is on, else the Id;
     a sub-account is named by its full ``Parent:Child`` path; the type is the Classification."""
     stats = stats if stats is not None else PullStats()
@@ -1104,13 +1115,14 @@ def parse_qbo_datetime(value: str, zone: str | None = None) -> datetime:
     """A QuickBooks timestamp as a naive datetime: the clock time as given, or converted to
     ``zone`` first when one is named and the value carries an offset."""
     text = value.strip()
+    moment = None
     for fmt in _TIMESTAMP_FORMATS:
         try:
             moment = datetime.strptime(text, fmt)
             break
         except ValueError:
             continue
-    else:
+    if moment is None:
         raise ValueError(f"not a QuickBooks timestamp: {value!r}")
     if moment.tzinfo is not None and zone:
         moment = moment.astimezone(_zone(zone))
@@ -1203,6 +1215,10 @@ def _date(value: str) -> datetime:
     return datetime.strptime(str(value).strip()[:10], "%Y-%m-%d")
 
 
+#: A negative amount posts to the other side; anything but the two sides is left as it came.
+_OTHER_SIDE: Mapping[Any, str] = {"Debit": "Credit", "Credit": "Debit"}
+
+
 def _money(value: Any) -> float:
     text = str(value if value is not None else "").replace(",", "").strip()
     return float(text) if text else 0.0
@@ -1220,11 +1236,13 @@ def report_columns(report: Mapping[str, Any]) -> list[str]:
     return keys
 
 
-def _report_rows(report: Mapping[str, Any]):
+def _report_rows(report: Mapping[str, Any]) -> Iterator[tuple[list[Any], Mapping[str, Any] | None]]:
     """Yield ``(cells, account_cell)`` for every Data row, walking nested sections; the
     account is the innermost section header's first cell (``{"value", "id"}``)."""
 
-    def walk(node: Any, account: Mapping[str, Any] | None):
+    def walk(
+        node: Any, account: Mapping[str, Any] | None,
+    ) -> Iterator[tuple[list[Any], Mapping[str, Any] | None]]:
         for row in (node or {}).get("Row") or []:
             if not isinstance(row, dict):
                 continue
@@ -1264,7 +1282,7 @@ def report_headers(report: Mapping[str, Any]) -> dict[tuple[str, str], dict[str,
     return headers
 
 
-def journal_entries_to_lines(entries: list[Mapping[str, Any]], accounts: Mapping[str, Account],
+def journal_entries_to_lines(entries: Sequence[Mapping[str, Any]], accounts: Mapping[str, Account],
                              headers: Mapping[tuple[str, str], Mapping[str, str]] | None = None,
                              zone: str | None = None,
                              stats: PullStats | None = None) -> list[dict[str, Any]]:
@@ -1296,7 +1314,7 @@ def journal_entries_to_lines(entries: list[Mapping[str, Any]], accounts: Mapping
             amount = _money(line.get("Amount"))
             side = detail.get("PostingType")
             if amount < 0:  # a negative amount posts to the other side
-                amount, side = -amount, {"Debit": "Credit", "Credit": "Debit"}.get(side, side)
+                amount, side = -amount, _OTHER_SIDE.get(side, side)
             if amount == 0 or side not in ("Debit", "Credit"):
                 stats.zero_amount_lines += 1
                 continue
@@ -1401,7 +1419,7 @@ def _line(entry_id: str, line_no: int, posting: datetime, entered_at: datetime, 
     }
 
 
-def to_ledger_frame(lines: list[Mapping[str, Any]], stats: PullStats | None = None) -> pd.DataFrame:
+def to_ledger_frame(lines: Sequence[Mapping[str, Any]], stats: PullStats | None = None) -> pd.DataFrame:
     """Lines as a prepared ledger, sorted by date, entry and line; counts unbalanced entries."""
     if not lines:
         raise ValueError("no transactions in range")

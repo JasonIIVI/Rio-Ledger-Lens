@@ -28,7 +28,9 @@ from __future__ import annotations
 import json
 import os
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 import pandas as pd
 
@@ -273,7 +275,7 @@ class Usage:
     FIELDS = ("input_tokens", "output_tokens", "cache_read_input_tokens",
               "cache_creation_input_tokens")
 
-    def add(self, usage) -> None:
+    def add(self, usage: object) -> None:
         self.requests += 1
         for name in self.FIELDS:
             setattr(self, name, getattr(self, name) + int(getattr(usage, name, 0) or 0))
@@ -458,7 +460,7 @@ def parse_response(text: str) -> dict:
     return validate(payload)
 
 
-def response_text(response) -> str:
+def response_text(response: Any) -> str:
     """The text block of a response.
 
     Not ``content[0]``: current models return a thinking block first, and the
@@ -471,7 +473,7 @@ def response_text(response) -> str:
     raise NarrativeError("response contained no text block")
 
 
-def check_stop_reason(response, max_tokens: int) -> None:
+def check_stop_reason(response: Any, max_tokens: int) -> None:
     """Refuse to parse a response that did not finish normally."""
     stop = getattr(response, "stop_reason", None)
     if stop == "max_tokens":
@@ -486,7 +488,7 @@ def check_stop_reason(response, max_tokens: int) -> None:
         raise NarrativeError("the request exceeded the model's context window")
 
 
-def response_model(response) -> str:
+def response_model(response: Any) -> str:
     """The model a response says wrote it, which is what a stored note records.
 
     Not the model requested: an alias can resolve to a dated snapshot, and a
@@ -534,7 +536,7 @@ class Narrator:
 
     def __init__(
         self,
-        client=None,
+        client: Any = None,
         model: str = DEFAULT_MODEL,
         max_tokens: int = DEFAULT_MAX_TOKENS,
         effort: str = DEFAULT_EFFORT,
@@ -546,7 +548,7 @@ class Narrator:
         self.usage = Usage()
 
     @property
-    def client(self):
+    def client(self) -> Any:
         if self._client is None:
             api_key = os.environ.get("ANTHROPIC_API_KEY")
             if not api_key:
@@ -616,7 +618,7 @@ class Narrator:
         lines: pd.DataFrame,
         top_n: int = 25,
         skip: set | None = None,
-        keep=None,
+        keep: Callable[[str, dict, str], None] | None = None,
     ) -> NarrationResult:
         """Narrate the highest-risk flagged entries.
 
