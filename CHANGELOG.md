@@ -23,6 +23,8 @@ them together with the caveat they need.
 ### Changed
 - On a ledger of about 100,000 entries, `score`, `summary` and `report` take less than half
   the time they did, and `test` about a third less. No output changes.
+- CI's `dashboard` job runs the whole test suite with every extra installed, on Python 3.9
+  and 3.12, where it ran the dashboard's tests and the workpaper's.
 
 ### Fixed
 - `benford --by` with a column the ledger does not have prints one `error:` line that

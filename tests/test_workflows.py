@@ -390,9 +390,15 @@ FLOOR = "${{ matrix.python-version == '3.9' && '96' || '97' }}"
 #: tested after them, by running the workflow's own lines and not these.
 NO_PYARROW = ("import importlib.util, sys; "
               "sys.exit('pyarrow is installed in this job' if importlib.util.find_spec('pyarrow') else 0)")
-IMPORTS = ("import anthropic, pyarrow, streamlit; from streamlit.testing.v1 import AppTest; "
+IMPORTS = ("import sys, anthropic, pyarrow, pytest_cov, streamlit; "
+           "from streamlit.testing.v1 import AppTest; "
+           "mcp = __import__('mcp') if sys.version_info >= (3, 10) else None; "
            "print('streamlit', streamlit.__version__, 'pyarrow', pyarrow.__version__, "
-           "'anthropic', anthropic.__version__)")
+           "'anthropic', anthropic.__version__, 'mcp', 'imported' if mcp else 'not for this Python')")
+
+#: What a test in this suite skips itself without, as `pytest.importorskip` is given it.
+#: numpy is not here: the package itself depends on it, so no install lacks it.
+SKIPPED_WITHOUT = {"anthropic", "mcp", "pyarrow", "pytest_cov", "streamlit.testing.v1"}
 
 
 def up_to_install(*versions):
@@ -469,23 +475,51 @@ def test_the_coverage_floor_is_compared_to_two_decimals(tmp_path):
     assert over.returncode == 0, over.stdout + over.stderr
 
 
-def test_the_dashboard_job_is_these_lines_under_both_streamlits():
-    """CI installed no Streamlit, so tests/test_app.py skipped itself on every job, and one
-    test in tests/test_report.py skips itself without pyarrow: both ran on the maintainer's
-    machine only. This job installs the app extra and runs the two files, on 3.9 under
+def test_the_dashboard_job_is_the_whole_suite_with_every_extra_under_both_streamlits():
+    """The test job installs no Streamlit, so there tests/test_app.py skips itself, and so
+    does the one test in tests/test_report.py that needs pyarrow. This job began as those
+    two files with the app extra installed. It now runs the whole suite so: with pyarrow,
+    pandas 3 keeps text columns in Arrow, and until this job did, no CI job ran the rest of
+    the suite that way (the maintainer's 3.12 venv did, on the pandas it has). On 3.9 under
     Streamlit 1.50 (the last one 3.9 can install) and on 3.12 under the newest; 3.9 on the
-    image that still has it, as in the test job. With two files collected, a file that
-    skipped itself would still be a green job, so what the tests would skip without is
-    imported first, in a step of its own. Every line is pinned, as for the test job."""
+    image that still has it, as in the test job. A suite with skipped tests is still a green
+    job, so what a test would skip without is imported first, in a step of its own, and the
+    run lists what it skipped (-rs; no second -q, which would hide how many passed). Every
+    line is pinned, as for the test job."""
     assert as_run(job(read("ci.yml"), "dashboard")) == [
         *up_to_install("3.9", "3.12"),
-        '          pip install -e ".[dev,llm,app]"',
+        '          pip install -e ".[dev,llm,mcp,app]"',
         "      - name: Import what the tests below would skip without",
         "        run: |",
         f'          python -c "{IMPORTS}"',
-        "      - name: Test the dashboard and the workpaper",
-        "        run: pytest -q tests/test_app.py tests/test_report.py",
+        "      - name: Test the whole suite",
+        "        run: pytest -rs",
     ]
+
+
+def test_the_import_step_names_every_package_a_test_skips_itself_without():
+    """The step is the suite's guard against a green job that skipped what it was there to
+    run, so its list has to be the suite's own: every package a test file hands to
+    `pytest.importorskip`. A new one added to a test fails here until the step imports it."""
+    tests = Path(__file__).resolve().parent
+    asked = set()
+    for path in sorted(tests.glob("test_*.py")):
+        asked |= set(re.findall(r"""importorskip\(\s*["']([^"']+)["']""", path.read_text(encoding="utf-8")))
+    assert asked - {"numpy"} == SKIPPED_WITHOUT
+    # What the step imports, read from its own text. `sys` is not a package, and
+    # `streamlit` is there for its version: the tests ask for its testing module.
+    plain, harness, sdk = (part.strip() for part in IMPORTS.split(";")[:3])
+    imported = set(plain[len("import "):].split(", ")) - {"sys", "streamlit"}
+    imported.add(re.fullmatch(r"from (\S+) import AppTest", harness).group(1))
+    imported.add(re.fullmatch(r"mcp = __import__\('(\w+)'\) if .+ else None", sdk).group(1))
+    assert plain.startswith("import ") and imported == SKIPPED_WITHOUT
+    # The step asks for the SDK exactly where the mcp extra installs it: its bound is the
+    # extra's marker. Between two Pythons that both run this suite (3.11 for 3.10, say) no
+    # run of the step could tell a wrong bound from the right one.
+    pyproject = (tests.parent / "pyproject.toml").read_text(encoding="utf-8")
+    bound = re.search(r"sys\.version_info >= \((\d+), (\d+)\)", IMPORTS)
+    marker = re.search(r"""(?m)^mcp = \["mcp[^;"]*; python_version >= '(\d+)\.(\d+)'"\]$""", pyproject)
+    assert bound and marker and bound.groups() == marker.groups() == ("3", "10")
 
 
 PYTHON_STUB = r"""
@@ -564,9 +598,15 @@ def test_the_no_pyarrow_step_fails_where_pyarrow_can_be_imported(tmp_path):
 
 
 def test_the_import_step_fails_without_any_one_of_what_the_tests_would_skip_for(tmp_path):
-    step, every = "Import what the tests below would skip without", ("anthropic", "pyarrow", "streamlit")
+    step = "Import what the tests below would skip without"
+    # The MCP SDK cannot be installed below Python 3.10, so the step asks for it from 3.10
+    # on. The stand-in python is this suite's interpreter: on 3.9 this test shows the step
+    # passing without the SDK, and on 3.10 and later failing without it.
+    with_sdk = sys.version_info >= (3, 10)
+    every = ("anthropic", "pyarrow", "pytest_cov", "streamlit") + (("mcp",) if with_sdk else ())
     whole = run_step(step, tmp_path / "all", *every)
-    assert (whole.returncode, whole.stdout) == (0, "streamlit 0.0 pyarrow 0.0 anthropic 0.0\n")
+    sdk = "imported" if with_sdk else "not for this Python"
+    assert (whole.returncode, whole.stdout) == (0, f"streamlit 0.0 pyarrow 0.0 anthropic 0.0 mcp {sdk}\n")
     for missing in every:
         short = run_step(step, tmp_path / f"no-{missing}", *(n for n in every if n != missing))
         assert short.returncode == 1 and f"No module named '{missing}'" in short.stderr, missing

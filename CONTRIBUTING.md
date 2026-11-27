@@ -43,7 +43,11 @@ six functions the eval's grader hashes (`narrate.validate` and five in
 grader's hash.
 The dashboard's tests (`tests/test_app.py`) need the `app` extra, which those jobs do not
 install, and one workpaper test (in `tests/test_report.py`) needs the pyarrow that comes
-with it. CI runs both files in its `dashboard` job, on Python 3.9 and 3.12.
+with it. CI's `dashboard` job installs every extra and runs the whole suite, on Python 3.9
+and 3.12: that is where those tests run, and where the rest of the suite runs with pyarrow
+installed. A test that skips itself without a package (`pytest.importorskip`) needs that
+package in the job's import step, or a job that skipped it would still be green; a test
+holds the step to the suite's own list.
 
 A change that someone using the tool would notice gets a line under `Unreleased` in
 `CHANGELOG.md`. A version bump renames that section to the version and the day its release
