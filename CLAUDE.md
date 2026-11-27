@@ -1426,8 +1426,44 @@ new mypy reaches CI before the 3.12 venv, as a new pandas does.
   built wheel holds `py.typed` (neither venv can build offline; the package-data line is
   pinned). The same PR corrects #43's computed 97.94% to the measured 98.00% in
   `ci.yml`'s comment and CONTRIBUTING. Version unchanged (1.2.2).
-- **Next** — in the order the maintainer set on 2026-11-16: the rest of week 8's hardening
-  (a performance pass, and the whole
+- **The performance pass (week 8, `perf/digit-entropy`, after v1.2.2)** — measured on a
+  generated ledger of 100,569 entries (201,138 lines; `generate --entries-per-day 198`),
+  Python 3.12 on the maintainer's laptop, one run each: `test` 8.4 s, `score` 23.5 s,
+  `summary` 25.0 s, `report` 23.7 s. A profile of `score` named two steps, and both were
+  changed; every output is what it was.
+  - `features._digit_entropy`, about 11 s of `score` (nearly half): a pandas `value_counts`
+    for every amount. The entropy depends only on how often each digit occurs (the
+    proportions, largest first, are the same array for 5,555.00 and 7,777.00), so it is
+    worked out once for each such pattern, by the arithmetic it always was, and looked up
+    after that: 37 patterns on that ledger, and under a tenth of a second. The column is bit
+    for bit the old one on that ledger, the default and held-out ledgers, 60,000 random
+    amounts and 21 awkward ones (zero, negative, NaN, infinities, sixteen digits and more),
+    under pandas 2.3.3 and 3.0.6.
+  - `jets.jet_duplicate_entries`, about 4.4 s of `test`: it visited every group of (amount,
+    accounts, description), 99,633 of them, to find the 730 with two entries or more. It
+    now groups only the 1,666 entries whose fingerprint occurs again
+    (`duplicated(keep=False)`, which, like the groupby, takes two blank descriptions for the
+    same one), in about 1.8 s. The same flags in the same order on six ledgers (the three
+    above, two seeds with a fifth of the entries anomalous, and one with blank descriptions
+    and tied amounts) under both pandas versions, and `run_all`'s whole frame with them.
+  After: `test` 5.8 s, `score` 9.1 s, `summary` 10.4 s, `report` 9.0 s (on 3.9, `test`
+  5.9 s and `score` 9.1 s). The four commands print byte for byte what they printed before
+  on that ledger, and the workpaper is the same cell for cell apart from the time it was
+  prepared. Not changed: `_entry_pairs` (about 1.4 s a call there, a Python call for every
+  entry, run once by JET-07 and once by JET-08) is now most of JET-07's time. Three tests:
+  the entropy of 30
+  amounts equal to its definition to the last bit (amounts that share a pattern with other
+  digits, share a length but not a pattern, or have no digits); one `value_counts` call for
+  each pattern, counted and not timed; and JET-07 grouping only the repeated fingerprints of
+  a 46-entry ledger and flagging what it did (a triple, and a pair with blank
+  descriptions). Two of the three fail on the previous code (the bit-for-bit one passes
+  there, as it must: it pins what may not move); eight mutants (three wrong patterns,
+  nothing remembered, the first of each fingerprint left out, the description left out of
+  the filter, no filter, blank descriptions never twins), run one at a time on a scratch
+  copy, are each killed by a test named for them. The timings are one machine's, single
+  runs, and no test pins them. Version unchanged (1.2.2).
+- **Next** — in the order the maintainer set on 2026-11-16: the last of week 8's hardening
+  (the whole
   suite in CI with the `app` extra installed); week 7 as a separate ledger
   (`generate --realistic`, from its own streams as the held-out ledger is, so the default
   ledger, the eval cases and the held-out measurement do not move); and publishing last,
@@ -1442,7 +1478,7 @@ new mypy reaches CI before the 3.12 venv, as a new pandas does.
   the workpaper and the MCP entry rows (the explain tool returns both); the prompt a note
   answered (a review-schema change); and the reported model on new eval rows (a row-shape
   change).
-- 1501 tests on 3.9 (1 skipped) / 1521 on 3.12 (the twenty MCP tests need 3.10+), ruff and mypy clean.
+- 1504 tests on 3.9 (1 skipped) / 1524 on 3.12 (the twenty MCP tests need 3.10+), ruff and mypy clean.
 
 **Verified on the real API (2026-09-23; the injection case on 2026-09-26):** 25 narratives
 cached (89% of input tokens read from cache), eval 94% pass-all over 17 cases (the seventeenth

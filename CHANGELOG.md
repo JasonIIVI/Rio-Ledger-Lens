@@ -20,6 +20,10 @@ them together with the caveat they need.
   checks it with mypy. `LedgerContext.state()` gives a loaded context's state with nothing
   left optional, and `AnomalyModel.report()` the report of a fit.
 
+### Changed
+- On a ledger of about 100,000 entries, `score`, `summary` and `report` take less than half
+  the time they did, and `test` about a third less. No output changes.
+
 ### Fixed
 - `benford --by` with a column the ledger does not have prints one `error:` line that
   names the columns there are, where it ended in a traceback.

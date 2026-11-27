@@ -17,6 +17,8 @@ Two rules shaped what is in here:
 
 from __future__ import annotations
 
+from collections import Counter
+
 import numpy as np
 import pandas as pd
 
@@ -62,12 +64,22 @@ def _digit_entropy(amounts: pd.Series) -> pd.Series:
     flat. This gives the model a handle on that without hardcoding what a
     suspicious amount looks like.
     """
+    # The entropy depends only on how often each digit occurs, not on which digits they are:
+    # the proportions, largest first, are the same array for 5,555.00 and 7,777.00. So it is
+    # worked out once for each such pattern, by the arithmetic it always was. A pandas call
+    # for every amount made this the slowest step of the model tier (nearly half of
+    # `score`'s time on 100,000 entries).
+    known: dict[tuple[int, ...], float] = {}
+
     def entropy(value: float) -> float:
         digits = [c for c in f"{abs(value):.2f}" if c.isdigit()]
         if not digits:
             return 0.0
-        counts = pd.Series(digits).value_counts(normalize=True)
-        return float(-(counts * np.log2(counts)).sum())
+        pattern = tuple(sorted(Counter(digits).values(), reverse=True))
+        if pattern not in known:
+            counts = pd.Series(digits).value_counts(normalize=True)
+            known[pattern] = float(-(counts * np.log2(counts)).sum())
+        return known[pattern]
 
     return amounts.map(entropy)
 

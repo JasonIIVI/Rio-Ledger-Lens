@@ -202,9 +202,11 @@ def jet_duplicate_entries(df: pd.DataFrame, days: int = 7) -> pd.DataFrame:
 
     rows = []
     key = ["entry_amount", "pair", "description"]
-    for _, group in e.groupby(key, dropna=False):
-        if len(group) < 2:
-            continue
+    # Only an entry whose fingerprint occurs again can be a duplicate. Nearly every
+    # fingerprint occurs once, and visiting each of those groups was most of this test's
+    # time on a large ledger (99,633 groups for 100,569 entries, 730 of them of two or more).
+    again = e[e.duplicated(key, keep=False)]
+    for _, group in again.groupby(key, dropna=False):
         # Two postings of one invoice on one day tie on the date. The one keyed
         # first stands as the original (then the lower id), so which of them is
         # flagged is not left to how a sort orders a tie.
